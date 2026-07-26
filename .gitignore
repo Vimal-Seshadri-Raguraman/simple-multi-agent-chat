@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# SMAC project-specific
+Claude.md
+.superpowers/
+.env
+.smac/
