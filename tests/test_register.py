@@ -48,3 +48,19 @@ def test_register_missing_fields_returns_400(client):
     response = client.post("/register", json={"username": "onlyusername"})
 
     assert response.status_code == 400
+
+
+def test_register_username_too_long_returns_400(client):
+    response = client.post(
+        "/register", json={"username": "a" * 33, "password": "supersecret"}
+    )
+
+    assert response.status_code == 400
+
+
+def test_register_password_too_long_returns_400(client):
+    response = client.post(
+        "/register", json={"username": "validuser2", "password": "a" * 73}
+    )
+
+    assert response.status_code == 400

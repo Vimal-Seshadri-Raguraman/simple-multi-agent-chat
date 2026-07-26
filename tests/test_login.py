@@ -49,6 +49,28 @@ def test_login_nonexistent_user_returns_401(client):
     assert response.status_code == 401
 
 
+def test_login_nonexistent_user_still_performs_password_verification(
+    client, monkeypatch
+):
+    import app.main as main_module
+
+    calls = []
+    original_verify_password = main_module.verify_password
+
+    def spy_verify_password(password, password_hash):
+        calls.append(password_hash)
+        return original_verify_password(password, password_hash)
+
+    monkeypatch.setattr(main_module, "verify_password", spy_verify_password)
+
+    response = client.post(
+        "/login", json={"username": "ghost", "password": "supersecret"}
+    )
+
+    assert response.status_code == 401
+    assert len(calls) == 1
+
+
 def test_login_missing_fields_returns_400(client):
     response = client.post("/login", json={"username": "loginuser"})
 

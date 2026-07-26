@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.auth import (
+    DUMMY_PASSWORD_HASH,
     create_access_token,
     get_current_user_id,
     hash_password,
@@ -54,7 +55,12 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
 @app.post("/login")
 def login(user: UserCreate, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.username == user.username).first()
-    if existing is None or not verify_password(user.password, existing.password_hash):
+    password_hash = (
+        existing.password_hash if existing is not None else DUMMY_PASSWORD_HASH
+    )
+    password_valid = verify_password(user.password, password_hash)
+
+    if existing is None or not password_valid:
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     token = create_access_token(existing.id)
