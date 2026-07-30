@@ -1,4 +1,5 @@
 import hashlib
+import os
 import secrets
 
 from fastapi import Depends, Header
@@ -7,6 +8,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.errors import UnauthorizedError
 from app.models import Member
+
+# Security: dev headers are only allowed when explicitly enabled via environment
+ALLOW_DEV_AUTH_HEADERS = os.getenv("ALLOW_DEV_AUTH_HEADERS", "false").lower() == "true"
 
 
 def generate_api_key() -> str:
@@ -29,7 +33,7 @@ def resolve_member(
     Single auth-resolution point. Today: dev header or API key.
     Later: swap this function's body for Entra ID JWT validation — no caller changes.
     """
-    if dev_member_id:
+    if dev_member_id and ALLOW_DEV_AUTH_HEADERS:
         member = db.get(Member, dev_member_id)
         if member is None:
             member = Member(
