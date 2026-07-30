@@ -1,12 +1,19 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.database import init_db
 from app.errors import AppError
 
-app = FastAPI(title="Simple Multi-Agent Chat")
 
-init_db()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="Simple Multi-Agent Chat", lifespan=lifespan)
 
 
 @app.exception_handler(AppError)

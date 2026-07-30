@@ -55,16 +55,12 @@ class Workspace(Base):
 
 class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "member_id", name="uq_workspace_member"),
-    )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     workspace_id: Mapped[str] = mapped_column(
-        String, ForeignKey("workspaces.workspace_id"), nullable=False
+        String, ForeignKey("workspaces.workspace_id"), primary_key=True
     )
     member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False
+        String, ForeignKey("members.member_id"), primary_key=True
     )
 
 
@@ -83,16 +79,12 @@ class Channel(Base):
 
 class ChannelMember(Base):
     __tablename__ = "channel_members"
-    __table_args__ = (
-        UniqueConstraint("channel_id", "member_id", name="uq_channel_member"),
-    )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     channel_id: Mapped[str] = mapped_column(
-        String, ForeignKey("channels.channel_id"), nullable=False
+        String, ForeignKey("channels.channel_id"), primary_key=True
     )
     member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False
+        String, ForeignKey("members.member_id"), primary_key=True
     )
 
 
