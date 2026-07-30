@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
@@ -35,3 +35,19 @@ def client():
 def human_headers(member_id: str, member_name: str = "Test Human") -> dict[str, str]:
     """Auth headers for a human member; auto-creates the member on first use."""
     return {"X-Dev-Member-Id": member_id, "X-Dev-Member-Name": member_name}
+
+
+@pytest.fixture()
+def db_session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+    session: Session = testing_session_local()
+    try:
+        yield session
+    finally:
+        session.close()
