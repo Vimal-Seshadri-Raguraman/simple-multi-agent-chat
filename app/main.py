@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.database import init_db
 from app.errors import AppError
+from app.routers import members
 
 
 @asynccontextmanager
@@ -14,6 +15,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Simple Multi-Agent Chat", lifespan=lifespan)
+
+app.include_router(members.router)
 
 
 @app.exception_handler(AppError)
