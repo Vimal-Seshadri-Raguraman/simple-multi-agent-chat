@@ -14,27 +14,34 @@ def test_register_bot_app_returns_api_key(client):
 
 
 def test_search_members_by_name(client):
-    client.post("/members/agents", json={"member_name": "Research-Bot"})
+    agent1 = client.post("/members/agents", json={"member_name": "Research-Bot"}).json()
     client.post("/members/bots", json={"member_name": "Zapier"})
 
-    response = client.get("/members", params={"search_name": "Research"})
+    headers = {"X-API-Key": agent1["api_key"]}
+    response = client.get(
+        "/members", params={"search_name": "Research"}, headers=headers
+    )
     results = response.json()
     assert len(results) == 1
     assert results[0]["member_name"] == "Research-Bot"
 
 
 def test_search_members_by_type(client):
-    client.post("/members/agents", json={"member_name": "Agent-1"})
+    agent1 = client.post("/members/agents", json={"member_name": "Agent-1"}).json()
     client.post("/members/bots", json={"member_name": "Bot-1"})
 
-    response = client.get("/members", params={"search_type": "agent"})
+    headers = {"X-API-Key": agent1["api_key"]}
+    response = client.get("/members", params={"search_type": "agent"}, headers=headers)
     results = response.json()
     assert len(results) == 1
     assert results[0]["member_type"] == "agent"
 
 
 def test_search_members_returns_empty_list_when_no_match(client):
-    response = client.get("/members", params={"search_name": "nobody"})
+    agent1 = client.post("/members/agents", json={"member_name": "Agent-1"}).json()
+
+    headers = {"X-API-Key": agent1["api_key"]}
+    response = client.get("/members", params={"search_name": "nobody"}, headers=headers)
     assert response.status_code == 200
     assert response.json() == []
 
@@ -44,7 +51,10 @@ def test_get_member_profile(client):
         "/members/agents", json={"member_name": "Research-Bot"}
     ).json()
 
-    response = client.get("/member", params={"id": registered["member_id"]})
+    headers = {"X-API-Key": registered["api_key"]}
+    response = client.get(
+        "/member", params={"id": registered["member_id"]}, headers=headers
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["member_id"] == registered["member_id"]
@@ -52,6 +62,20 @@ def test_get_member_profile(client):
 
 
 def test_get_member_profile_404(client):
-    response = client.get("/member", params={"id": "does-not-exist"})
+    agent1 = client.post("/members/agents", json={"member_name": "Agent-1"}).json()
+
+    headers = {"X-API-Key": agent1["api_key"]}
+    response = client.get("/member", params={"id": "does-not-exist"}, headers=headers)
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_search_members_requires_auth(client):
+    response = client.get("/members")
+    assert response.status_code == 401
+
+
+def test_get_member_requires_auth(client):
+    registered = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    response = client.get("/member", params={"id": registered["member_id"]})
+    assert response.status_code == 401

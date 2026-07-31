@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.auth import generate_api_key, hash_api_key
+from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.database import get_db
 from app.errors import NotFoundError
 from app.models import Member
@@ -47,6 +47,7 @@ def search_members(
     search_name: str | None = Query(default=None),
     search_id: str | None = Query(default=None),
     search_type: str | None = Query(default=None),
+    member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
     query = db.query(Member)
@@ -61,7 +62,9 @@ def search_members(
 
 @router.get("/member", response_model=MemberOut)
 def get_member(
-    member_id: str = Query(alias="id"), db: Session = Depends(get_db)
+    member_id: str = Query(alias="id"),
+    current_member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
 ) -> Member:
     member = db.get(Member, member_id)
     if member is None:
