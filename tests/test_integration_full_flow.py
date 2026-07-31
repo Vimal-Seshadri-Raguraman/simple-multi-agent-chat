@@ -20,33 +20,38 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
 
     # Add the human, agent, and bot_app to the workspace, then the channel
     for member_id in ("m_1", agent["member_id"], bot["member_id"]):
-        client.post(
+        resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/members",
             json={"member_id": member_id},
             headers=human_headers("m_1", "Alice"),
         )
-        client.post(
+        assert resp.status_code == 200
+        resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
             json={"member_id": member_id},
             headers=human_headers("m_1", "Alice"),
         )
+        assert resp.status_code == 200
 
     # Each member type posts one message
-    client.post(
+    resp = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
         json={"message_text": "hi from human"},
         headers=human_headers("m_1", "Alice"),
     )
-    client.post(
+    assert resp.status_code == 200
+    resp = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
         json={"message_text": "hi from agent"},
         headers={"X-API-Key": agent["api_key"]},
     )
-    client.post(
+    assert resp.status_code == 200
+    resp = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
         json={"message_text": "hi from bot"},
         headers={"X-API-Key": bot["api_key"]},
     )
+    assert resp.status_code == 200
 
     # Fetch history and verify all three show up in the agreed wire schema
     response = client.get(
@@ -61,6 +66,11 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
         "hi from agent",
         "hi from bot",
     ]
+    # Verify each message is attributed to the correct sender
+    assert messages[0]["Sender"]["member_id"] == "m_1"
+    assert messages[1]["Sender"]["member_id"] == agent["member_id"]
+    assert messages[2]["Sender"]["member_id"] == bot["member_id"]
+    # Verify wire schema and workspace/channel context
     for message in messages:
         assert set(message.keys()) == {
             "timestamp",
