@@ -26,7 +26,10 @@ def create_workspace(
 
 
 @router.get("/workspaces", response_model=list[WorkspaceOut])
-def list_workspaces(db: Session = Depends(get_db)) -> list[Workspace]:
+def list_workspaces(
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> list[Workspace]:
     return db.query(Workspace).all()
 
 
@@ -67,7 +70,9 @@ def add_workspace_member(
 
 @router.get("/workspaces/{workspace_id}/members", response_model=list[MemberOut])
 def list_workspace_members(
-    workspace_id: str, db: Session = Depends(get_db)
+    workspace_id: str,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
 ) -> list[Member]:
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
