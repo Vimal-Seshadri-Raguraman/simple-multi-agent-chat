@@ -74,7 +74,7 @@ def get_messages(
     workspace_id: str,
     channel_id: str,
     after: str | None = Query(default=None),
-    limit: int = Query(default=DEFAULT_LIMIT),
+    limit: int = Query(default=DEFAULT_LIMIT, ge=1),
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[dict]:
