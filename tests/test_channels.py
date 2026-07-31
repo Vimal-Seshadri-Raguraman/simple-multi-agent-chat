@@ -118,6 +118,55 @@ def test_add_channel_member_succeeds_once_in_workspace(client):
     assert response.status_code == 200
 
 
+def test_bot_app_cannot_add_channel_member(client):
+    workspace = _create_workspace(client)
+    channel = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels",
+        json={"channel_name": "general"},
+        headers=human_headers("m_1"),
+    ).json()
+    bot = client.post("/members/bots", json={"member_name": "Zapier"}).json()
+    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        json={"member_id": agent["member_id"]},
+        headers=human_headers("m_1"),
+    )
+
+    response = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
+        json={"member_id": agent["member_id"]},
+        headers={"X-API-Key": bot["api_key"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden_member_type"
+
+
+def test_adding_same_channel_member_twice_conflicts(client):
+    workspace = _create_workspace(client)
+    channel = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels",
+        json={"channel_name": "general"},
+        headers=human_headers("m_1"),
+    ).json()
+    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        json={"member_id": agent["member_id"]},
+        headers=human_headers("m_1"),
+    )
+    add_url = f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members"
+    client.post(
+        add_url, json={"member_id": agent["member_id"]}, headers=human_headers("m_1")
+    )
+
+    response = client.post(
+        add_url, json={"member_id": agent["member_id"]}, headers=human_headers("m_1")
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "already_a_member"
+
+
 def test_list_channel_members(client):
     workspace = _create_workspace(client)
     # Add creator to workspace members
