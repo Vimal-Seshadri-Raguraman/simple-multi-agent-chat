@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.database as database_module
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -26,10 +27,19 @@ def client():
         finally:
             db.close()
 
-    app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
+    # The WebSocket route creates its own DB session via `SessionLocal()` directly
+    # rather than the `get_db` FastAPI dependency, so the dependency override above
+    # doesn't reach it. Patch the module-level SessionLocal too, for the duration
+    # of the test, so WS and HTTP requests share the same in-memory test database.
+    original_session_local = database_module.SessionLocal
+    database_module.SessionLocal = testing_session_local
+    try:
+        app.dependency_overrides[get_db] = override_get_db
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+        database_module.SessionLocal = original_session_local
 
 
 def human_headers(member_id: str, member_name: str = "Test Human") -> dict[str, str]:

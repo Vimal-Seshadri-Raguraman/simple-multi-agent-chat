@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from app.database import init_db
 from app.errors import AppError
-from app.routers import channels, members, messages, workspaces
+from app.routers import channels, members, messages, websocket, workspaces
 
 
 @asynccontextmanager
@@ -21,6 +21,7 @@ app.include_router(members.router)
 app.include_router(workspaces.router)
 app.include_router(channels.router)
 app.include_router(messages.router)
+app.include_router(websocket.router)
 
 
 @app.exception_handler(AppError)
