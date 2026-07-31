@@ -4,10 +4,22 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.auth as auth_module
 import app.database as database_module
 from app.database import get_db
 from app.main import app
 from app.models import Base
+
+
+@pytest.fixture(autouse=True)
+def _enable_dev_auth_headers(monkeypatch):
+    """
+    Force ALLOW_DEV_AUTH_HEADERS on for the test session regardless of the local
+    .env file. app.auth reads this flag from the environment at module import
+    time, so a fresh clone with only .env.example (which ships `false`) would
+    otherwise see most of the test suite fail silently.
+    """
+    monkeypatch.setattr(auth_module, "ALLOW_DEV_AUTH_HEADERS", True)
 
 
 @pytest.fixture()
