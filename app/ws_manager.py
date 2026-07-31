@@ -20,8 +20,14 @@ class ConnectionManager:
             del self._channels[channel_id]
 
     async def broadcast(self, channel_id: str, payload: dict) -> None:
+        dead_sockets = []
         for websocket in list(self._channels.get(channel_id, set())):
-            await websocket.send_json(payload)
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                dead_sockets.append(websocket)
+        for websocket in dead_sockets:
+            self.disconnect(channel_id, websocket)
 
 
 manager = ConnectionManager()
