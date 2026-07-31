@@ -78,6 +78,14 @@ def test_list_workspace_members(client):
         "/workspaces", json={"workspace_name": "Acme"}, headers=human_headers("m_1")
     ).json()
     agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+
+    # Add creator (m_1) to workspace members
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        json={"member_id": "m_1"},
+        headers=human_headers("m_1"),
+    )
+    # Add agent to workspace members
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -91,6 +99,7 @@ def test_list_workspace_members(client):
     assert response.status_code == 200
     member_ids = [m["member_id"] for m in response.json()]
     assert agent["member_id"] in member_ids
+    assert "m_1" in member_ids
 
 
 def test_list_workspaces_requires_auth(client):
@@ -110,3 +119,18 @@ def test_list_workspace_members_requires_auth(client):
     ).json()
     response = client.get(f"/workspaces/{workspace['workspace_id']}/members")
     assert response.status_code == 401
+
+
+def test_list_workspace_members_requires_membership(client):
+    workspace = client.post(
+        "/workspaces", json={"workspace_name": "Acme"}, headers=human_headers("m_1")
+    ).json()
+    outsider_agent = client.post(
+        "/members/agents", json={"member_name": "Outsider"}
+    ).json()
+    response = client.get(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        headers={"X-API-Key": outsider_agent["api_key"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_a_member"

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_member
-from app.authorization import authorize_management_action
+from app.authorization import authorize_management_action, authorize_workspace_read
 from app.database import get_db
 from app.errors import AlreadyAMemberError, NotFoundError
 from app.models import Member, Workspace, WorkspaceMember
@@ -77,6 +77,7 @@ def list_workspace_members(
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace '{workspace_id}' not found")
+    authorize_workspace_read(db, member, workspace_id)
     return (
         db.query(Member)
         .join(WorkspaceMember, WorkspaceMember.member_id == Member.member_id)
