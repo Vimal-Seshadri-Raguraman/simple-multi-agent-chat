@@ -131,3 +131,66 @@ def test_get_messages_pagination_with_after(client):
         "msg 8",
         "msg 9",
     ]
+
+
+def test_get_messages_pagination_with_after_from_different_channel(client):
+    workspace, channel1, agent1 = _setup_channel_with_agent(client)
+    # Create a second channel in the same workspace
+    channel2 = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels",
+        json={"channel_name": "other"},
+        headers=human_headers("m_1"),
+    ).json()
+    agent2 = client.post("/members/agents", json={"member_name": "Bot2"}).json()
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        json={"member_id": agent2["member_id"]},
+        headers=human_headers("m_1"),
+    )
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel2['channel_id']}/members",
+        json={"member_id": agent2["member_id"]},
+        headers=human_headers("m_1"),
+    )
+
+    # Post message in channel1
+    msg1 = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel1['channel_id']}/messages",
+        json={"message_text": "msg1"},
+        headers={"X-API-Key": agent1["api_key"]},
+    ).json()
+
+    # Post message in channel2
+    msg2 = client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel2['channel_id']}/messages",
+        json={"message_text": "msg2"},
+        headers={"X-API-Key": agent2["api_key"]},
+    ).json()
+
+    # Try to use channel2's message as anchor in channel1's fetch — should 404
+    response = client.get(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel1['channel_id']}/messages",
+        params={"after": msg2["Message"]["message_id"]},
+        headers={"X-API-Key": agent1["api_key"]},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_get_messages_requires_auth(client):
+    workspace, channel, agent = _setup_channel_with_agent(client)
+    response = client.get(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages"
+    )
+    assert response.status_code == 401
+
+
+def test_get_messages_requires_channel_membership(client):
+    workspace, channel, _ = _setup_channel_with_agent(client)
+    outsider = client.post("/members/agents", json={"member_name": "Outsider"}).json()
+    response = client.get(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
+        headers={"X-API-Key": outsider["api_key"]},
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_a_member"

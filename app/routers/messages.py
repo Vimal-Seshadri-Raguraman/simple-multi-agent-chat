@@ -85,7 +85,7 @@ def get_messages(
     query = db.query(Message).filter(Message.channel_id == channel_id)
     if after:
         anchor = db.get(Message, after)
-        if anchor is None:
+        if anchor is None or anchor.channel_id != channel_id:
             raise NotFoundError(
                 f"Message '{after}' not found in channel '{channel_id}'"
             )
