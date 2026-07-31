@@ -13,7 +13,9 @@ def _setup_channel_with_agent(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -72,7 +74,11 @@ def test_websocket_receives_broadcast_message(client):
 
 def test_websocket_rejects_non_channel_member(client):
     workspace, channel, _ = _setup_channel_with_agent(client)
-    outsider = client.post("/members/agents", json={"member_name": "Outsider"}).json()
+    outsider = client.post(
+        "/members/agents",
+        json={"member_name": "Outsider"},
+        headers=human_headers("m_1"),
+    ).json()
     ws_url = (
         f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
     )

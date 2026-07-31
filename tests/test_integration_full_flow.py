@@ -15,8 +15,14 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
     ).json()
 
     # Register an agent and a bot_app
-    agent = client.post("/members/agents", json={"member_name": "Research-Bot"}).json()
-    bot = client.post("/members/bots", json={"member_name": "Zapier"}).json()
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Research-Bot"},
+        headers=human_headers("m_1"),
+    ).json()
+    bot = client.post(
+        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+    ).json()
 
     # Add the human, agent, and bot_app to the workspace, then the channel
     for member_id in ("m_1", agent["member_id"], bot["member_id"]):

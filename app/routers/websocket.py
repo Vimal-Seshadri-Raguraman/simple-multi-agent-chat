@@ -16,8 +16,11 @@ async def channel_websocket(
     # tests can monkeypatch app.database.SessionLocal for the duration of a test —
     # a direct `from app.database import SessionLocal` would bind the name at import
     # time and never see the patched value.
-    db = database.SessionLocal()
-    try:
+    #
+    # The DB session is scoped to just the auth/membership checks below and is
+    # closed before entering the message-receive loop, so it isn't held checked
+    # out of the connection pool for the entire lifetime of the WebSocket.
+    with database.SessionLocal() as db:
         member = resolve_member(
             db,
             websocket.headers.get("x-dev-member-id"),
@@ -51,13 +54,11 @@ async def channel_websocket(
             await websocket.close(code=4403)
             return
 
-        await manager.connect(channel_id, websocket)
-        try:
-            while True:
-                await websocket.receive_text()
-        except WebSocketDisconnect:
-            pass
-        finally:
-            manager.disconnect(channel_id, websocket)
+    await manager.connect(channel_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
     finally:
-        db.close()
+        manager.disconnect(channel_id, websocket)

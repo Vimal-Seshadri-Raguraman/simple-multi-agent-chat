@@ -20,7 +20,9 @@ def test_human_can_create_channel(client):
 
 def test_bot_app_cannot_create_channel(client):
     workspace = _create_workspace(client)
-    bot = client.post("/members/bots", json={"member_name": "Zapier"}).json()
+    bot = client.post(
+        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+    ).json()
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
@@ -68,7 +70,9 @@ def test_list_channels_requires_auth(client):
 def test_list_channels_requires_workspace_membership(client):
     workspace = _create_workspace(client)
     outsider_agent = client.post(
-        "/members/agents", json={"member_name": "Outsider"}
+        "/members/agents",
+        json={"member_name": "Outsider"},
+        headers=human_headers("m_1"),
     ).json()
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels",
@@ -85,7 +89,9 @@ def test_add_channel_member_requires_workspace_membership_first(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
 
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
@@ -103,7 +109,9 @@ def test_add_channel_member_succeeds_once_in_workspace(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -125,8 +133,12 @@ def test_bot_app_cannot_add_channel_member(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    bot = client.post("/members/bots", json={"member_name": "Zapier"}).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    bot = client.post(
+        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+    ).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -149,7 +161,9 @@ def test_adding_same_channel_member_twice_conflicts(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -180,7 +194,9 @@ def test_list_channel_members(client):
         json={"channel_name": "general"},
         headers=human_headers("m_1"),
     ).json()
-    agent = client.post("/members/agents", json={"member_name": "Bot"}).json()
+    agent = client.post(
+        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+    ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
@@ -228,7 +244,9 @@ def test_list_channel_members_requires_channel_membership(client):
         headers=human_headers("m_1"),
     ).json()
     outsider_agent = client.post(
-        "/members/agents", json={"member_name": "Outsider"}
+        "/members/agents",
+        json={"member_name": "Outsider"},
+        headers=human_headers("m_1"),
     ).json()
     # Add outsider to workspace but not to channel
     client.post(

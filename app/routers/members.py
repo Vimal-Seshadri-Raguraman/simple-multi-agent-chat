@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.auth import generate_api_key, get_current_member, hash_api_key
+from app.authorization import authorize_management_action
 from app.database import get_db
 from app.errors import NotFoundError
 from app.models import Member
@@ -30,15 +31,21 @@ def _register(db: Session, member_name: str, member_type: str) -> MemberRegister
 
 @router.post("/members/agents", response_model=MemberRegisterOut)
 def register_agent(
-    body: MemberRegisterIn, db: Session = Depends(get_db)
+    body: MemberRegisterIn,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
+    authorize_management_action(member)
     return _register(db, body.member_name, "agent")
 
 
 @router.post("/members/bots", response_model=MemberRegisterOut)
 def register_bot(
-    body: MemberRegisterIn, db: Session = Depends(get_db)
+    body: MemberRegisterIn,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
+    authorize_management_action(member)
     return _register(db, body.member_name, "bot_app")
 
 
