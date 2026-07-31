@@ -1,3 +1,6 @@
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 from tests.conftest import human_headers
 
 
@@ -32,13 +35,10 @@ def test_websocket_receives_broadcast_message(client):
 
     # m_1 (the human who created the workspace/channel) isn't a channel member yet,
     # so the connection is rejected before being accepted.
-    try:
+    with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(ws_url, headers=human_headers("m_1")):
-            assert (
-                False
-            ), "expected connection to be rejected before m_1 is a channel member"
-    except Exception:
-        pass
+            pass
+    assert exc_info.value.code == 4403
 
     # Add m_1 to the workspace, then to the channel.
     client.post(
@@ -77,13 +77,12 @@ def test_websocket_rejects_non_channel_member(client):
         f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
     )
 
-    try:
+    with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             ws_url, headers={"X-API-Key": outsider["api_key"]}
         ):
-            assert False, "expected connection to be rejected"
-    except Exception:
-        pass  # starlette's TestClient raises when the server closes before accept
+            pass
+    assert exc_info.value.code == 4403
 
 
 def test_websocket_rejects_missing_credentials(client):
@@ -92,8 +91,7 @@ def test_websocket_rejects_missing_credentials(client):
         f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
     )
 
-    try:
+    with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(ws_url):
-            assert False, "expected connection to be rejected"
-    except Exception:
-        pass
+            pass
+    assert exc_info.value.code == 4401
