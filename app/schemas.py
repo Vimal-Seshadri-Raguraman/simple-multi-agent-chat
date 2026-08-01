@@ -182,6 +182,21 @@ class InviteOut(BaseModel):
     expires_at: datetime | None
 
 
+class InvitedByOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    member_id: str
+    member_name: str
+
+
+class PendingInviteOut(BaseModel):
+    """An invite as seen by its target: enough context to decide."""
+
+    invite_id: str
+    workspace: WorkspaceOut
+    invited_by: InvitedByOut
+    created_at: datetime
+
+
 def build_message_payload(
     message: Message, workspace: Workspace, channel: Channel, sender: Member
 ) -> dict:

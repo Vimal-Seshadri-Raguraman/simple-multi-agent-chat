@@ -11,8 +11,15 @@ from app.auth import get_current_member
 from app.authorization import authorize_management_action, authorize_workspace_read
 from app.database import get_db
 from app.errors import AlreadyAMemberError, InvalidInviteError, NotFoundError
+from app.membership import join_workspace
 from app.models import Member, Workspace, WorkspaceInvite, WorkspaceMember, utcnow
-from app.schemas import InviteCreateIn, InviteOut
+from app.schemas import (
+    InvitedByOut,
+    InviteCreateIn,
+    InviteOut,
+    PendingInviteOut,
+    WorkspaceOut,
+)
 
 router = APIRouter()
 
@@ -129,3 +136,74 @@ def revoke_invite(
     db.delete(invite)
     db.commit()
     return {"status": "revoked"}
+
+
+def _my_email_invite(db: Session, member: Member, invite_id: str) -> WorkspaceInvite:
+    """Load an email invite targeting the caller, or raise the uniform 404."""
+    invite = db.get(WorkspaceInvite, invite_id)
+    if (
+        invite is None
+        or invite.invite_type != "email"
+        or member.email is None
+        or invite.email != member.email
+    ):
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+    return invite
+
+
+@router.get("/invites", response_model=list[PendingInviteOut])
+def list_my_invites(
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> list[PendingInviteOut]:
+    """Pending email invites targeting the caller's email (in-app delivery, no SMTP)."""
+    authorize_management_action(member)
+    if member.email is None:
+        return []
+    rows = (
+        db.query(WorkspaceInvite, Workspace, Member)
+        .join(Workspace, Workspace.workspace_id == WorkspaceInvite.workspace_id)
+        .join(Member, Member.member_id == WorkspaceInvite.created_by)
+        .filter(WorkspaceInvite.email == member.email)
+        .all()
+    )
+    return [
+        PendingInviteOut(
+            invite_id=invite.invite_id,
+            workspace=WorkspaceOut.model_validate(workspace),
+            invited_by=InvitedByOut.model_validate(inviter),
+            created_at=invite.created_at,
+        )
+        for invite, workspace, inviter in rows
+    ]
+
+
+@router.post("/invites/{invite_id}/accept", response_model=WorkspaceOut)
+def accept_invite(
+    invite_id: str,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> Workspace:
+    """Join the inviting workspace (+ its default channel); consume the invite."""
+    authorize_management_action(member)
+    invite = _my_email_invite(db, member, invite_id)
+    workspace = db.get(Workspace, invite.workspace_id)
+    db.delete(invite)
+    db.commit()
+    assert workspace is not None  # FK: invite rows always point at a workspace
+    join_workspace(db, workspace, member.member_id)  # raises 409 if already in
+    return workspace
+
+
+@router.post("/invites/{invite_id}/decline")
+def decline_invite(
+    invite_id: str,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Delete an invite targeting the caller without joining anything."""
+    authorize_management_action(member)
+    invite = _my_email_invite(db, member, invite_id)
+    db.delete(invite)
+    db.commit()
+    return {"status": "declined"}

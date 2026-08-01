@@ -135,3 +135,99 @@ def test_agent_cannot_create_invite(client):
     )
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden_member_type"
+
+
+def _invite_email(client, ws_id, email, key="m_1"):
+    return client.post(
+        f"/workspaces/{ws_id}/invites",
+        json={"invite_type": "email", "email": email},
+        headers=human_headers(client, key),
+    ).json()
+
+
+def test_invitee_sees_pending_invite_with_context(client):
+    ws = _workspace(client)
+    _invite_email(client, ws["workspace_id"], "m_2@test.example")
+    listing = client.get("/invites", headers=human_headers(client, "m_2")).json()
+    assert len(listing) == 1
+    row = listing[0]
+    assert row["workspace"]["workspace_name"] == "Acme"
+    assert row["invited_by"]["member_id"] == human_member_id(client, "m_1")
+
+
+def test_accept_joins_workspace_and_default_channel(client):
+    ws = _workspace(client)
+    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
+    response = client.post(
+        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
+    )
+    assert response.status_code == 200
+    assert response.json()["workspace_id"] == ws["workspace_id"]
+
+    members = client.get(
+        f"/workspaces/{ws['workspace_id']}/members",
+        headers=human_headers(client, "m_2"),
+    ).json()
+    assert human_member_id(client, "m_2") in [m["member_id"] for m in members]
+
+    channels = client.get(
+        f"/workspaces/{ws['workspace_id']}/channels",
+        headers=human_headers(client, "m_2"),
+    ).json()
+    general_id = [c for c in channels if c["channel_name"] == "general"][0][
+        "channel_id"
+    ]
+    channel_members = client.get(
+        f"/workspaces/{ws['workspace_id']}/channels/{general_id}/members",
+        headers=human_headers(client, "m_2"),
+    ).json()
+    assert human_member_id(client, "m_2") in [m["member_id"] for m in channel_members]
+
+    # Consumed: no longer listed, second accept 404s.
+    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
+    replay = client.post(
+        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
+    )
+    assert replay.status_code == 404
+    assert replay.json()["error"]["code"] == "invalid_invite"
+
+
+def test_cannot_accept_someone_elses_invite(client):
+    ws = _workspace(client)
+    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
+    response = client.post(
+        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_3")
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "invalid_invite"
+
+
+def test_decline_removes_without_joining(client):
+    ws = _workspace(client)
+    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
+    response = client.post(
+        f"/invites/{invite['invite_id']}/decline", headers=human_headers(client, "m_2")
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "declined"}
+    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
+    listing = client.get(
+        f"/workspaces/{ws['workspace_id']}/members",
+        headers=human_headers(client, "m_1"),
+    ).json()
+    assert human_member_id(client, "m_2") not in [m["member_id"] for m in listing]
+
+
+def test_accept_when_already_member_deletes_invite_and_409s(client):
+    ws = _workspace(client)
+    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
+    client.post(
+        f"/workspaces/{ws['workspace_id']}/members",
+        json={"member_id": human_member_id(client, "m_2")},
+        headers=human_headers(client, "m_1"),
+    )
+    response = client.post(
+        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
+    )
+    assert response.status_code == 409
+    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
