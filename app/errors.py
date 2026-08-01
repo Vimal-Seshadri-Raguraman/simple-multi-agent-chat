@@ -57,3 +57,8 @@ class InvalidTokenError(AppError):
 class EmailTakenError(AppError):
     status_code = 409
     code = "email_taken"
+
+
+class InvalidInviteError(AppError):
+    status_code = 404
+    code = "invalid_invite"

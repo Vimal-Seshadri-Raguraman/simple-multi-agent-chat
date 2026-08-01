@@ -1,6 +1,14 @@
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.models import Channel, Member, Message, Workspace
 
@@ -145,6 +153,33 @@ class RefreshIn(BaseModel):
 
 class LogoutIn(BaseModel):
     refresh_token: str
+
+
+class InviteCreateIn(BaseModel):
+    """Create an invite: email-targeted, or a shareable code."""
+
+    invite_type: Literal["email", "code"]
+    email: EmailStr | None = None
+
+    @model_validator(mode="after")
+    def _email_iff_email_type(self) -> "InviteCreateIn":
+        if self.invite_type == "email" and self.email is None:
+            raise ValueError("email is required for invite_type 'email'")
+        if self.invite_type == "code" and self.email is not None:
+            raise ValueError("email is not allowed for invite_type 'code'")
+        return self
+
+
+class InviteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    invite_id: str
+    workspace_id: str
+    invite_type: str
+    email: str | None
+    code: str | None
+    created_by: str
+    created_at: datetime
+    expires_at: datetime | None
 
 
 def build_message_payload(
