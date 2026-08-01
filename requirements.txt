@@ -2,7 +2,7 @@ fastapi==0.104.1
 uvicorn==0.24.0
 sqlalchemy==2.0.23
 pydantic==2.5.0
-python-dotenv==1.0.0
+python-dotenv==1.2.2
 PyJWT==2.8.0
 bcrypt==4.1.1
 pytest==7.4.3
