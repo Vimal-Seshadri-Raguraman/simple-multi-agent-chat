@@ -35,6 +35,11 @@ class MemberOut(BaseModel):
     member_name: str
     member_type: str
     created_at: datetime
+    first_name: str | None = None
+    last_name: str | None = None
+    company: str | None = None
+    occupation: str | None = None
+    job_role: str | None = None
 
 
 class MemberRegisterIn(BaseModel):
@@ -66,6 +71,17 @@ class MemberSelfOut(BaseModel):
     company: str | None
     occupation: str | None
     job_role: str | None
+
+
+class MemberProfileUpdate(BaseModel):
+    """Partial update of one's own profile. Email/password are not editable here."""
+
+    display_name: str | None = Field(default=None, min_length=1)
+    first_name: str | None = Field(default=None, min_length=1)
+    last_name: str | None = Field(default=None, min_length=1)
+    company: str | None = None
+    occupation: str | None = None
+    job_role: str | None = None
 
 
 class RegisterIn(BaseModel):
