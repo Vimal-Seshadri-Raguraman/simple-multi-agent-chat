@@ -26,18 +26,24 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
         headers=human_headers(client, "m_1"),
     ).json()
 
-    # Add the human, agent, and bot_app to the workspace, then the channel
-    for member_id in (
-        human_member_id(client, "m_1"),
-        agent["member_id"],
-        bot["member_id"],
-    ):
+    # Add the agent and bot_app to the workspace (the human/creator is already
+    # a workspace member, auto-added at workspace creation).
+    for member_id in (agent["member_id"], bot["member_id"]):
         resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/members",
             json={"member_id": member_id},
             headers=human_headers(client, "m_1"),
         )
         assert resp.status_code == 200
+
+    # Add the human, agent, and bot_app to the channel — a channel created via
+    # the channels endpoint, not the workspace's auto-created default, so
+    # nobody is auto-joined to it.
+    for member_id in (
+        human_member_id(client, "m_1"),
+        agent["member_id"],
+        bot["member_id"],
+    ):
         resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
             json={"member_id": member_id},

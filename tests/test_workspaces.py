@@ -113,12 +113,7 @@ def test_list_workspace_members(client):
         headers=human_headers(client, "m_1"),
     ).json()
 
-    # Add creator (m_1) to workspace members
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
-    )
+    # Creator (m_1) is already a workspace member (auto-added at creation).
     # Add agent to workspace members
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
@@ -178,3 +173,69 @@ def test_list_workspace_members_requires_membership(client):
     )
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "not_a_member"
+
+
+def test_create_workspace_bootstraps_general_and_creator(client):
+    workspace = client.post(
+        "/workspaces",
+        json={"workspace_name": "Acme"},
+        headers=human_headers(client, "m_1"),
+    ).json()
+    ws_id = workspace["workspace_id"]
+
+    members = client.get(
+        f"/workspaces/{ws_id}/members", headers=human_headers(client, "m_1")
+    ).json()
+    assert human_member_id(client, "m_1") in [m["member_id"] for m in members]
+
+    channels = client.get(
+        f"/workspaces/{ws_id}/channels", headers=human_headers(client, "m_1")
+    ).json()
+    assert [c["channel_name"] for c in channels] == ["general"]
+
+    general_id = channels[0]["channel_id"]
+    channel_members = client.get(
+        f"/workspaces/{ws_id}/channels/{general_id}/members",
+        headers=human_headers(client, "m_1"),
+    ).json()
+    assert human_member_id(client, "m_1") in [m["member_id"] for m in channel_members]
+
+
+def test_manual_add_lands_member_in_default_channel(client):
+    workspace = client.post(
+        "/workspaces",
+        json={"workspace_name": "Acme"},
+        headers=human_headers(client, "m_1"),
+    ).json()
+    ws_id = workspace["workspace_id"]
+    other_id = human_member_id(client, "m_2")
+
+    client.post(
+        f"/workspaces/{ws_id}/members",
+        json={"member_id": other_id},
+        headers=human_headers(client, "m_1"),
+    )
+    channels = client.get(
+        f"/workspaces/{ws_id}/channels", headers=human_headers(client, "m_1")
+    ).json()
+    general_id = channels[0]["channel_id"]
+    channel_members = client.get(
+        f"/workspaces/{ws_id}/channels/{general_id}/members",
+        headers=human_headers(client, "m_1"),
+    ).json()
+    assert other_id in [m["member_id"] for m in channel_members]
+
+
+def test_adding_creator_again_conflicts(client):
+    workspace = client.post(
+        "/workspaces",
+        json={"workspace_name": "Acme"},
+        headers=human_headers(client, "m_1"),
+    ).json()
+    response = client.post(
+        f"/workspaces/{workspace['workspace_id']}/members",
+        json={"member_id": human_member_id(client, "m_1")},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "already_a_member"
