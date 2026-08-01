@@ -107,7 +107,6 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
         raise InvalidTokenError("Refresh token is invalid or expired")
     member = db.get(Member, row.member_id)
     db.delete(row)
-    db.commit()
     assert member is not None  # FK guarantees the owner exists
     return _issue_token_pair(db, member)
 
