@@ -17,6 +17,7 @@ from app.schemas import (
     InvitedByOut,
     InviteCreateIn,
     InviteOut,
+    JoinByCodeIn,
     PendingInviteOut,
     WorkspaceOut,
 )
@@ -207,3 +208,23 @@ def decline_invite(
     db.delete(invite)
     db.commit()
     return {"status": "declined"}
+
+
+@router.post("/workspaces/join", response_model=WorkspaceOut)
+def join_by_code(
+    body: JoinByCodeIn,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> Workspace:
+    """Redeem a shareable code: join its workspace (+ default channel).
+
+    The code stays valid for other people (multi-use) until revoked/expired.
+    """
+    authorize_management_action(member)
+    invite = db.query(WorkspaceInvite).filter(WorkspaceInvite.code == body.code).first()
+    if invite is None or _delete_if_expired(db, invite):
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+    workspace = db.get(Workspace, invite.workspace_id)
+    assert workspace is not None  # FK: invite rows always point at a workspace
+    join_workspace(db, workspace, member.member_id)  # 409 if already in; code survives
+    return workspace

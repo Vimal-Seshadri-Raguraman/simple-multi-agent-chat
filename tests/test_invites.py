@@ -231,3 +231,139 @@ def test_accept_when_already_member_deletes_invite_and_409s(client):
     )
     assert response.status_code == 409
     assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
+
+
+def _code_invite(client, ws_id, key="m_1"):
+    return client.post(
+        f"/workspaces/{ws_id}/invites",
+        json={"invite_type": "code"},
+        headers=human_headers(client, key),
+    ).json()
+
+
+def test_code_is_multi_use(client):
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    for key in ("m_2", "m_3"):
+        response = client.post(
+            "/workspaces/join",
+            json={"code": invite["code"]},
+            headers=human_headers(client, key),
+        )
+        assert response.status_code == 200
+        assert response.json()["workspace_id"] == ws["workspace_id"]
+    members = client.get(
+        f"/workspaces/{ws['workspace_id']}/members",
+        headers=human_headers(client, "m_1"),
+    ).json()
+    ids = [m["member_id"] for m in members]
+    assert (
+        human_member_id(client, "m_2") in ids and human_member_id(client, "m_3") in ids
+    )
+
+
+def test_joiner_lands_in_default_channel(client):
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers=human_headers(client, "m_2"),
+    )
+    channels = client.get(
+        f"/workspaces/{ws['workspace_id']}/channels",
+        headers=human_headers(client, "m_2"),
+    ).json()
+    general_id = [c for c in channels if c["channel_name"] == "general"][0][
+        "channel_id"
+    ]
+    channel_members = client.get(
+        f"/workspaces/{ws['workspace_id']}/channels/{general_id}/members",
+        headers=human_headers(client, "m_2"),
+    ).json()
+    assert human_member_id(client, "m_2") in [m["member_id"] for m in channel_members]
+
+
+def test_revoked_code_rejected(client):
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    client.delete(
+        f"/workspaces/{ws['workspace_id']}/invites/{invite['invite_id']}",
+        headers=human_headers(client, "m_1"),
+    )
+    response = client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers=human_headers(client, "m_2"),
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "invalid_invite"
+
+
+def test_expired_code_rejected_and_deleted(client):
+    from datetime import timedelta
+
+    import app.database as database_module
+    from app.models import WorkspaceInvite, utcnow
+
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    with database_module.SessionLocal() as db:
+        row = db.get(WorkspaceInvite, invite["invite_id"])
+        row.expires_at = utcnow() - timedelta(seconds=1)
+        db.add(row)
+        db.commit()
+
+    response = client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers=human_headers(client, "m_2"),
+    )
+    assert response.status_code == 404
+    with database_module.SessionLocal() as db:
+        assert db.get(WorkspaceInvite, invite["invite_id"]) is None
+
+
+def test_unknown_code_rejected(client):
+    _workspace(client)
+    response = client.post(
+        "/workspaces/join",
+        json={"code": "not-a-real-code"},
+        headers=human_headers(client, "m_2"),
+    )
+    assert response.status_code == 404
+
+
+def test_rejoining_via_code_conflicts(client):
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    response = client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "already_a_member"
+    # Code stays valid for others (multi-use).
+    ok = client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers=human_headers(client, "m_2"),
+    )
+    assert ok.status_code == 200
+
+
+def test_agent_cannot_redeem_code(client):
+    ws = _workspace(client)
+    invite = _code_invite(client, ws["workspace_id"])
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
+    ).json()
+    response = client.post(
+        "/workspaces/join",
+        json={"code": invite["code"]},
+        headers={"X-API-Key": agent["api_key"]},
+    )
+    assert response.status_code == 403

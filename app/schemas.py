@@ -197,6 +197,10 @@ class PendingInviteOut(BaseModel):
     created_at: datetime
 
 
+class JoinByCodeIn(BaseModel):
+    code: str = Field(min_length=1)
+
+
 def build_message_payload(
     message: Message, workspace: Workspace, channel: Channel, sender: Member
 ) -> dict:
