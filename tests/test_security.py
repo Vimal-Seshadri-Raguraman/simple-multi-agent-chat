@@ -3,9 +3,11 @@
 from datetime import datetime, timedelta, timezone
 
 import jwt
+import pytest
 
 from app.security import (
     SECRET_KEY,
+    check_secret_key_is_safe_for_environment,
     create_access_token,
     decode_access_token,
     generate_refresh_token,
@@ -59,3 +61,15 @@ def test_refresh_tokens_are_unique_and_hash_deterministic():
     assert a != b
     assert hash_token(a) == hash_token(a)
     assert hash_token(a) != hash_token(b)
+
+
+def test_default_secret_key_rejected_in_production(monkeypatch):
+    """A production-like deployment must not silently run with the public default."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    with pytest.raises(RuntimeError):
+        check_secret_key_is_safe_for_environment()
+
+
+def test_default_secret_key_allowed_in_development(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    check_secret_key_is_safe_for_environment()  # must not raise

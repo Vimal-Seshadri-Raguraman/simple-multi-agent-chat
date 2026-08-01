@@ -105,3 +105,15 @@ def test_websocket_rejects_missing_credentials(client):
         with client.websocket_connect(ws_url):
             pass
     assert exc_info.value.code == 4401
+
+
+def test_websocket_rejects_garbage_token(client):
+    workspace, channel, _ = _setup_channel_with_agent(client)
+    ws_url = (
+        f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"{ws_url}?token=garbage.not.a.jwt"):
+            pass
+    assert exc_info.value.code == 4401

@@ -4,7 +4,6 @@ import pytest
 
 from app.auth import resolve_member
 from app.errors import InvalidTokenError
-from app.models import Member
 from app.security import create_access_token
 from tests.conftest import human_headers, human_member_id
 

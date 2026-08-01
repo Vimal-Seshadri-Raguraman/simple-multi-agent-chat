@@ -107,7 +107,12 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
         raise InvalidTokenError("Refresh token is invalid or expired")
     member = db.get(Member, row.member_id)
     db.delete(row)
-    assert member is not None  # FK guarantees the owner exists
+    if member is None:
+        # SQLite FK enforcement (PRAGMA foreign_keys) isn't guaranteed to be
+        # on, so a refresh token can outlive its owning member. Treat a
+        # missing owner the same as any other invalid/expired token.
+        db.commit()
+        raise InvalidTokenError("Refresh token is invalid or expired")
     return _issue_token_pair(db, member)
 
 

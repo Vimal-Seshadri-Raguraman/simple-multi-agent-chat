@@ -12,11 +12,39 @@ from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
 
-SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
+_DEFAULT_SECRET_KEY = "change-me-in-production"
+
+SECRET_KEY: str = os.getenv("SECRET_KEY", _DEFAULT_SECRET_KEY)
 ACCESS_TOKEN_TTL_MINUTES: int = int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", "15"))
 REFRESH_TOKEN_TTL_DAYS: int = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
 
 _JWT_ALGORITHM = "HS256"
+
+
+def check_secret_key_is_safe_for_environment() -> None:
+    """Fail fast if a production-like deployment is using the default JWT secret.
+
+    `SECRET_KEY` silently falling back to the publicly-known string
+    "change-me-in-production" means anyone can forge valid JWTs against a
+    production deployment that forgot to set the env var. We can't tell
+    "forgot" from "intentional dev/test run" just by looking at
+    `SECRET_KEY`, so we key the check off `ENVIRONMENT`: only
+    "development" and "test" (the values used locally and in CI) are
+    allowed to run with the default secret. Anything else -- including a
+    typo'd or unset `ENVIRONMENT` in a real deployment -- raises instead of
+    silently signing forgeable tokens.
+    """
+    environment = os.getenv("ENVIRONMENT", "development")
+    if environment not in {"development", "test"} and SECRET_KEY == _DEFAULT_SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY is unset (using the public default "
+            f"'{_DEFAULT_SECRET_KEY}') while ENVIRONMENT="
+            f"'{environment}'. Set a real SECRET_KEY before running in this "
+            "environment."
+        )
+
+
+check_secret_key_is_safe_for_environment()
 
 
 def hash_password(raw: str) -> str:
@@ -40,7 +68,12 @@ def create_access_token(member_id: str) -> str:
 def decode_access_token(token: str) -> str | None:
     """Return the member id from a valid JWT, or None if invalid/expired."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[_JWT_ALGORITHM])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[_JWT_ALGORITHM],
+            options={"require": ["exp", "sub"]},
+        )
     except jwt.InvalidTokenError:
         return None
     sub = payload.get("sub")

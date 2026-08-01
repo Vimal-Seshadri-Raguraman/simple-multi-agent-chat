@@ -175,6 +175,48 @@ def test_patch_cannot_change_email(client):
     assert response.json()["email"] == "m_1@test.example"
 
 
+def test_patch_explicit_null_display_name_is_422(client):
+    response = client.patch(
+        "/members/me",
+        json={"display_name": None},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 422
+
+
+def test_patch_explicit_null_first_name_is_422(client):
+    response = client.patch(
+        "/members/me",
+        json={"first_name": None},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 422
+
+
+def test_patch_explicit_null_last_name_is_422(client):
+    response = client.patch(
+        "/members/me",
+        json={"last_name": None},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 422
+
+
+def test_patch_explicit_null_company_clears_it(client):
+    client.patch(
+        "/members/me",
+        json={"company": "Acme"},
+        headers=human_headers(client, "m_1"),
+    )
+    response = client.patch(
+        "/members/me",
+        json={"company": None},
+        headers=human_headers(client, "m_1"),
+    )
+    assert response.status_code == 200
+    assert response.json()["company"] is None
+
+
 def test_agent_cannot_patch_profile(client):
     agent = client.post(
         "/members/agents",
