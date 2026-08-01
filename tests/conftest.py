@@ -4,22 +4,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import app.auth as auth_module
 import app.database as database_module
 from app.database import get_db
 from app.main import app
 from app.models import Base
-
-
-@pytest.fixture(autouse=True)
-def _enable_dev_auth_headers(monkeypatch):
-    """
-    Force ALLOW_DEV_AUTH_HEADERS on for the test session regardless of the local
-    .env file. app.auth reads this flag from the environment at module import
-    time, so a fresh clone with only .env.example (which ships `false`) would
-    otherwise see most of the test suite fail silently.
-    """
-    monkeypatch.setattr(auth_module, "ALLOW_DEV_AUTH_HEADERS", True)
 
 
 @pytest.fixture()
@@ -54,9 +42,53 @@ def client():
         database_module.SessionLocal = original_session_local
 
 
-def human_headers(member_id: str, member_name: str = "Test Human") -> dict[str, str]:
-    """Auth headers for a human member; auto-creates the member on first use."""
-    return {"X-Dev-Member-Id": member_id, "X-Dev-Member-Name": member_name}
+_TEST_PASSWORD = "test-password-123"
+
+
+def _human_auth(client, key: str) -> dict:
+    """Register (once per client per key) a human via the real /auth/register.
+
+    Results are cached on the TestClient instance so repeated calls with the
+    same key reuse one member — mirroring how the old dev-header helper
+    auto-created a member on first use and reused it afterwards.
+    """
+    cache = getattr(client, "_human_auth_cache", None)
+    if cache is None:
+        cache = {}
+        client._human_auth_cache = cache
+    if key not in cache:
+        response = client.post(
+            "/auth/register",
+            json={
+                "email": f"{key}@test.example",
+                "password": _TEST_PASSWORD,
+                "first_name": "Test",
+                "last_name": key,
+                "display_name": f"Test {key}",
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        cache[key] = {
+            "access_token": body["access_token"],
+            "member_id": body["member"]["member_id"],
+        }
+    return cache[key]
+
+
+def human_headers(client, key: str = "m_1") -> dict[str, str]:
+    """Bearer auth headers for a test human; auto-registers on first use."""
+    return {"Authorization": f"Bearer {_human_auth(client, key)['access_token']}"}
+
+
+def human_member_id(client, key: str = "m_1") -> str:
+    """The real member_id of a test human; auto-registers on first use."""
+    return _human_auth(client, key)["member_id"]
+
+
+def human_token(client, key: str = "m_1") -> str:
+    """A raw access token for a test human (for WebSocket ?token= URLs)."""
+    return _human_auth(client, key)["access_token"]
 
 
 @pytest.fixture()

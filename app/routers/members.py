@@ -6,7 +6,13 @@ from app.authorization import authorize_management_action
 from app.database import get_db
 from app.errors import NotFoundError
 from app.models import Member
-from app.schemas import MemberOut, MemberRegisterIn, MemberRegisterOut
+from app.schemas import (
+    MemberOut,
+    MemberProfileUpdate,
+    MemberRegisterIn,
+    MemberRegisterOut,
+    MemberSelfOut,
+)
 
 router = APIRouter()
 
@@ -67,13 +73,36 @@ def search_members(
     return query.all()
 
 
-@router.get("/member", response_model=MemberOut)
+@router.get("/member", response_model=MemberSelfOut)
 def get_member(
     member_id: str = Query(alias="id"),
     current_member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
-) -> Member:
+) -> MemberSelfOut:
+    """A member's profile. Email is included only when fetching your own."""
     member = db.get(Member, member_id)
     if member is None:
         raise NotFoundError(f"Member '{member_id}' not found")
-    return member
+    profile = MemberSelfOut.model_validate(member)
+    if member.member_id != current_member.member_id:
+        profile.email = None
+    return profile
+
+
+@router.patch("/members/me", response_model=MemberSelfOut)
+def update_my_profile(
+    body: MemberProfileUpdate,
+    current_member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> MemberSelfOut:
+    """Update the caller's own profile fields (humans only)."""
+    authorize_management_action(current_member)
+    updates = body.model_dump(exclude_unset=True)
+    if "display_name" in updates:
+        current_member.member_name = updates.pop("display_name")
+    for field, value in updates.items():
+        setattr(current_member, field, value)
+    db.add(current_member)
+    db.commit()
+    db.refresh(current_member)
+    return MemberSelfOut.model_validate(current_member)

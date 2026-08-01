@@ -42,3 +42,18 @@ class AlreadyAMemberError(AppError):
 class InvalidMessageError(AppError):
     status_code = 422
     code = "invalid_message"
+
+
+class InvalidCredentialsError(AppError):
+    status_code = 401
+    code = "invalid_credentials"
+
+
+class InvalidTokenError(AppError):
+    status_code = 401
+    code = "invalid_token"
+
+
+class EmailTakenError(AppError):
+    status_code = 409
+    code = "email_taken"

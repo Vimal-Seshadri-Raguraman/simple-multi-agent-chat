@@ -1,9 +1,11 @@
-from tests.conftest import human_headers
+from tests.conftest import human_headers, human_member_id
 
 
 def _create_workspace(client, member_id="m_1"):
     return client.post(
-        "/workspaces", json={"workspace_name": "Acme"}, headers=human_headers(member_id)
+        "/workspaces",
+        json={"workspace_name": "Acme"},
+        headers=human_headers(client, member_id),
     ).json()
 
 
@@ -12,7 +14,7 @@ def test_human_can_create_channel(client):
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
     assert response.json()["channel_name"] == "general"
@@ -21,7 +23,9 @@ def test_human_can_create_channel(client):
 def test_bot_app_cannot_create_channel(client):
     workspace = _create_workspace(client)
     bot = client.post(
-        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+        "/members/bots",
+        json={"member_name": "Zapier"},
+        headers=human_headers(client, "m_1"),
     ).json()
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
@@ -35,7 +39,7 @@ def test_create_channel_in_nonexistent_workspace_404s(client):
     response = client.post(
         "/workspaces/does-not-exist/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 404
 
@@ -45,17 +49,17 @@ def test_list_channels(client):
     # Add creator to workspace members
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": "m_1"},
-        headers=human_headers("m_1"),
+        json={"member_id": human_member_id(client, "m_1")},
+        headers=human_headers(client, "m_1"),
     )
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels",
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
     assert len(response.json()) == 1
@@ -72,7 +76,7 @@ def test_list_channels_requires_workspace_membership(client):
     outsider_agent = client.post(
         "/members/agents",
         json={"member_name": "Outsider"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels",
@@ -87,16 +91,18 @@ def test_add_channel_member_requires_workspace_membership_first(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     agent = client.post(
-        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
     ).json()
 
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "not_a_workspace_member"
@@ -107,21 +113,23 @@ def test_add_channel_member_succeeds_once_in_workspace(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     agent = client.post(
-        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
     ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
 
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
 
@@ -131,18 +139,22 @@ def test_bot_app_cannot_add_channel_member(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     bot = client.post(
-        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+        "/members/bots",
+        json={"member_name": "Zapier"},
+        headers=human_headers(client, "m_1"),
     ).json()
     agent = client.post(
-        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
     ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
 
     response = client.post(
@@ -159,23 +171,29 @@ def test_adding_same_channel_member_twice_conflicts(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     agent = client.post(
-        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
     ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     add_url = f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members"
     client.post(
-        add_url, json={"member_id": agent["member_id"]}, headers=human_headers("m_1")
+        add_url,
+        json={"member_id": agent["member_id"]},
+        headers=human_headers(client, "m_1"),
     )
 
     response = client.post(
-        add_url, json={"member_id": agent["member_id"]}, headers=human_headers("m_1")
+        add_url,
+        json={"member_id": agent["member_id"]},
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "already_a_member"
@@ -186,37 +204,39 @@ def test_list_channel_members(client):
     # Add creator to workspace members
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": "m_1"},
-        headers=human_headers("m_1"),
+        json={"member_id": human_member_id(client, "m_1")},
+        headers=human_headers(client, "m_1"),
     )
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     agent = client.post(
-        "/members/agents", json={"member_name": "Bot"}, headers=human_headers("m_1")
+        "/members/agents",
+        json={"member_name": "Bot"},
+        headers=human_headers(client, "m_1"),
     ).json()
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     # Add creator to channel members
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
-        json={"member_id": "m_1"},
-        headers=human_headers("m_1"),
+        json={"member_id": human_member_id(client, "m_1")},
+        headers=human_headers(client, "m_1"),
     )
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
 
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
     member_ids = [m["member_id"] for m in response.json()]
@@ -228,7 +248,7 @@ def test_list_channel_members_requires_auth(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members"
@@ -241,18 +261,18 @@ def test_list_channel_members_requires_channel_membership(client):
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     outsider_agent = client.post(
         "/members/agents",
         json={"member_name": "Outsider"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     # Add outsider to workspace but not to channel
     client.post(
         f"/workspaces/{workspace['workspace_id']}/members",
         json={"member_id": outsider_agent["member_id"]},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     )
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",

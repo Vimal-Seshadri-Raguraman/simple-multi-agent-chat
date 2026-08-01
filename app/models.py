@@ -62,6 +62,15 @@ class Member(Base):
         String, nullable=False
     )  # human | agent | bot_app
     api_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    email: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    company: Mapped[str | None] = mapped_column(String, nullable=True)
+    occupation: Mapped[str | None] = mapped_column(String, nullable=True)
+    job_role: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
@@ -128,6 +137,25 @@ class Message(Base):
         String, ForeignKey("members.member_id"), nullable=False
     )
     message_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False
+    )
+
+
+class RefreshToken(Base):
+    """A DB-backed opaque refresh token (stored only as a SHA-256 hash).
+
+    One row per issued refresh token. Rows are deleted on rotation
+    (/auth/refresh), logout, or when found expired.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    member_id: Mapped[str] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )

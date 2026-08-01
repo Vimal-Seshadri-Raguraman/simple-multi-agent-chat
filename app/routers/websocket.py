@@ -1,7 +1,7 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 import app.database as database
-from app.auth import resolve_member
+from app.auth import resolve_ws_credential
 from app.models import Channel, ChannelMember
 from app.ws_manager import manager
 
@@ -21,12 +21,10 @@ async def channel_websocket(
     # closed before entering the message-receive loop, so it isn't held checked
     # out of the connection pool for the entire lifetime of the WebSocket.
     with database.SessionLocal() as db:
-        member = resolve_member(
-            db,
-            websocket.headers.get("x-dev-member-id"),
-            websocket.headers.get("x-dev-member-name"),
-            websocket.headers.get("x-api-key"),
+        raw_credential = websocket.query_params.get("token") or websocket.headers.get(
+            "x-api-key"
         )
+        member = resolve_ws_credential(db, raw_credential)
         if member is None:
             await websocket.close(code=4401)
             return
