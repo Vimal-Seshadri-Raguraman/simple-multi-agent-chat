@@ -73,3 +73,21 @@ def test_default_secret_key_rejected_in_production(monkeypatch):
 def test_default_secret_key_allowed_in_development(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
     check_secret_key_is_safe_for_environment()  # must not raise
+
+
+def test_short_secret_key_rejected_in_production(monkeypatch):
+    """HS256 secrets under 32 bytes are brute-forceable; production must refuse them."""
+    import app.security as security_module
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(security_module, "SECRET_KEY", "real-but-too-short")
+    with pytest.raises(RuntimeError):
+        check_secret_key_is_safe_for_environment()
+
+
+def test_long_secret_key_allowed_in_production(monkeypatch):
+    import app.security as security_module
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(security_module, "SECRET_KEY", "x" * 32)
+    check_secret_key_is_safe_for_environment()  # must not raise

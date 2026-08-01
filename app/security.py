@@ -21,8 +21,11 @@ REFRESH_TOKEN_TTL_DAYS: int = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
 _JWT_ALGORITHM = "HS256"
 
 
+_MIN_SECRET_KEY_BYTES = 32
+
+
 def check_secret_key_is_safe_for_environment() -> None:
-    """Fail fast if a production-like deployment is using the default JWT secret.
+    """Fail fast if a production-like deployment is using an unsafe JWT secret.
 
     `SECRET_KEY` silently falling back to the publicly-known string
     "change-me-in-production" means anyone can forge valid JWTs against a
@@ -33,14 +36,28 @@ def check_secret_key_is_safe_for_environment() -> None:
     allowed to run with the default secret. Anything else -- including a
     typo'd or unset `ENVIRONMENT` in a real deployment -- raises instead of
     silently signing forgeable tokens.
+
+    Production-like environments must also use a secret of at least 32
+    bytes: RFC 7518 Section 3.2 requires HS256 keys no shorter than the
+    hash output, and short secrets are realistically brute-forceable
+    offline from any captured token.
     """
     environment = os.getenv("ENVIRONMENT", "development")
-    if environment not in {"development", "test"} and SECRET_KEY == _DEFAULT_SECRET_KEY:
+    if environment in {"development", "test"}:
+        return
+    if SECRET_KEY == _DEFAULT_SECRET_KEY:
         raise RuntimeError(
             "SECRET_KEY is unset (using the public default "
             f"'{_DEFAULT_SECRET_KEY}') while ENVIRONMENT="
             f"'{environment}'. Set a real SECRET_KEY before running in this "
             "environment."
+        )
+    if len(SECRET_KEY.encode("utf-8")) < _MIN_SECRET_KEY_BYTES:
+        raise RuntimeError(
+            f"SECRET_KEY is only {len(SECRET_KEY.encode('utf-8'))} bytes; "
+            f"HS256 requires at least {_MIN_SECRET_KEY_BYTES} bytes "
+            f"(RFC 7518) in ENVIRONMENT='{environment}'. Generate one with: "
+            'python -c "import secrets; print(secrets.token_urlsafe(48))"'
         )
 
 
