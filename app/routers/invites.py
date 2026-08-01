@@ -61,7 +61,10 @@ def create_invite(
     _require_human_workspace_member(db, member, workspace_id)
 
     if body.invite_type == "email":
-        assert body.email is not None  # guaranteed by schema validator
+        if body.email is None:
+            # Guaranteed by InviteCreateIn's model validator; an `assert` here
+            # would silently vanish under `python -O`, so raise explicitly.
+            raise ValueError("email is required for invite_type 'email'")
         email = body.email.lower()
         existing_member = (
             db.query(WorkspaceMember)
@@ -191,7 +194,10 @@ def accept_invite(
     workspace = db.get(Workspace, invite.workspace_id)
     db.delete(invite)
     db.commit()
-    assert workspace is not None  # FK: invite rows always point at a workspace
+    if workspace is None:
+        # FK guarantees invite rows always point at a workspace; an `assert`
+        # here would silently vanish under `python -O`, so raise explicitly.
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     join_workspace(db, workspace, member.member_id)  # raises 409 if already in
     return workspace
 
@@ -225,6 +231,9 @@ def join_by_code(
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     workspace = db.get(Workspace, invite.workspace_id)
-    assert workspace is not None  # FK: invite rows always point at a workspace
+    if workspace is None:
+        # FK guarantees invite rows always point at a workspace; an `assert`
+        # here would silently vanish under `python -O`, so raise explicitly.
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     join_workspace(db, workspace, member.member_id)  # 409 if already in; code survives
     return workspace

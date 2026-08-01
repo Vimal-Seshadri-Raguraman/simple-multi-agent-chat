@@ -27,25 +27,31 @@ def create_workspace(
 ) -> Workspace:
     """Create a workspace with a default 'general' channel; creator joins both."""
     authorize_management_action(member)
-    # `default=new_id` on the mapped columns only fires at flush time, so the
-    # ids aren't populated on these in-memory objects yet; generate them
-    # explicitly up front so `general.channel_id` can be wired onto
-    # `workspace.default_channel_id` before the single commit below.
+    # workspaces.default_channel_id and channels.workspace_id form an FK
+    # cycle. Under SQLite `PRAGMA foreign_keys=ON` (the production engine
+    # config in app/database.py), a single `add_all([...])` + commit lets
+    # SQLAlchemy's topological insert ordering pick either table first --
+    # when it picks `channels` before its parent `workspaces` row exists,
+    # that's an IntegrityError on every workspace creation. Sequential
+    # flushes make the insert order explicit while keeping this atomic: a
+    # flush is not a commit, so a failure at any point below rolls back the
+    # whole transaction (nothing is visible to other sessions until the
+    # final `db.commit()`).
     workspace = Workspace(workspace_id=new_id(), workspace_name=body.workspace_name)
+    db.add(workspace)
+    db.flush()  # workspace row now exists; default_channel_id stays NULL for now
+
     general = Channel(
         channel_id=new_id(), workspace_id=workspace.workspace_id, channel_name="general"
     )
+    db.add(general)
+    db.flush()  # channel row now exists, satisfying the FK we're about to set
+
     workspace.default_channel_id = general.channel_id
-    db.add_all(
-        [
-            workspace,
-            general,
-            WorkspaceMember(
-                workspace_id=workspace.workspace_id, member_id=member.member_id
-            ),
-            ChannelMember(channel_id=general.channel_id, member_id=member.member_id),
-        ]
+    db.add(
+        WorkspaceMember(workspace_id=workspace.workspace_id, member_id=member.member_id)
     )
+    db.add(ChannelMember(channel_id=general.channel_id, member_id=member.member_id))
     db.commit()
     db.refresh(workspace)
     return workspace
