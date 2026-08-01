@@ -172,11 +172,12 @@ def test_logout_cannot_kill_another_members_token(client):
     ).json()
     # A tries to revoke B's refresh token: 200 (idempotent, no leak) but B's
     # token must still work afterwards.
-    client.post(
+    logout_response = client.post(
         "/auth/logout",
         json={"refresh_token": tokens_b["refresh_token"]},
         headers={"Authorization": f"Bearer {tokens_a['access_token']}"},
     )
+    assert logout_response.status_code == 200
     response = client.post(
         "/auth/refresh", json={"refresh_token": tokens_b["refresh_token"]}
     )
