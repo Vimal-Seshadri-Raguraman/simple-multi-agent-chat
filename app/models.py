@@ -81,6 +81,9 @@ class Workspace(Base):
 
     workspace_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     workspace_name: Mapped[str] = mapped_column(String, nullable=False)
+    default_channel_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("channels.channel_id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
@@ -159,3 +162,35 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
+
+
+class WorkspaceInvite(Base):
+    """A pending invitation into a workspace.
+
+    Two kinds, discriminated by invite_type:
+    - "email": targets one address (lowercased); no expiry; deleted on
+      accept/decline/revoke.
+    - "code": shareable multi-use code stored in PLAINTEXT — a deliberate
+      deviation from the hash-everything pattern, because codes must be
+      re-viewable and listable by workspace members. Bounded exposure:
+      workspace membership only, revocable, 7-day expiry.
+    """
+
+    __tablename__ = "workspace_invites"
+
+    invite_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(
+        String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
+    )
+    invite_type: Mapped[str] = mapped_column(String, nullable=False)  # email | code
+    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    code: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
+    created_by: Mapped[str] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
