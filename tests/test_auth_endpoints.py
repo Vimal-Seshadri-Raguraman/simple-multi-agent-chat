@@ -1,7 +1,5 @@
 """Endpoint tests for /auth/register and /auth/login."""
 
-import pytest
-
 REGISTER_BODY = {
     "email": "Alice@Example.com",
     "password": "s3cret-password",
@@ -32,9 +30,6 @@ def test_register_with_explicit_display_name(client):
     assert member["company"] == "Wonderland Inc"
 
 
-@pytest.mark.xfail(
-    reason="Bearer resolution lands in the auth cutover task", strict=True
-)
 def test_register_token_works_immediately(client):
     tokens = client.post("/auth/register", json=REGISTER_BODY).json()
     response = client.get(
@@ -146,9 +141,6 @@ def test_expired_refresh_token_rejected(client):
         assert db.get(RefreshToken, hash_token(tokens["refresh_token"])) is None
 
 
-@pytest.mark.xfail(
-    reason="Bearer resolution lands in the auth cutover task", strict=True
-)
 def test_logout_kills_refresh_token(client):
     tokens = _register(client)
     response = client.post(

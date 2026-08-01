@@ -1,16 +1,18 @@
-import hashlib
-import os
+"""Authentication resolution: the single place all credentials are checked.
+
+Humans authenticate with `Authorization: Bearer <JWT>` (obtained from
+/auth/login or /auth/register); agents and bot_apps use `X-API-Key`.
+"""
+
 import secrets
 
 from fastapi import Depends, Header
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.errors import UnauthorizedError
+from app.errors import InvalidTokenError, UnauthorizedError
 from app.models import Member
-
-# Security: dev headers are only allowed when explicitly enabled via environment
-ALLOW_DEV_AUTH_HEADERS = os.getenv("ALLOW_DEV_AUTH_HEADERS", "false").lower() == "true"
+from app.security import decode_access_token, hash_token
 
 
 def generate_api_key() -> str:
@@ -20,48 +22,59 @@ def generate_api_key() -> str:
 
 def hash_api_key(raw_key: str) -> str:
     """One-way hash of an API key, for storage and lookup (never store the raw key)."""
-    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return hash_token(raw_key)
 
 
 def resolve_member(
     db: Session,
-    dev_member_id: str | None,
-    dev_member_name: str | None,
+    bearer_token: str | None,
     api_key: str | None,
 ) -> Member | None:
+    """Single auth-resolution point: Bearer JWT (humans) or API key (agents/bots).
+
+    Raises InvalidTokenError when a bearer token is presented but is
+    expired, malformed, or references a deleted member. Returns None only
+    when no valid credential was presented at all.
     """
-    Single auth-resolution point. Today: dev header or API key.
-    Later: swap this function's body for Entra ID JWT validation — no caller changes.
-    """
-    if dev_member_id and ALLOW_DEV_AUTH_HEADERS:
-        member = db.get(Member, dev_member_id)
+    if bearer_token:
+        member_id = decode_access_token(bearer_token)
+        if member_id is None:
+            raise InvalidTokenError("Access token is invalid or expired")
+        member = db.get(Member, member_id)
         if member is None:
-            member = Member(
-                member_id=dev_member_id,
-                member_name=dev_member_name or dev_member_id,
-                member_type="human",
-            )
-            db.add(member)
-            db.commit()
-            db.refresh(member)
+            raise InvalidTokenError("Access token references an unknown member")
         return member
 
     if api_key:
-        key_hash = hash_api_key(api_key)
-        return db.query(Member).filter(Member.api_key_hash == key_hash).first()
+        return (
+            db.query(Member).filter(Member.api_key_hash == hash_token(api_key)).first()
+        )
 
     return None
 
 
 def get_current_member(
-    x_dev_member_id: str | None = Header(default=None),
-    x_dev_member_name: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> Member:
-    member = resolve_member(db, x_dev_member_id, x_dev_member_name, x_api_key)
+    """FastAPI dependency: the authenticated member, or 401."""
+    bearer_token: str | None = None
+    if authorization is not None and authorization.lower().startswith("bearer "):
+        bearer_token = authorization[7:]
+    member = resolve_member(db, bearer_token, x_api_key)
     if member is None:
         raise UnauthorizedError(
-            "Missing or invalid X-Dev-Member-Id or X-API-Key header"
+            "Missing or invalid Authorization bearer token or X-API-Key header"
         )
     return member
+
+
+def resolve_ws_credential(db: Session, raw: str | None) -> Member | None:
+    """Resolve a WebSocket credential: JWT first, then API-key lookup."""
+    if not raw:
+        return None
+    member_id = decode_access_token(raw)
+    if member_id is not None:
+        return db.get(Member, member_id)
+    return db.query(Member).filter(Member.api_key_hash == hash_token(raw)).first()

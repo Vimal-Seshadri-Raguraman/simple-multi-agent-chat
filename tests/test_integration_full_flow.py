@@ -1,4 +1,4 @@
-from tests.conftest import human_headers
+from tests.conftest import human_headers, human_member_id
 
 
 def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
@@ -6,36 +6,42 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
     workspace = client.post(
         "/workspaces",
         json={"workspace_name": "Acme"},
-        headers=human_headers("m_1", "Alice"),
+        headers=human_headers(client, "m_1"),
     ).json()
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers("m_1", "Alice"),
+        headers=human_headers(client, "m_1"),
     ).json()
 
     # Register an agent and a bot_app
     agent = client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
-        headers=human_headers("m_1"),
+        headers=human_headers(client, "m_1"),
     ).json()
     bot = client.post(
-        "/members/bots", json={"member_name": "Zapier"}, headers=human_headers("m_1")
+        "/members/bots",
+        json={"member_name": "Zapier"},
+        headers=human_headers(client, "m_1"),
     ).json()
 
     # Add the human, agent, and bot_app to the workspace, then the channel
-    for member_id in ("m_1", agent["member_id"], bot["member_id"]):
+    for member_id in (
+        human_member_id(client, "m_1"),
+        agent["member_id"],
+        bot["member_id"],
+    ):
         resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/members",
             json={"member_id": member_id},
-            headers=human_headers("m_1", "Alice"),
+            headers=human_headers(client, "m_1"),
         )
         assert resp.status_code == 200
         resp = client.post(
             f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
             json={"member_id": member_id},
-            headers=human_headers("m_1", "Alice"),
+            headers=human_headers(client, "m_1"),
         )
         assert resp.status_code == 200
 
@@ -43,7 +49,7 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
     resp = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
         json={"message_text": "hi from human"},
-        headers=human_headers("m_1", "Alice"),
+        headers=human_headers(client, "m_1"),
     )
     assert resp.status_code == 200
     resp = client.post(
@@ -63,7 +69,7 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
         params={"limit": 15},
-        headers=human_headers("m_1", "Alice"),
+        headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
     messages = response.json()
@@ -73,7 +79,7 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
         "hi from bot",
     ]
     # Verify each message is attributed to the correct sender
-    assert messages[0]["Sender"]["member_id"] == "m_1"
+    assert messages[0]["Sender"]["member_id"] == human_member_id(client, "m_1")
     assert messages[1]["Sender"]["member_id"] == agent["member_id"]
     assert messages[2]["Sender"]["member_id"] == bot["member_id"]
     # Verify wire schema and workspace/channel context
