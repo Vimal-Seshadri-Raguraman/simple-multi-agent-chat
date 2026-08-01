@@ -5,12 +5,15 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_member
 from app.database import get_db
-from app.errors import EmailTakenError, InvalidCredentialsError
+from app.errors import EmailTakenError, InvalidCredentialsError, InvalidTokenError
 from app.models import Member, RefreshToken, utcnow
 from app.schemas import (
     LoginIn,
+    LogoutIn,
     MemberSelfOut,
+    RefreshIn,
     RegisterIn,
     RegisterOut,
     TokenPairOut,
@@ -90,3 +93,39 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> TokenPairOut:
     ):
         raise InvalidCredentialsError(_LOGIN_FAILED_MESSAGE)
     return _issue_token_pair(db, member)
+
+
+@router.post("/auth/refresh", response_model=TokenPairOut)
+def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
+    """Rotate a refresh token: revoke the presented one, issue a new pair."""
+    row = db.get(RefreshToken, hash_token(body.refresh_token))
+    if row is None:
+        raise InvalidTokenError("Refresh token is invalid or expired")
+    if row.expires_at < utcnow():
+        db.delete(row)
+        db.commit()
+        raise InvalidTokenError("Refresh token is invalid or expired")
+    member = db.get(Member, row.member_id)
+    db.delete(row)
+    db.commit()
+    assert member is not None  # FK guarantees the owner exists
+    return _issue_token_pair(db, member)
+
+
+@router.post("/auth/logout")
+def logout(
+    body: LogoutIn,
+    current_member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Revoke one refresh token belonging to the caller.
+
+    Idempotent: unknown or already-revoked tokens still return 200 so the
+    response can't be used to probe token validity. The access token remains
+    valid until its natural expiry (accepted JWT tradeoff, see spec).
+    """
+    row = db.get(RefreshToken, hash_token(body.refresh_token))
+    if row is not None and row.member_id == current_member.member_id:
+        db.delete(row)
+        db.commit()
+    return {"status": "logged_out"}

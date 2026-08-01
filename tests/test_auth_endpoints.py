@@ -87,3 +87,105 @@ def test_login_wrong_password_and_unknown_email_identical(client):
     assert wrong_password.status_code == unknown_email.status_code == 401
     assert wrong_password.json() == unknown_email.json()
     assert wrong_password.json()["error"]["code"] == "invalid_credentials"
+
+
+def _register(client) -> dict:
+    return client.post("/auth/register", json=REGISTER_BODY).json()
+
+
+def test_refresh_rotates_tokens(client):
+    tokens = _register(client)
+    response = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert response.status_code == 200
+    new_tokens = response.json()
+    assert new_tokens["refresh_token"] != tokens["refresh_token"]
+
+    # The old refresh token was rotated away and must now be rejected.
+    replay = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+    assert replay.json()["error"]["code"] == "invalid_token"
+
+    # The new one works.
+    again = client.post(
+        "/auth/refresh", json={"refresh_token": new_tokens["refresh_token"]}
+    )
+    assert again.status_code == 200
+
+
+def test_refresh_with_garbage_token_rejected(client):
+    response = client.post("/auth/refresh", json={"refresh_token": "not-a-token"})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_token"
+
+
+def test_expired_refresh_token_rejected(client):
+    """An expired row is rejected and deleted when presented."""
+    from datetime import timedelta
+
+    import app.database as database_module
+    from app.models import RefreshToken
+    from app.models import utcnow
+    from app.security import hash_token
+
+    tokens = _register(client)
+    with database_module.SessionLocal() as db:
+        row = db.get(RefreshToken, hash_token(tokens["refresh_token"]))
+        row.expires_at = utcnow() - timedelta(seconds=1)
+        db.add(row)
+        db.commit()
+
+    response = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert response.status_code == 401
+    with database_module.SessionLocal() as db:
+        assert db.get(RefreshToken, hash_token(tokens["refresh_token"])) is None
+
+
+@pytest.mark.xfail(
+    reason="Bearer resolution lands in the auth cutover task", strict=True
+)
+def test_logout_kills_refresh_token(client):
+    tokens = _register(client)
+    response = client.post(
+        "/auth/logout",
+        json={"refresh_token": tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "logged_out"}
+
+    replay = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+
+
+def test_logout_requires_auth(client):
+    tokens = _register(client)
+    response = client.post(
+        "/auth/logout", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert response.status_code == 401
+
+
+def test_logout_cannot_kill_another_members_token(client):
+    tokens_a = _register(client)
+    tokens_b = client.post(
+        "/auth/register", json=dict(REGISTER_BODY, email="bob@example.com")
+    ).json()
+    # A tries to revoke B's refresh token: 200 (idempotent, no leak) but B's
+    # token must still work afterwards.
+    client.post(
+        "/auth/logout",
+        json={"refresh_token": tokens_b["refresh_token"]},
+        headers={"Authorization": f"Bearer {tokens_a['access_token']}"},
+    )
+    response = client.post(
+        "/auth/refresh", json={"refresh_token": tokens_b["refresh_token"]}
+    )
+    assert response.status_code == 200
