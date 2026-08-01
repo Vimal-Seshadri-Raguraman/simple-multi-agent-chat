@@ -7,7 +7,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database import init_db
 from app.errors import AppError
-from app.routers import channels, members, messages, websocket, workspaces
+from app.routers import auth, channels, members, messages, websocket, workspaces
 
 
 @asynccontextmanager
@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Simple Multi-Agent Chat", lifespan=lifespan)
 
+app.include_router(auth.router)
 app.include_router(members.router)
 app.include_router(workspaces.router)
 app.include_router(channels.router)
