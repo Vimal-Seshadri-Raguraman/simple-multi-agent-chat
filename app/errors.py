@@ -62,3 +62,13 @@ class EmailTakenError(AppError):
 class InvalidInviteError(AppError):
     status_code = 404
     code = "invalid_invite"
+
+
+class NotWorkspaceAdminError(AppError):
+    status_code = 403
+    code = "not_workspace_admin"
+
+
+class LastAdminError(AppError):
+    status_code = 409
+    code = "last_admin"

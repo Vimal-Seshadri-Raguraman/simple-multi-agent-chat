@@ -186,6 +186,18 @@ class InviteCreateIn(BaseModel):
         return self
 
 
+class WorkspaceVisibilityIn(BaseModel):
+    """Admin-only visibility toggle for a workspace."""
+
+    visibility: Literal["public", "private"]
+
+
+class MemberAdminIn(BaseModel):
+    """Admin-only promotion/demotion of a workspace member."""
+
+    is_admin: bool
+
+
 class InviteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     invite_id: str

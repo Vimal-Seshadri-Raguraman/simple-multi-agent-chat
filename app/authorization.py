@@ -1,6 +1,11 @@
 from sqlalchemy.orm import Session
 
-from app.errors import ForbiddenMemberTypeError, NotAMemberError, NotFoundError
+from app.errors import (
+    ForbiddenMemberTypeError,
+    NotAMemberError,
+    NotFoundError,
+    NotWorkspaceAdminError,
+)
 from app.models import ChannelMember, Member
 
 
@@ -47,3 +52,12 @@ def require_same_workspace(member: Member, workspace_id: str) -> None:
     """
     if member.workspace_id != workspace_id:
         raise NotFoundError(f"Workspace '{workspace_id}' not found")
+
+
+def require_workspace_admin(member: Member, workspace_id: str) -> None:
+    """Admin gate: wall first (uniform 404 for outsiders), then the flag."""
+    require_same_workspace(member, workspace_id)
+    if not member.is_admin:
+        raise NotWorkspaceAdminError(
+            f"Member '{member.member_id}' is not an admin of this workspace"
+        )
