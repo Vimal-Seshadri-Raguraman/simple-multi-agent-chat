@@ -224,3 +224,6 @@ Claude.md
 .env
 .smac/
 project.json
+docs/
+rough.*
+rough*
