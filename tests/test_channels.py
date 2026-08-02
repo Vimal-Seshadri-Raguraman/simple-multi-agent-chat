@@ -83,8 +83,8 @@ def test_add_channel_member_requires_workspace_membership_first(client):
         json={"member_id": outsider["member_id"]},
         headers=founder_headers(client, "w1"),
     )
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "not_a_workspace_member"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 def test_add_channel_member_succeeds_once_in_workspace(client):

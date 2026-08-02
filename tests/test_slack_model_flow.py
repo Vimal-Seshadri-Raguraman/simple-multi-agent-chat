@@ -6,8 +6,6 @@ from starlette.websockets import WebSocketDisconnect
 from tests.conftest import (
     founder_auth,
     founder_headers,
-    member_auth,
-    member_headers,
     member_token,
 )
 

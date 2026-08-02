@@ -8,7 +8,7 @@ from app.authorization import (
     require_same_workspace,
 )
 from app.database import get_db
-from app.errors import AlreadyAMemberError, NotAWorkspaceMemberError, NotFoundError
+from app.errors import AlreadyAMemberError, NotFoundError
 from app.models import Channel, ChannelMember, Member
 from app.schemas import ChannelCreate, ChannelOut, MemberIdIn, MemberOut
 
@@ -74,10 +74,7 @@ def add_channel_member(
         raise NotFoundError(f"Member '{body.member_id}' not found")
 
     if target.workspace_id != workspace_id:
-        raise NotAWorkspaceMemberError(
-            f"Member '{body.member_id}' must belong to workspace '{workspace_id}' "
-            "before joining one of its channels"
-        )
+        raise NotFoundError(f"Member '{body.member_id}' not found")
 
     exists = (
         db.query(ChannelMember)

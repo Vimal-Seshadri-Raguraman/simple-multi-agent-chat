@@ -13,10 +13,6 @@ from pydantic import (
 from app.models import Channel, Member, Message, Workspace
 
 
-class WorkspaceCreate(BaseModel):
-    workspace_name: str
-
-
 class WorkspaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     workspace_id: str
@@ -155,6 +151,17 @@ class FoundWorkspaceIn(RegisterIn):
 
     workspace_name: str = Field(min_length=1)
     visibility: Literal["public", "private"] = "private"
+
+    @field_validator("workspace_name", mode="before")
+    @classmethod
+    def _reject_whitespace_only_workspace_name(cls, value: str) -> str:
+        """Reject whitespace-only workspace names; strip and store the cleaned name."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("workspace_name must not be empty or whitespace-only")
+            return stripped
+        return value
 
 
 class CodeRegisterIn(RegisterIn):
