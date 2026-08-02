@@ -209,8 +209,14 @@ def register_into_workspace(
         )
         if seat is None:
             raise NotFoundError(f"Workspace '{workspace_id}' not found")
-        result = _register_account(db, workspace, body)
+        # Delete the seat *before* creating the account, not after: the delete
+        # is only staged here (autoflush is off), so it rides along with
+        # _register_account's single commit as one atomic transaction. If
+        # create_member_account raises (e.g. EmailTakenError), nothing has
+        # been flushed yet, the request's session is closed without a commit,
+        # and the seat survives untouched -- no window where a crash (or a
+        # failed registration) could burn a seat without an account to show
+        # for it.
         db.delete(seat)
-        db.commit()
-        return result
+        return _register_account(db, workspace, body)
     return _register_account(db, workspace, body)

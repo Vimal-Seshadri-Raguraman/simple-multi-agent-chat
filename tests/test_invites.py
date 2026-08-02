@@ -289,3 +289,66 @@ def test_private_workspace_registration_without_seat_404s(client):
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+def test_failed_registration_does_not_consume_seat(client):
+    """A registration that fails after the seat is found must not burn it:
+    seat deletion and account creation are one transaction, not two.
+
+    create_invite already blocks inviting an email that has an account in
+    this workspace, so the only way to reach _register_account with a seat
+    AND a pre-existing account for the same email is to simulate the race
+    directly against the DB (a seat created for an email that -- by the time
+    registration runs -- already belongs to a member).
+    """
+    import app.database as database_module
+    from app.models import WorkspaceInvite
+
+    founder = founder_auth(client, "w1", visibility="private")
+    headers = founder_headers(client, "w1", visibility="private")
+
+    # racer@test.example already has an account in this workspace.
+    client.post(
+        f"/workspaces/{founder['workspace_id']}/invites",
+        json={"invite_type": "email", "email": "racer@test.example"},
+        headers=headers,
+    )
+    client.post(
+        f"/workspaces/{founder['workspace_id']}/register",
+        json={
+            "email": "racer@test.example",
+            "password": "s3cret-password",
+            "first_name": "Ra",
+            "last_name": "Cer",
+        },
+    )
+
+    # Simulate the race: a stray seat for that same, now-taken email exists
+    # (bypassing create_invite's existing-member check, which would normally
+    # forbid this).
+    with database_module.SessionLocal() as db:
+        stray_seat = WorkspaceInvite(
+            workspace_id=founder["workspace_id"],
+            invite_type="email",
+            email="racer@test.example",
+            created_by=founder["member_id"],
+        )
+        db.add(stray_seat)
+        db.commit()
+        seat_id = stray_seat.invite_id
+
+    response = client.post(
+        f"/workspaces/{founder['workspace_id']}/register",
+        json={
+            "email": "racer@test.example",
+            "password": "another-password",
+            "first_name": "Ra",
+            "last_name": "Cer",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "email_taken"
+
+    # The seat must have survived the failed registration.
+    with database_module.SessionLocal() as db:
+        assert db.get(WorkspaceInvite, seat_id) is not None
