@@ -21,6 +21,7 @@ class WorkspaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     workspace_id: str
     workspace_name: str
+    visibility: str
 
 
 class ChannelCreate(BaseModel):
@@ -128,6 +129,7 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
+    workspace_id: str
     email: EmailStr
     password: str
 
@@ -141,10 +143,24 @@ class TokenPairOut(BaseModel):
     expires_in: int
 
 
-class RegisterOut(TokenPairOut):
-    """Registration response: the new member's profile plus a token pair."""
+class FoundWorkspaceIn(RegisterIn):
+    """Found a workspace: workspace details + the founder's account in one body."""
+
+    workspace_name: str = Field(min_length=1)
+    visibility: Literal["public", "private"] = "private"
+
+
+class CodeRegisterIn(RegisterIn):
+    """Register into a workspace identified by a shareable invite code."""
+
+    code: str = Field(min_length=1)
+
+
+class WorkspaceAuthOut(TokenPairOut):
+    """Every account-birth endpoint returns this: you're signed up AND logged in."""
 
     member: MemberSelfOut
+    workspace: WorkspaceOut
 
 
 class RefreshIn(BaseModel):
@@ -180,25 +196,6 @@ class InviteOut(BaseModel):
     created_by: str
     created_at: datetime
     expires_at: datetime | None
-
-
-class InvitedByOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    member_id: str
-    member_name: str
-
-
-class PendingInviteOut(BaseModel):
-    """An invite as seen by its target: enough context to decide."""
-
-    invite_id: str
-    workspace: WorkspaceOut
-    invited_by: InvitedByOut
-    created_at: datetime
-
-
-class JoinByCodeIn(BaseModel):
-    code: str = Field(min_length=1)
 
 
 def build_message_payload(

@@ -105,3 +105,20 @@ def test_admin_flag_and_null_default_channel(db_session):
     assert member.is_admin is True
     assert member.member_name == "The Founder"
     assert db_session.query(ChannelMember).count() == 0
+
+
+def test_does_not_commit_caller_must(db_session):
+    """create_member_account flushes but never commits; a caller rollback
+    must leave no trace, proving the service never commits on its own."""
+    ws = _workspace(db_session)
+    member = create_member_account(
+        db_session,
+        ws,
+        email="rollback@test.example",
+        password="password-123",
+        first_name="Roll",
+        last_name="Back",
+    )
+    member_id = member.member_id
+    db_session.rollback()
+    assert db_session.get(Member, member_id) is None

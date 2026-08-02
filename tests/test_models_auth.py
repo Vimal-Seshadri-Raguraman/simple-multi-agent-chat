@@ -8,6 +8,13 @@ from sqlalchemy.exc import IntegrityError
 from app.models import Member, RefreshToken, Workspace, utcnow
 
 
+def _make_workspace(db_session) -> Workspace:
+    ws = Workspace(workspace_name="Acme")
+    db_session.add(ws)
+    db_session.commit()
+    return ws
+
+
 def test_member_auth_columns_default_to_none(db_session):
     member = db_session.get(Member, _make_member(db_session, "Alice").member_id)
     assert member.email is None
@@ -40,10 +47,15 @@ def test_duplicate_email_same_workspace_rejected(db_session):
 
 def test_multiple_null_emails_allowed(db_session):
     """Agents/bots have no email; UNIQUE must not reject multiple NULLs."""
+    ws = _make_workspace(db_session)
     db_session.add_all(
         [
-            Member(member_name="Agent1", member_type="agent"),
-            Member(member_name="Agent2", member_type="agent"),
+            Member(
+                member_name="Agent1", member_type="agent", workspace_id=ws.workspace_id
+            ),
+            Member(
+                member_name="Agent2", member_type="agent", workspace_id=ws.workspace_id
+            ),
         ]
     )
     db_session.commit()
@@ -67,7 +79,11 @@ def test_refresh_token_round_trip(db_session):
 
 
 def _make_member(db_session, name: str) -> Member:
-    member = Member(member_name=name, member_type="human")
+    member = Member(
+        member_name=name,
+        member_type="human",
+        workspace_id=_make_workspace(db_session).workspace_id,
+    )
     db_session.add(member)
     db_session.commit()
     return member

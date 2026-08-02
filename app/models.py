@@ -73,9 +73,9 @@ class Member(Base):
     company: Mapped[str | None] = mapped_column(String, nullable=True)
     occupation: Mapped[str | None] = mapped_column(String, nullable=True)
     job_role: Mapped[str | None] = mapped_column(String, nullable=True)
-    workspace_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("workspaces.workspace_id"), nullable=True, index=True
-    )  # Staging: nullable until the Slack-model cutover makes it required.
+    workspace_id: Mapped[str] = mapped_column(
+        String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
+    )
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
@@ -95,17 +95,6 @@ class Workspace(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
-    )
-
-
-class WorkspaceMember(Base):
-    __tablename__ = "workspace_members"
-
-    workspace_id: Mapped[str] = mapped_column(
-        String, ForeignKey("workspaces.workspace_id"), primary_key=True
-    )
-    member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), primary_key=True
     )
 
 

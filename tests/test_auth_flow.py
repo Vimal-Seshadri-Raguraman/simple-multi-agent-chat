@@ -8,10 +8,11 @@ from app.security import SECRET_KEY
 
 
 def test_full_auth_lifecycle(client):
-    # Register → logged in immediately.
-    registered = client.post(
-        "/auth/register",
+    # Found a workspace → logged in immediately.
+    founded = client.post(
+        "/workspaces",
         json={
+            "workspace_name": "Home",
             "email": "vimal@example.com",
             "password": "super-secret-1",
             "first_name": "Vimal",
@@ -19,19 +20,24 @@ def test_full_auth_lifecycle(client):
             "company": "RIT",
         },
     ).json()
-    member_id = registered["member"]["member_id"]
-    headers = {"Authorization": f"Bearer {registered['access_token']}"}
+    member_id = founded["member"]["member_id"]
+    workspace_id = founded["workspace"]["workspace_id"]
+    headers = {"Authorization": f"Bearer {founded['access_token']}"}
 
-    # Authenticated call works; the member can build a workspace.
-    workspace = client.post(
-        "/workspaces", json={"workspace_name": "Home"}, headers=headers
-    ).json()
-    assert "workspace_id" in workspace
+    # Authenticated call works inside the founder's own workspace.
+    assert (
+        client.get(f"/workspaces/{workspace_id}/members", headers=headers).status_code
+        == 200
+    )
 
     # Fresh login also works.
     logged_in = client.post(
         "/auth/login",
-        json={"email": "vimal@example.com", "password": "super-secret-1"},
+        json={
+            "workspace_id": workspace_id,
+            "email": "vimal@example.com",
+            "password": "super-secret-1",
+        },
     ).json()
     assert logged_in["access_token"]
 
@@ -48,7 +54,12 @@ def test_full_auth_lifecycle(client):
 
     # New access token authenticates.
     new_headers = {"Authorization": f"Bearer {refreshed['access_token']}"}
-    assert client.get("/workspaces", headers=new_headers).status_code == 200
+    assert (
+        client.get(
+            f"/workspaces/{workspace_id}/members", headers=new_headers
+        ).status_code
+        == 200
+    )
 
     # Logout kills the refresh token.
     client.post(
@@ -69,6 +80,9 @@ def test_full_auth_lifecycle(client):
         SECRET_KEY,
         algorithm="HS256",
     )
-    response = client.get("/workspaces", headers={"Authorization": f"Bearer {expired}"})
+    response = client.get(
+        f"/workspaces/{workspace_id}/members",
+        headers={"Authorization": f"Bearer {expired}"},
+    )
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "invalid_token"

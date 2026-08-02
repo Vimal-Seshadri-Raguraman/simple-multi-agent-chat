@@ -1,22 +1,14 @@
-"""Tests for workspace invites: creation, listing, revocation."""
+"""Tests for workspace invites: creation, listing, revocation, and redemption."""
 
-from tests.conftest import human_headers, human_member_id
-
-
-def _workspace(client, key="m_1"):
-    return client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, key),
-    ).json()
+from tests.conftest import founder_auth, founder_headers, member_auth
 
 
 def test_create_email_invite(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
+        f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "email", "email": "Alice@Test.Example"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -27,11 +19,11 @@ def test_create_email_invite(client):
 
 
 def test_create_code_invite(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
+        f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "code"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -42,94 +34,87 @@ def test_create_code_invite(client):
 
 
 def test_email_invite_requires_email_field(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
+        f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "email"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 422
 
 
 def test_duplicate_pending_email_invite_conflicts(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     body = {"invite_type": "email", "email": "alice@test.example"}
-    url = f"/workspaces/{ws['workspace_id']}/invites"
-    client.post(url, json=body, headers=human_headers(client, "m_1"))
-    response = client.post(url, json=body, headers=human_headers(client, "m_1"))
+    url = f"/workspaces/{founder['workspace_id']}/invites"
+    client.post(url, json=body, headers=founder_headers(client, "w1"))
+    response = client.post(url, json=body, headers=founder_headers(client, "w1"))
     assert response.status_code == 409
 
 
 def test_inviting_existing_member_conflicts(client):
-    ws = _workspace(client)
-    human_member_id(client, "m_2")  # registers m_2@test.example
-    client.post(
-        f"/workspaces/{ws['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_2")},
-        headers=human_headers(client, "m_1"),
-    )
+    founder = founder_auth(client, "w1")
+    member_auth(client, "m2", "w1")  # registers m2@test.example into w1
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
-        json={"invite_type": "email", "email": "m_2@test.example"},
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{founder['workspace_id']}/invites",
+        json={"invite_type": "email", "email": "m2@test.example"},
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "already_a_member"
 
 
 def test_list_and_revoke_invites(client):
-    ws = _workspace(client)
-    url = f"/workspaces/{ws['workspace_id']}/invites"
+    founder = founder_auth(client, "w1")
+    url = f"/workspaces/{founder['workspace_id']}/invites"
+    headers = founder_headers(client, "w1")
     client.post(
         url,
         json={"invite_type": "email", "email": "alice@test.example"},
-        headers=human_headers(client, "m_1"),
+        headers=headers,
     )
-    code_invite = client.post(
-        url, json={"invite_type": "code"}, headers=human_headers(client, "m_1")
-    ).json()
+    code_invite = client.post(url, json={"invite_type": "code"}, headers=headers).json()
 
-    listing = client.get(url, headers=human_headers(client, "m_1")).json()
+    listing = client.get(url, headers=headers).json()
     assert len(listing) == 2
     assert code_invite["code"] in [i["code"] for i in listing]  # re-viewable
 
-    revoke = client.delete(
-        f"{url}/{code_invite['invite_id']}", headers=human_headers(client, "m_1")
-    )
+    revoke = client.delete(f"{url}/{code_invite['invite_id']}", headers=headers)
     assert revoke.status_code == 200
-    assert len(client.get(url, headers=human_headers(client, "m_1")).json()) == 1
+    assert len(client.get(url, headers=headers).json()) == 1
 
 
 def test_revoke_unknown_invite_404(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     response = client.delete(
-        f"/workspaces/{ws['workspace_id']}/invites/nope",
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{founder['workspace_id']}/invites/nope",
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "invalid_invite"
 
 
-def test_non_member_cannot_create_invite(client):
-    ws = _workspace(client)
+def test_foreign_workspace_member_cannot_create_invite(client):
+    """A founder of a different workspace hits the wall, same as a stranger would."""
+    founder = founder_auth(client, "w1")
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
+        f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "code"},
-        headers=human_headers(client, "outsider"),
+        headers=founder_headers(client, "w2"),
     )
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "not_a_member"
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
 def test_agent_cannot_create_invite(client):
-    ws = _workspace(client)
+    founder = founder_auth(client, "w1")
     agent = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     response = client.post(
-        f"/workspaces/{ws['workspace_id']}/invites",
+        f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "code"},
         headers={"X-API-Key": agent["api_key"]},
     )
@@ -137,164 +122,75 @@ def test_agent_cannot_create_invite(client):
     assert response.json()["error"]["code"] == "forbidden_member_type"
 
 
-def _invite_email(client, ws_id, email, key="m_1"):
+def _code_invite(client, workspace_id, key="w1"):
     return client.post(
-        f"/workspaces/{ws_id}/invites",
-        json={"invite_type": "email", "email": email},
-        headers=human_headers(client, key),
-    ).json()
-
-
-def test_invitee_sees_pending_invite_with_context(client):
-    ws = _workspace(client)
-    _invite_email(client, ws["workspace_id"], "m_2@test.example")
-    listing = client.get("/invites", headers=human_headers(client, "m_2")).json()
-    assert len(listing) == 1
-    row = listing[0]
-    assert row["workspace"]["workspace_name"] == "Acme"
-    assert row["invited_by"]["member_id"] == human_member_id(client, "m_1")
-
-
-def test_accept_joins_workspace_and_default_channel(client):
-    ws = _workspace(client)
-    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
-    response = client.post(
-        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
-    )
-    assert response.status_code == 200
-    assert response.json()["workspace_id"] == ws["workspace_id"]
-
-    members = client.get(
-        f"/workspaces/{ws['workspace_id']}/members",
-        headers=human_headers(client, "m_2"),
-    ).json()
-    assert human_member_id(client, "m_2") in [m["member_id"] for m in members]
-
-    channels = client.get(
-        f"/workspaces/{ws['workspace_id']}/channels",
-        headers=human_headers(client, "m_2"),
-    ).json()
-    general_id = [c for c in channels if c["channel_name"] == "general"][0][
-        "channel_id"
-    ]
-    channel_members = client.get(
-        f"/workspaces/{ws['workspace_id']}/channels/{general_id}/members",
-        headers=human_headers(client, "m_2"),
-    ).json()
-    assert human_member_id(client, "m_2") in [m["member_id"] for m in channel_members]
-
-    # Consumed: no longer listed, second accept 404s.
-    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
-    replay = client.post(
-        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
-    )
-    assert replay.status_code == 404
-    assert replay.json()["error"]["code"] == "invalid_invite"
-
-
-def test_cannot_accept_someone_elses_invite(client):
-    ws = _workspace(client)
-    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
-    response = client.post(
-        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_3")
-    )
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "invalid_invite"
-
-
-def test_decline_removes_without_joining(client):
-    ws = _workspace(client)
-    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
-    response = client.post(
-        f"/invites/{invite['invite_id']}/decline", headers=human_headers(client, "m_2")
-    )
-    assert response.status_code == 200
-    assert response.json() == {"status": "declined"}
-    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
-    listing = client.get(
-        f"/workspaces/{ws['workspace_id']}/members",
-        headers=human_headers(client, "m_1"),
-    ).json()
-    assert human_member_id(client, "m_2") not in [m["member_id"] for m in listing]
-
-
-def test_accept_when_already_member_deletes_invite_and_409s(client):
-    ws = _workspace(client)
-    invite = _invite_email(client, ws["workspace_id"], "m_2@test.example")
-    client.post(
-        f"/workspaces/{ws['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_2")},
-        headers=human_headers(client, "m_1"),
-    )
-    response = client.post(
-        f"/invites/{invite['invite_id']}/accept", headers=human_headers(client, "m_2")
-    )
-    assert response.status_code == 409
-    assert client.get("/invites", headers=human_headers(client, "m_2")).json() == []
-
-
-def _code_invite(client, ws_id, key="m_1"):
-    return client.post(
-        f"/workspaces/{ws_id}/invites",
+        f"/workspaces/{workspace_id}/invites",
         json={"invite_type": "code"},
-        headers=human_headers(client, key),
+        headers=founder_headers(client, key),
     ).json()
+
+
+def _code_register_body(code: str, email: str, first_name: str, last_name: str) -> dict:
+    return {
+        "code": code,
+        "email": email,
+        "password": "s3cret-password",
+        "first_name": first_name,
+        "last_name": last_name,
+    }
 
 
 def test_code_is_multi_use(client):
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
-    for key in ("m_2", "m_3"):
+    founder = founder_auth(client, "w1")
+    invite = _code_invite(client, founder["workspace_id"])
+    for key in ("dev1", "dev2"):
         response = client.post(
             "/workspaces/join",
-            json={"code": invite["code"]},
-            headers=human_headers(client, key),
+            json=_code_register_body(invite["code"], f"{key}@test.example", "Dev", key),
         )
         assert response.status_code == 200
-        assert response.json()["workspace_id"] == ws["workspace_id"]
+        assert response.json()["workspace"]["workspace_id"] == founder["workspace_id"]
+
     members = client.get(
-        f"/workspaces/{ws['workspace_id']}/members",
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{founder['workspace_id']}/members",
+        headers=founder_headers(client, "w1"),
     ).json()
-    ids = [m["member_id"] for m in members]
-    assert (
-        human_member_id(client, "m_2") in ids and human_member_id(client, "m_3") in ids
-    )
+    assert len(members) == 3  # founder + two code registrants
 
 
 def test_joiner_lands_in_default_channel(client):
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
-    client.post(
+    founder = founder_auth(client, "w1")
+    invite = _code_invite(client, founder["workspace_id"])
+    joined = client.post(
         "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_2"),
-    )
+        json=_code_register_body(invite["code"], "joiner@test.example", "Joi", "Ner"),
+    ).json()
+    joiner_id = joined["member"]["member_id"]
+    joiner_headers = {"Authorization": f"Bearer {joined['access_token']}"}
+
     channels = client.get(
-        f"/workspaces/{ws['workspace_id']}/channels",
-        headers=human_headers(client, "m_2"),
+        f"/workspaces/{founder['workspace_id']}/channels", headers=joiner_headers
     ).json()
     general_id = [c for c in channels if c["channel_name"] == "general"][0][
         "channel_id"
     ]
     channel_members = client.get(
-        f"/workspaces/{ws['workspace_id']}/channels/{general_id}/members",
-        headers=human_headers(client, "m_2"),
+        f"/workspaces/{founder['workspace_id']}/channels/{general_id}/members",
+        headers=joiner_headers,
     ).json()
-    assert human_member_id(client, "m_2") in [m["member_id"] for m in channel_members]
+    assert joiner_id in [m["member_id"] for m in channel_members]
 
 
 def test_revoked_code_rejected(client):
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
+    founder = founder_auth(client, "w1")
+    invite = _code_invite(client, founder["workspace_id"])
     client.delete(
-        f"/workspaces/{ws['workspace_id']}/invites/{invite['invite_id']}",
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{founder['workspace_id']}/invites/{invite['invite_id']}",
+        headers=founder_headers(client, "w1"),
     )
     response = client.post(
         "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_2"),
+        json=_code_register_body(invite["code"], "late@test.example", "La", "Te"),
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "invalid_invite"
@@ -306,8 +202,8 @@ def test_expired_code_rejected_and_deleted(client):
     import app.database as database_module
     from app.models import WorkspaceInvite, utcnow
 
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
+    founder = founder_auth(client, "w1")
+    invite = _code_invite(client, founder["workspace_id"])
     with database_module.SessionLocal() as db:
         row = db.get(WorkspaceInvite, invite["invite_id"])
         row.expires_at = utcnow() - timedelta(seconds=1)
@@ -316,8 +212,7 @@ def test_expired_code_rejected_and_deleted(client):
 
     response = client.post(
         "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_2"),
+        json=_code_register_body(invite["code"], "late@test.example", "La", "Te"),
     )
     assert response.status_code == 404
     with database_module.SessionLocal() as db:
@@ -325,45 +220,72 @@ def test_expired_code_rejected_and_deleted(client):
 
 
 def test_unknown_code_rejected(client):
-    _workspace(client)
     response = client.post(
         "/workspaces/join",
-        json={"code": "not-a-real-code"},
-        headers=human_headers(client, "m_2"),
+        json=_code_register_body(
+            "not-a-real-code", "nobody@test.example", "No", "Body"
+        ),
     )
     assert response.status_code == 404
 
 
-def test_rejoining_via_code_conflicts(client):
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
+def test_reusing_code_with_same_email_conflicts(client):
+    founder = founder_auth(client, "w1")
+    invite = _code_invite(client, founder["workspace_id"])
+    body = _code_register_body(invite["code"], "dev@test.example", "De", "V")
+
+    first = client.post("/workspaces/join", json=body)
+    assert first.status_code == 200
+
+    replay = client.post("/workspaces/join", json=body)
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "email_taken"
+
+    # Code stays valid for a different email (multi-use).
+    other = client.post("/workspaces/join", json=dict(body, email="other@test.example"))
+    assert other.status_code == 200
+
+
+def test_private_workspace_registration_with_reserved_seat_succeeds_and_consumes_it(
+    client,
+):
+    founder = founder_auth(client, "w1", visibility="private")
+    client.post(
+        f"/workspaces/{founder['workspace_id']}/invites",
+        json={"invite_type": "email", "email": "newbie@test.example"},
+        headers=founder_headers(client, "w1", visibility="private"),
+    )
+
     response = client.post(
-        "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{founder['workspace_id']}/register",
+        json={
+            "email": "newbie@test.example",
+            "password": "s3cret-password",
+            "first_name": "New",
+            "last_name": "Bie",
+        },
     )
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "already_a_member"
-    # Code stays valid for others (multi-use).
-    ok = client.post(
-        "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_2"),
-    )
-    assert ok.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["workspace"]["workspace_id"] == founder["workspace_id"]
 
-
-def test_agent_cannot_redeem_code(client):
-    ws = _workspace(client)
-    invite = _code_invite(client, ws["workspace_id"])
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+    # Seat consumed: no longer listed.
+    listing = client.get(
+        f"/workspaces/{founder['workspace_id']}/invites",
+        headers=founder_headers(client, "w1", visibility="private"),
     ).json()
+    assert listing == []
+
+
+def test_private_workspace_registration_without_seat_404s(client):
+    founder = founder_auth(client, "w1", visibility="private")
     response = client.post(
-        "/workspaces/join",
-        json={"code": invite["code"]},
-        headers={"X-API-Key": agent["api_key"]},
+        f"/workspaces/{founder['workspace_id']}/register",
+        json={
+            "email": "stranger@test.example",
+            "password": "s3cret-password",
+            "first_name": "Stran",
+            "last_name": "Ger",
+        },
     )
-    assert response.status_code == 403
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"

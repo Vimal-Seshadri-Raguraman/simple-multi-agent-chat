@@ -13,8 +13,14 @@ def _make(db_session, model, **kwargs):
 
 
 def test_email_invite_round_trip(db_session):
-    inviter = _make(db_session, Member, member_name="Host", member_type="human")
     workspace = _make(db_session, Workspace, workspace_name="Acme")
+    inviter = _make(
+        db_session,
+        Member,
+        member_name="Host",
+        member_type="human",
+        workspace_id=workspace.workspace_id,
+    )
     invite = _make(
         db_session,
         WorkspaceInvite,
@@ -31,8 +37,14 @@ def test_email_invite_round_trip(db_session):
 
 
 def test_code_invite_round_trip(db_session):
-    inviter = _make(db_session, Member, member_name="Host", member_type="human")
     workspace = _make(db_session, Workspace, workspace_name="Acme")
+    inviter = _make(
+        db_session,
+        Member,
+        member_name="Host",
+        member_type="human",
+        workspace_id=workspace.workspace_id,
+    )
     invite = _make(
         db_session,
         WorkspaceInvite,

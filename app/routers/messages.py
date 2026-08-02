@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_member
-from app.authorization import authorize_channel_read, authorize_post_message
+from app.authorization import (
+    authorize_channel_read,
+    authorize_post_message,
+    require_same_workspace,
+)
 from app.database import get_db
 from app.errors import NotFoundError
 from app.models import Channel, Member, Message, Workspace
@@ -51,6 +55,7 @@ async def post_message(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> dict:
+    require_same_workspace(member, workspace_id)
     workspace, channel = _get_workspace_and_channel(db, workspace_id, channel_id)
     authorize_post_message(db, member, channel_id)
 
@@ -78,6 +83,7 @@ def get_messages(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[dict]:
+    require_same_workspace(member, workspace_id)
     workspace, channel = _get_workspace_and_channel(db, workspace_id, channel_id)
     authorize_channel_read(db, member, channel_id)
     limit = min(limit, MAX_LIMIT)

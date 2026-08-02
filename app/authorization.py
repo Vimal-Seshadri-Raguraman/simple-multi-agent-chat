@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
-from app.errors import ForbiddenMemberTypeError, NotAMemberError
-from app.models import ChannelMember, Member, WorkspaceMember
+from app.errors import ForbiddenMemberTypeError, NotAMemberError, NotFoundError
+from app.models import ChannelMember, Member
 
 
 def authorize_management_action(member: Member) -> None:
@@ -39,18 +39,11 @@ def authorize_channel_read(db: Session, member: Member, channel_id: str) -> None
     _require_channel_membership(db, member.member_id, channel_id)
 
 
-def authorize_workspace_read(db: Session, member: Member, workspace_id: str) -> None:
-    """Reading a workspace's members/channels requires workspace membership (any member type)."""
-    is_member = (
-        db.query(WorkspaceMember)
-        .filter(
-            WorkspaceMember.workspace_id == workspace_id,
-            WorkspaceMember.member_id == member.member_id,
-        )
-        .first()
-        is not None
-    )
-    if not is_member:
-        raise NotAMemberError(
-            f"Member '{member.member_id}' is not a member of workspace '{workspace_id}'"
-        )
+def require_same_workspace(member: Member, workspace_id: str) -> None:
+    """The workspace wall: a token only works inside its own workspace.
+
+    Raises the uniform not-found error on mismatch so foreign workspaces
+    (private or otherwise) are indistinguishable from nonexistent ones.
+    """
+    if member.workspace_id != workspace_id:
+        raise NotFoundError(f"Workspace '{workspace_id}' not found")

@@ -1,35 +1,26 @@
 from datetime import datetime
 
-from tests.conftest import human_headers
+from tests.conftest import founder_auth, founder_headers
 
 
 def _setup_channel_with_agent(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
+    founder = founder_auth(client, "w1")
     channel = client.post(
-        f"/workspaces/{workspace['workspace_id']}/channels",
+        f"/workspaces/{founder['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
+        f"/workspaces/{founder['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-    return workspace, channel, agent
+    return founder, channel, agent
 
 
 def test_channel_member_can_post_message(client):
@@ -68,7 +59,7 @@ def test_non_channel_member_cannot_post(client):
     outsider = client.post(
         "/members/agents",
         json={"member_name": "Outsider"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     response = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
@@ -187,22 +178,17 @@ def test_get_messages_pagination_with_after_from_different_channel(client):
     channel2 = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "other"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     agent2 = client.post(
         "/members/agents",
         json={"member_name": "Bot2"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": agent2["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel2['channel_id']}/members",
         json={"member_id": agent2["member_id"]},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
 
     # Post message in channel1
@@ -242,7 +228,7 @@ def test_get_messages_requires_channel_membership(client):
     outsider = client.post(
         "/members/agents",
         json={"member_name": "Outsider"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     response = client.get(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",

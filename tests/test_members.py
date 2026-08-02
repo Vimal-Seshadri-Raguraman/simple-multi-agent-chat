@@ -1,11 +1,11 @@
-from tests.conftest import human_headers, human_member_id
+from tests.conftest import founder_auth, founder_headers, member_auth
 
 
 def test_register_agent_returns_api_key(client):
     response = client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -18,7 +18,7 @@ def test_register_bot_app_returns_api_key(client):
     response = client.post(
         "/members/bots",
         json={"member_name": "Zapier"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     assert response.json()["member_type"] == "bot_app"
@@ -28,12 +28,12 @@ def test_search_members_by_name(client):
     agent1 = client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     client.post(
         "/members/bots",
         json={"member_name": "Zapier"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
 
     headers = {"X-API-Key": agent1["api_key"]}
@@ -49,12 +49,12 @@ def test_search_members_by_type(client):
     agent1 = client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     client.post(
         "/members/bots",
         json={"member_name": "Bot-1"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
 
     headers = {"X-API-Key": agent1["api_key"]}
@@ -68,7 +68,7 @@ def test_search_members_returns_empty_list_when_no_match(client):
     agent1 = client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
 
     headers = {"X-API-Key": agent1["api_key"]}
@@ -81,7 +81,7 @@ def test_get_member_profile(client):
     registered = client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
 
     headers = {"X-API-Key": registered["api_key"]}
@@ -98,7 +98,7 @@ def test_get_member_profile_404(client):
     agent1 = client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
 
     headers = {"X-API-Key": agent1["api_key"]}
@@ -116,27 +116,31 @@ def test_get_member_requires_auth(client):
     registered = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     response = client.get("/member", params={"id": registered["member_id"]})
     assert response.status_code == 401
 
 
 def test_get_own_profile_includes_email(client):
-    my_id = human_member_id(client, "m_1")
+    founder = founder_auth(client, "w1")
     response = client.get(
-        "/member", params={"id": my_id}, headers=human_headers(client, "m_1")
+        "/member",
+        params={"id": founder["member_id"]},
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["email"] == "m_1@test.example"
+    assert body["email"] == "w1@test.example"
     assert body["first_name"] == "Test"
 
 
 def test_get_other_profile_hides_email(client):
-    other_id = human_member_id(client, "m_2")
+    other = member_auth(client, "m2", "w1")
     response = client.get(
-        "/member", params={"id": other_id}, headers=human_headers(client, "m_1")
+        "/member",
+        params={"id": other["member_id"]},
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -145,8 +149,8 @@ def test_get_other_profile_hides_email(client):
 
 
 def test_search_never_exposes_emails(client):
-    human_member_id(client, "m_1")
-    results = client.get("/members", headers=human_headers(client, "m_1")).json()
+    founder_auth(client, "w1")
+    results = client.get("/members", headers=founder_headers(client, "w1")).json()
     assert all("email" not in row for row in results)
 
 
@@ -154,7 +158,7 @@ def test_patch_own_profile(client):
     response = client.patch(
         "/members/me",
         json={"company": "Acme", "job_role": "Engineer", "display_name": "Neo"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     body = response.json()
@@ -168,18 +172,18 @@ def test_patch_cannot_change_email(client):
     response = client.patch(
         "/members/me",
         json={"email": "hacker@evil.com"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     # Unknown fields are ignored by Pydantic; email must be unchanged.
     assert response.status_code == 200
-    assert response.json()["email"] == "m_1@test.example"
+    assert response.json()["email"] == "w1@test.example"
 
 
 def test_patch_explicit_null_display_name_is_422(client):
     response = client.patch(
         "/members/me",
         json={"display_name": None},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 422
 
@@ -188,7 +192,7 @@ def test_patch_explicit_null_first_name_is_422(client):
     response = client.patch(
         "/members/me",
         json={"first_name": None},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 422
 
@@ -197,7 +201,7 @@ def test_patch_explicit_null_last_name_is_422(client):
     response = client.patch(
         "/members/me",
         json={"last_name": None},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 422
 
@@ -206,12 +210,12 @@ def test_patch_explicit_null_company_clears_it(client):
     client.patch(
         "/members/me",
         json={"company": "Acme"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     response = client.patch(
         "/members/me",
         json={"company": None},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
     assert response.json()["company"] is None
@@ -221,7 +225,7 @@ def test_agent_cannot_patch_profile(client):
     agent = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     response = client.patch(
         "/members/me",

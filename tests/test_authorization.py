@@ -4,24 +4,29 @@ from app.authorization import (
     authorize_channel_read,
     authorize_management_action,
     authorize_post_message,
-    authorize_workspace_read,
+    require_same_workspace,
 )
-from app.errors import ForbiddenMemberTypeError, NotAMemberError
-from app.models import Channel, ChannelMember, Member, Workspace, WorkspaceMember
-
-
-def _make_member(db, member_type: str) -> Member:
-    member = Member(member_name="Test", member_type=member_type)
-    db.add(member)
-    db.commit()
-    db.refresh(member)
-    return member
+from app.errors import ForbiddenMemberTypeError, NotAMemberError, NotFoundError
+from app.models import Channel, ChannelMember, Member, Workspace
 
 
 def _make_workspace(db, workspace_id: str) -> None:
     """Insert a bare workspace row so FK-constrained membership rows are valid."""
-    db.add(Workspace(workspace_id=workspace_id, workspace_name="Test Workspace"))
+    if db.get(Workspace, workspace_id) is None:
+        db.add(Workspace(workspace_id=workspace_id, workspace_name="Test Workspace"))
+        db.commit()
+
+
+def _make_member(db, member_type: str, workspace_id: str = "w_1") -> Member:
+    """Insert a member with a valid workspace (workspace_id is NOT NULL post-cutover)."""
+    _make_workspace(db, workspace_id)
+    member = Member(
+        member_name="Test", member_type=member_type, workspace_id=workspace_id
+    )
+    db.add(member)
     db.commit()
+    db.refresh(member)
+    return member
 
 
 def _make_channel(db, channel_id: str, workspace_id: str = "w_1") -> None:
@@ -75,15 +80,12 @@ def test_non_channel_member_may_not_read(db_session):
         authorize_channel_read(db_session, member, "c_1")
 
 
-def test_workspace_member_may_read(db_session):
-    member = _make_member(db_session, "agent")
-    _make_workspace(db_session, "w_1")
-    db_session.add(WorkspaceMember(workspace_id="w_1", member_id=member.member_id))
-    db_session.commit()
-    authorize_workspace_read(db_session, member, "w_1")  # should not raise
+def test_require_same_workspace_allows_own_workspace(db_session):
+    member = _make_member(db_session, "human", workspace_id="w_1")
+    require_same_workspace(member, "w_1")  # should not raise
 
 
-def test_non_workspace_member_may_not_read(db_session):
-    member = _make_member(db_session, "bot_app")
-    with pytest.raises(NotAMemberError):
-        authorize_workspace_read(db_session, member, "w_1")
+def test_require_same_workspace_blocks_foreign_workspace(db_session):
+    member = _make_member(db_session, "human", workspace_id="w_1")
+    with pytest.raises(NotFoundError):
+        require_same_workspace(member, "w_2")

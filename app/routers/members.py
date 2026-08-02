@@ -17,12 +17,15 @@ from app.schemas import (
 router = APIRouter()
 
 
-def _register(db: Session, member_name: str, member_type: str) -> MemberRegisterOut:
+def _register(
+    db: Session, member_name: str, member_type: str, workspace_id: str
+) -> MemberRegisterOut:
     raw_key = generate_api_key()
     member = Member(
         member_name=member_name,
         member_type=member_type,
         api_key_hash=hash_api_key(raw_key),
+        workspace_id=workspace_id,
     )
     db.add(member)
     db.commit()
@@ -42,7 +45,7 @@ def register_agent(
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
     authorize_management_action(member)
-    return _register(db, body.member_name, "agent")
+    return _register(db, body.member_name, "agent", member.workspace_id)
 
 
 @router.post("/members/bots", response_model=MemberRegisterOut)
@@ -52,7 +55,7 @@ def register_bot(
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
     authorize_management_action(member)
-    return _register(db, body.member_name, "bot_app")
+    return _register(db, body.member_name, "bot_app", member.workspace_id)
 
 
 @router.get("/members", response_model=list[MemberOut])
@@ -63,7 +66,8 @@ def search_members(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
-    query = db.query(Member)
+    """Search members within the caller's own workspace (the wall applies implicitly)."""
+    query = db.query(Member).filter(Member.workspace_id == member.workspace_id)
     if search_name:
         query = query.filter(Member.member_name.contains(search_name))
     if search_id:
@@ -79,8 +83,20 @@ def get_member(
     current_member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> MemberSelfOut:
-    """A member's profile. Email is included only when fetching your own."""
-    member = db.get(Member, member_id)
+    """A member's profile within the caller's own workspace.
+
+    A member in a foreign workspace simply doesn't exist for you -> 404,
+    via the same not-found path as an unknown member_id. Email is included
+    only when fetching your own.
+    """
+    member = (
+        db.query(Member)
+        .filter(
+            Member.member_id == member_id,
+            Member.workspace_id == current_member.workspace_id,
+        )
+        .first()
+    )
     if member is None:
         raise NotFoundError(f"Member '{member_id}' not found")
     profile = MemberSelfOut.model_validate(member)
