@@ -1,7 +1,8 @@
 """Authentication resolution: the single place all credentials are checked.
 
 Humans authenticate with `Authorization: Bearer <JWT>` (obtained from
-/auth/login or /auth/register); agents and bot_apps use `X-API-Key`.
+/auth/login after founding or registering via workspace endpoints);
+agents and bot_apps use `X-API-Key`.
 """
 
 import secrets

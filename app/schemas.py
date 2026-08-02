@@ -13,14 +13,18 @@ from pydantic import (
 from app.models import Channel, Member, Message, Workspace
 
 
-class WorkspaceCreate(BaseModel):
-    workspace_name: str
-
-
 class WorkspaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     workspace_id: str
     workspace_name: str
+    visibility: str
+
+
+class WorkspaceSearchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    workspace_id: str
+    workspace_name: str
+    visibility: str
 
 
 class ChannelCreate(BaseModel):
@@ -128,6 +132,7 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
+    workspace_id: str
     email: EmailStr
     password: str
 
@@ -141,10 +146,35 @@ class TokenPairOut(BaseModel):
     expires_in: int
 
 
-class RegisterOut(TokenPairOut):
-    """Registration response: the new member's profile plus a token pair."""
+class FoundWorkspaceIn(RegisterIn):
+    """Found a workspace: workspace details + the founder's account in one body."""
+
+    workspace_name: str = Field(min_length=1)
+    visibility: Literal["public", "private"] = "private"
+
+    @field_validator("workspace_name", mode="before")
+    @classmethod
+    def _reject_whitespace_only_workspace_name(cls, value: str) -> str:
+        """Reject whitespace-only workspace names; strip and store the cleaned name."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("workspace_name must not be empty or whitespace-only")
+            return stripped
+        return value
+
+
+class CodeRegisterIn(RegisterIn):
+    """Register into a workspace identified by a shareable invite code."""
+
+    code: str = Field(min_length=1)
+
+
+class WorkspaceAuthOut(TokenPairOut):
+    """Every account-birth endpoint returns this: you're signed up AND logged in."""
 
     member: MemberSelfOut
+    workspace: WorkspaceOut
 
 
 class RefreshIn(BaseModel):
@@ -170,6 +200,18 @@ class InviteCreateIn(BaseModel):
         return self
 
 
+class WorkspaceVisibilityIn(BaseModel):
+    """Admin-only visibility toggle for a workspace."""
+
+    visibility: Literal["public", "private"]
+
+
+class MemberAdminIn(BaseModel):
+    """Admin-only promotion/demotion of a workspace member."""
+
+    is_admin: bool
+
+
 class InviteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     invite_id: str
@@ -180,25 +222,6 @@ class InviteOut(BaseModel):
     created_by: str
     created_at: datetime
     expires_at: datetime | None
-
-
-class InvitedByOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    member_id: str
-    member_name: str
-
-
-class PendingInviteOut(BaseModel):
-    """An invite as seen by its target: enough context to decide."""
-
-    invite_id: str
-    workspace: WorkspaceOut
-    invited_by: InvitedByOut
-    created_at: datetime
-
-
-class JoinByCodeIn(BaseModel):
-    code: str = Field(min_length=1)
 
 
 def build_message_payload(

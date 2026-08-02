@@ -5,11 +5,11 @@ from app.auth import get_current_member
 from app.authorization import (
     authorize_channel_read,
     authorize_management_action,
-    authorize_workspace_read,
+    require_same_workspace,
 )
 from app.database import get_db
-from app.errors import AlreadyAMemberError, NotAWorkspaceMemberError, NotFoundError
-from app.models import Channel, ChannelMember, Member, Workspace, WorkspaceMember
+from app.errors import AlreadyAMemberError, NotFoundError
+from app.models import Channel, ChannelMember, Member
 from app.schemas import ChannelCreate, ChannelOut, MemberIdIn, MemberOut
 
 router = APIRouter()
@@ -36,9 +36,7 @@ def create_channel(
     db: Session = Depends(get_db),
 ) -> Channel:
     authorize_management_action(member)
-    workspace = db.get(Workspace, workspace_id)
-    if workspace is None:
-        raise NotFoundError(f"Workspace '{workspace_id}' not found")
+    require_same_workspace(member, workspace_id)
 
     channel = Channel(workspace_id=workspace_id, channel_name=body.channel_name)
     db.add(channel)
@@ -53,10 +51,7 @@ def list_channels(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Channel]:
-    workspace = db.get(Workspace, workspace_id)
-    if workspace is None:
-        raise NotFoundError(f"Workspace '{workspace_id}' not found")
-    authorize_workspace_read(db, member, workspace_id)
+    require_same_workspace(member, workspace_id)
     return db.query(Channel).filter(Channel.workspace_id == workspace_id).all()
 
 
@@ -71,25 +66,15 @@ def add_channel_member(
     db: Session = Depends(get_db),
 ) -> Member:
     authorize_management_action(member)
+    require_same_workspace(member, workspace_id)
     _get_channel(db, workspace_id, channel_id)
 
     target = db.get(Member, body.member_id)
     if target is None:
         raise NotFoundError(f"Member '{body.member_id}' not found")
 
-    in_workspace = (
-        db.query(WorkspaceMember)
-        .filter(
-            WorkspaceMember.workspace_id == workspace_id,
-            WorkspaceMember.member_id == body.member_id,
-        )
-        .first()
-    )
-    if in_workspace is None:
-        raise NotAWorkspaceMemberError(
-            f"Member '{body.member_id}' must belong to workspace '{workspace_id}' "
-            "before joining one of its channels"
-        )
+    if target.workspace_id != workspace_id:
+        raise NotFoundError(f"Member '{body.member_id}' not found")
 
     exists = (
         db.query(ChannelMember)
@@ -119,6 +104,7 @@ def list_channel_members(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
+    require_same_workspace(member, workspace_id)
     _get_channel(db, workspace_id, channel_id)
     authorize_channel_read(db, member, channel_id)
     return (

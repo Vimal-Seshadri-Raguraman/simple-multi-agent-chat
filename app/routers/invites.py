@@ -1,4 +1,4 @@
-"""Workspace invitations: create/list/revoke (this task) + invitee flows (later tasks)."""
+"""Workspace invitations: create/list/revoke (workspace-side) + registration (invitee-side)."""
 
 import os
 import secrets
@@ -7,18 +7,20 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.accounts import create_member_account
 from app.auth import get_current_member
-from app.authorization import authorize_management_action, authorize_workspace_read
+from app.authorization import authorize_management_action, require_same_workspace
 from app.database import get_db
 from app.errors import AlreadyAMemberError, InvalidInviteError, NotFoundError
-from app.membership import join_workspace
-from app.models import Member, Workspace, WorkspaceInvite, WorkspaceMember, utcnow
+from app.models import Member, Workspace, WorkspaceInvite, utcnow
+from app.routers.auth import _issue_token_pair
 from app.schemas import (
-    InvitedByOut,
+    CodeRegisterIn,
     InviteCreateIn,
     InviteOut,
-    JoinByCodeIn,
-    PendingInviteOut,
+    MemberSelfOut,
+    RegisterIn,
+    WorkspaceAuthOut,
     WorkspaceOut,
 )
 
@@ -34,10 +36,10 @@ def _require_human_workspace_member(
 ) -> Workspace:
     """Shared gate for workspace-side invite operations: human + member + workspace exists."""
     authorize_management_action(member)
+    require_same_workspace(member, workspace_id)
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace '{workspace_id}' not found")
-    authorize_workspace_read(db, member, workspace_id)
     return workspace
 
 
@@ -67,9 +69,8 @@ def create_invite(
             raise ValueError("email is required for invite_type 'email'")
         email = body.email.lower()
         existing_member = (
-            db.query(WorkspaceMember)
-            .join(Member, Member.member_id == WorkspaceMember.member_id)
-            .filter(WorkspaceMember.workspace_id == workspace_id, Member.email == email)
+            db.query(Member)
+            .filter(Member.workspace_id == workspace_id, Member.email == email)
             .first()
         )
         if existing_member is not None:
@@ -142,98 +143,80 @@ def revoke_invite(
     return {"status": "revoked"}
 
 
-def _my_email_invite(db: Session, member: Member, invite_id: str) -> WorkspaceInvite:
-    """Load an email invite targeting the caller, or raise the uniform 404."""
-    invite = db.get(WorkspaceInvite, invite_id)
-    if (
-        invite is None
-        or invite.invite_type != "email"
-        or member.email is None
-        or invite.email != member.email
-    ):
-        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
-    return invite
-
-
-@router.get("/invites", response_model=list[PendingInviteOut])
-def list_my_invites(
-    member: Member = Depends(get_current_member),
-    db: Session = Depends(get_db),
-) -> list[PendingInviteOut]:
-    """Pending email invites targeting the caller's email (in-app delivery, no SMTP)."""
-    authorize_management_action(member)
-    if member.email is None:
-        return []
-    rows = (
-        db.query(WorkspaceInvite, Workspace, Member)
-        .join(Workspace, Workspace.workspace_id == WorkspaceInvite.workspace_id)
-        .join(Member, Member.member_id == WorkspaceInvite.created_by)
-        .filter(WorkspaceInvite.email == member.email)
-        .all()
+def _register_account(
+    db: Session, workspace: Workspace, body: RegisterIn
+) -> WorkspaceAuthOut:
+    """Shared tail of both registration paths: create account, commit, log in."""
+    member = create_member_account(
+        db,
+        workspace,
+        email=body.email,
+        password=body.password,
+        first_name=body.first_name,
+        last_name=body.last_name,
+        display_name=body.display_name,
+        company=body.company,
+        occupation=body.occupation,
+        job_role=body.job_role,
     )
-    return [
-        PendingInviteOut(
-            invite_id=invite.invite_id,
-            workspace=WorkspaceOut.model_validate(workspace),
-            invited_by=InvitedByOut.model_validate(inviter),
-            created_at=invite.created_at,
-        )
-        for invite, workspace, inviter in rows
-    ]
-
-
-@router.post("/invites/{invite_id}/accept", response_model=WorkspaceOut)
-def accept_invite(
-    invite_id: str,
-    member: Member = Depends(get_current_member),
-    db: Session = Depends(get_db),
-) -> Workspace:
-    """Join the inviting workspace (+ its default channel); consume the invite."""
-    authorize_management_action(member)
-    invite = _my_email_invite(db, member, invite_id)
-    workspace = db.get(Workspace, invite.workspace_id)
-    db.delete(invite)
     db.commit()
-    if workspace is None:
-        # FK guarantees invite rows always point at a workspace; an `assert`
-        # here would silently vanish under `python -O`, so raise explicitly.
-        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
-    join_workspace(db, workspace, member.member_id)  # raises 409 if already in
-    return workspace
+    db.refresh(member)
+    tokens = _issue_token_pair(db, member)
+    return WorkspaceAuthOut(
+        member=MemberSelfOut.model_validate(member),
+        workspace=WorkspaceOut.model_validate(workspace),
+        **tokens.model_dump(),
+    )
 
 
-@router.post("/invites/{invite_id}/decline")
-def decline_invite(
-    invite_id: str,
-    member: Member = Depends(get_current_member),
-    db: Session = Depends(get_db),
-) -> dict[str, str]:
-    """Delete an invite targeting the caller without joining anything."""
-    authorize_management_action(member)
-    invite = _my_email_invite(db, member, invite_id)
-    db.delete(invite)
-    db.commit()
-    return {"status": "declined"}
-
-
-@router.post("/workspaces/join", response_model=WorkspaceOut)
-def join_by_code(
-    body: JoinByCodeIn,
-    member: Member = Depends(get_current_member),
-    db: Session = Depends(get_db),
-) -> Workspace:
-    """Redeem a shareable code: join its workspace (+ default channel).
-
-    The code stays valid for other people (multi-use) until revoked/expired.
-    """
-    authorize_management_action(member)
+@router.post("/workspaces/join", response_model=WorkspaceAuthOut)
+def register_by_code(
+    body: CodeRegisterIn, db: Session = Depends(get_db)
+) -> WorkspaceAuthOut:
+    """Sign up into the workspace a shareable code belongs to (code = registration key)."""
     invite = db.query(WorkspaceInvite).filter(WorkspaceInvite.code == body.code).first()
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     workspace = db.get(Workspace, invite.workspace_id)
     if workspace is None:
-        # FK guarantees invite rows always point at a workspace; an `assert`
-        # here would silently vanish under `python -O`, so raise explicitly.
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
-    join_workspace(db, workspace, member.member_id)  # 409 if already in; code survives
-    return workspace
+    return _register_account(db, workspace, body)
+
+
+@router.post("/workspaces/{workspace_id}/register", response_model=WorkspaceAuthOut)
+def register_into_workspace(
+    workspace_id: str, body: RegisterIn, db: Session = Depends(get_db)
+) -> WorkspaceAuthOut:
+    """Sign up into a workspace directly.
+
+    Public workspace: open door. Private: only with a reserved seat (a
+    pending email invite matching the registration email), consumed on
+    success. No seat -> the uniform 404: private workspaces never confirm
+    their own existence.
+    """
+    workspace = db.get(Workspace, workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace '{workspace_id}' not found")
+    if workspace.visibility != "public":
+        seat = (
+            db.query(WorkspaceInvite)
+            .filter(
+                WorkspaceInvite.workspace_id == workspace_id,
+                WorkspaceInvite.invite_type == "email",
+                WorkspaceInvite.email == body.email.lower(),
+            )
+            .first()
+        )
+        if seat is None:
+            raise NotFoundError(f"Workspace '{workspace_id}' not found")
+        # Delete the seat *before* creating the account, not after: the delete
+        # is only staged here (autoflush is off), so it rides along with
+        # _register_account's single commit as one atomic transaction. If
+        # create_member_account raises (e.g. EmailTakenError), nothing has
+        # been flushed yet, the request's session is closed without a commit,
+        # and the seat survives untouched -- no window where a crash (or a
+        # failed registration) could burn a seat without an account to show
+        # for it.
+        db.delete(seat)
+        return _register_account(db, workspace, body)
+    return _register_account(db, workspace, body)

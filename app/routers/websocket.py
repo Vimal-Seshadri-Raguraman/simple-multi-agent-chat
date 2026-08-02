@@ -29,6 +29,13 @@ async def channel_websocket(
             await websocket.close(code=4401)
             return
 
+        # The workspace wall: a token only works inside its own workspace.
+        # Same close code as an unknown channel below -- uniform, so a
+        # foreign workspace can't be distinguished from a nonexistent one.
+        if member.workspace_id != workspace_id:
+            await websocket.close(code=4404)
+            return
+
         channel = (
             db.query(Channel)
             .filter(

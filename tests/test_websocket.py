@@ -1,36 +1,27 @@
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from tests.conftest import human_headers, human_member_id, human_token
+from tests.conftest import founder_auth, founder_headers
 
 
 def _setup_channel_with_agent(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
+    founder = founder_auth(client, "w1")
     channel = client.post(
-        f"/workspaces/{workspace['workspace_id']}/channels",
+        f"/workspaces/{founder['workspace_id']}/channels",
         json={"channel_name": "general"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
+        f"/workspaces/{founder['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     )
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-    return workspace, channel, agent
+    return founder, channel, agent
 
 
 def test_websocket_receives_broadcast_message(client):
@@ -39,25 +30,25 @@ def test_websocket_receives_broadcast_message(client):
         f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
     )
 
-    # m_1 (the human who created the workspace/channel) isn't a channel member yet,
-    # so the connection is rejected before being accepted.
+    # The founder isn't a channel member yet, so the connection is rejected
+    # before being accepted.
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"{ws_url}?token={human_token(client, 'm_1')}"):
+        with client.websocket_connect(f"{ws_url}?token={workspace['access_token']}"):
             pass
     assert exc_info.value.code == 4403
 
-    # m_1 is already a workspace member (auto-added at creation); add them to
-    # this channel — a non-default channel, so they aren't auto-joined to it.
+    # The founder is already a workspace member (founding); add them to this
+    # channel — a non-default channel, so they aren't auto-joined to it.
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
+        json={"member_id": workspace["member_id"]},
+        headers=founder_headers(client, "w1"),
     )
 
-    # Two real, simultaneously-connected clients (the human and the agent) — a broadcast
+    # Two real, simultaneously-connected clients (the founder and the agent) — a broadcast
     # from one member's message post must reach both connected sockets, not just one.
     with client.websocket_connect(
-        f"{ws_url}?token={human_token(client, 'm_1')}"
+        f"{ws_url}?token={workspace['access_token']}"
     ) as ws_human, client.websocket_connect(
         ws_url, headers={"X-API-Key": agent["api_key"]}
     ) as ws_agent:
@@ -77,7 +68,7 @@ def test_websocket_rejects_non_channel_member(client):
     outsider = client.post(
         "/members/agents",
         json={"member_name": "Outsider"},
-        headers=human_headers(client, "m_1"),
+        headers=founder_headers(client, "w1"),
     ).json()
     ws_url = (
         f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"

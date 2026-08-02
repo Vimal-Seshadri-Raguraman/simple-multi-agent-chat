@@ -1,297 +1,140 @@
-from tests.conftest import human_headers, human_member_id
+"""Tests for workspace founding (POST /workspaces) and workspace-scoped member listing."""
+
+import app.database as database_module
+from app.models import ChannelMember, Member, Workspace, WorkspaceRecord
+from app.security import create_access_token
+from tests.conftest import founder_auth, founder_headers, member_auth
+
+FOUND_BODY = {
+    "workspace_name": "Acme",
+    "email": "founder@test.example",
+    "password": "s3cret-password",
+    "first_name": "Ada",
+    "last_name": "Lovelace",
+}
 
 
-def test_human_can_create_workspace(client):
-    response = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    )
+def test_founding_defaults_to_private_visibility(client):
+    response = client.post("/workspaces", json=FOUND_BODY)
     assert response.status_code == 200
     body = response.json()
-    assert body["workspace_name"] == "Acme"
-    assert "workspace_id" in body
+    assert body["workspace"]["workspace_name"] == "Acme"
+    assert body["workspace"]["visibility"] == "private"
+    assert body["member"]["member_type"] == "human"
+    assert body["access_token"] and body["refresh_token"]
 
 
-def test_agent_cannot_create_workspace(client):
-    register = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    response = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers={"X-API-Key": register["api_key"]},
-    )
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "forbidden_member_type"
+def test_founding_public_workspace(client):
+    response = client.post("/workspaces", json=dict(FOUND_BODY, visibility="public"))
+    assert response.json()["workspace"]["visibility"] == "public"
 
 
-def test_list_workspaces(client):
-    client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    )
-    response = client.get("/workspaces", headers=human_headers(client, "m_1"))
-    assert response.status_code == 200
-    assert len(response.json()) == 1
+def test_founder_is_admin(client):
+    response = client.post("/workspaces", json=FOUND_BODY)
+    member_id = response.json()["member"]["member_id"]
+    with database_module.SessionLocal() as db:
+        member = db.get(Member, member_id)
+        assert member.is_admin is True
 
 
-def test_add_member_to_workspace(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-
-    response = client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-    assert response.status_code == 200
-    assert response.json()["member_id"] == agent["member_id"]
+def test_founding_creates_workspace_record(client):
+    response = client.post("/workspaces", json=FOUND_BODY)
+    body = response.json()
+    with database_module.SessionLocal() as db:
+        record = db.get(WorkspaceRecord, body["workspace"]["workspace_id"])
+        assert record is not None
+        assert record.created_by == body["member"]["member_id"]
+        assert record.status == "active"
 
 
-def test_adding_same_member_twice_conflicts(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    add_url = f"/workspaces/{workspace['workspace_id']}/members"
-    client.post(
-        add_url,
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
+def test_founding_creates_general_channel_with_founder_inside(client):
+    response = client.post("/workspaces", json=FOUND_BODY)
+    body = response.json()
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    ws_id = body["workspace"]["workspace_id"]
 
-    response = client.post(
-        add_url,
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "already_a_member"
-
-
-def test_add_member_to_nonexistent_workspace_404s(client):
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    response = client.post(
-        "/workspaces/does-not-exist/members",
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-    assert response.status_code == 404
-
-
-def test_list_workspace_members(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-
-    # Creator (m_1) is already a workspace member (auto-added at creation).
-    # Add agent to workspace members
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": agent["member_id"]},
-        headers=human_headers(client, "m_1"),
-    )
-
-    response = client.get(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        headers=human_headers(client, "m_1"),
-    )
-    assert response.status_code == 200
-    member_ids = [m["member_id"] for m in response.json()]
-    assert agent["member_id"] in member_ids
-    assert human_member_id(client, "m_1") in member_ids
-
-
-def test_list_workspaces_requires_auth(client):
-    response = client.get("/workspaces")
-    assert response.status_code == 401
-
-
-def test_list_workspaces_works_for_any_authenticated_member_type(client):
-    agent = client.post(
-        "/members/agents",
-        json={"member_name": "Bot"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    response = client.get("/workspaces", headers={"X-API-Key": agent["api_key"]})
-    assert response.status_code == 200
-
-
-def test_list_workspace_members_requires_auth(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    response = client.get(f"/workspaces/{workspace['workspace_id']}/members")
-    assert response.status_code == 401
-
-
-def test_list_workspace_members_requires_membership(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    outsider_agent = client.post(
-        "/members/agents",
-        json={"member_name": "Outsider"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    response = client.get(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        headers={"X-API-Key": outsider_agent["api_key"]},
-    )
-    assert response.status_code == 403
-    assert response.json()["error"]["code"] == "not_a_member"
-
-
-def test_create_workspace_bootstraps_general_and_creator(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    ws_id = workspace["workspace_id"]
-
-    members = client.get(
-        f"/workspaces/{ws_id}/members", headers=human_headers(client, "m_1")
-    ).json()
-    assert human_member_id(client, "m_1") in [m["member_id"] for m in members]
-
-    channels = client.get(
-        f"/workspaces/{ws_id}/channels", headers=human_headers(client, "m_1")
-    ).json()
+    channels = client.get(f"/workspaces/{ws_id}/channels", headers=headers).json()
     assert [c["channel_name"] for c in channels] == ["general"]
 
     general_id = channels[0]["channel_id"]
     channel_members = client.get(
-        f"/workspaces/{ws_id}/channels/{general_id}/members",
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{ws_id}/channels/{general_id}/members", headers=headers
     ).json()
-    assert human_member_id(client, "m_1") in [m["member_id"] for m in channel_members]
+    assert body["member"]["member_id"] in [m["member_id"] for m in channel_members]
 
 
-def test_manual_add_lands_member_in_default_channel(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    ws_id = workspace["workspace_id"]
-    other_id = human_member_id(client, "m_2")
-
-    client.post(
-        f"/workspaces/{ws_id}/members",
-        json={"member_id": other_id},
-        headers=human_headers(client, "m_1"),
-    )
-    channels = client.get(
-        f"/workspaces/{ws_id}/channels", headers=human_headers(client, "m_1")
-    ).json()
-    general_id = channels[0]["channel_id"]
-    channel_members = client.get(
-        f"/workspaces/{ws_id}/channels/{general_id}/members",
-        headers=human_headers(client, "m_1"),
-    ).json()
-    assert other_id in [m["member_id"] for m in channel_members]
-
-
-def test_pre_feature_workspace_joinable_via_manual_add_and_invite(client):
-    """Backward-compat guarantee: a workspace created before this feature
-    (default_channel_id NULL, no 'general' channel at all) must still be
-    joinable through the manual-add path and through an invite path, with
-    no error and no channel membership expected (there's no default channel
-    to join)."""
-    import app.database as database_module
-    from app.models import Workspace, WorkspaceMember
-
-    creator_id = human_member_id(client, "m_1")
-    ws_id = "pre-feature-ws"
-    with database_module.SessionLocal() as db:
-        db.add(Workspace(workspace_id=ws_id, workspace_name="Legacy"))
-        db.add(WorkspaceMember(workspace_id=ws_id, member_id=creator_id))
-        db.commit()
-
-    # Manual-add path (POST /workspaces/{id}/members)
-    other_id = human_member_id(client, "m_2")
-    response = client.post(
-        f"/workspaces/{ws_id}/members",
-        json={"member_id": other_id},
-        headers=human_headers(client, "m_1"),
+def test_list_workspace_members_includes_founder_and_registered_member(client):
+    founder = founder_auth(client, "w1")
+    member = member_auth(client, "m2", "w1")
+    response = client.get(
+        f"/workspaces/{founder['workspace_id']}/members",
+        headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
+    member_ids = [m["member_id"] for m in response.json()]
+    assert founder["member_id"] in member_ids
+    assert member["member_id"] in member_ids
 
-    members = client.get(
-        f"/workspaces/{ws_id}/members", headers=human_headers(client, "m_1")
-    ).json()
-    assert other_id in [m["member_id"] for m in members]
 
-    # No default channel exists at all for this pre-feature workspace.
-    channels = client.get(
-        f"/workspaces/{ws_id}/channels", headers=human_headers(client, "m_1")
-    ).json()
-    assert channels == []
+def test_list_workspace_members_requires_auth(client):
+    founder = founder_auth(client, "w1")
+    response = client.get(f"/workspaces/{founder['workspace_id']}/members")
+    assert response.status_code == 401
 
-    # Invite path (POST /workspaces/join via a shareable code)
-    invite = client.post(
-        f"/workspaces/{ws_id}/invites",
-        json={"invite_type": "code"},
-        headers=human_headers(client, "m_1"),
-    ).json()
-    third_id = human_member_id(client, "m_3")
-    join_response = client.post(
-        "/workspaces/join",
-        json={"code": invite["code"]},
-        headers=human_headers(client, "m_3"),
+
+def test_list_workspace_members_wall_blocks_foreign_workspace(client):
+    founder_auth(client, "w1")
+    foreign = founder_auth(client, "w2")
+    response = client.get(
+        f"/workspaces/{foreign['workspace_id']}/members",
+        headers=founder_headers(client, "w1"),
     )
-    assert join_response.status_code == 200
-
-    members = client.get(
-        f"/workspaces/{ws_id}/members", headers=human_headers(client, "m_1")
-    ).json()
-    assert third_id in [m["member_id"] for m in members]
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
 
 
-def test_adding_creator_again_conflicts(client):
-    workspace = client.post(
-        "/workspaces",
-        json={"workspace_name": "Acme"},
-        headers=human_headers(client, "m_1"),
-    ).json()
+def test_workspace_with_null_default_channel_supports_registration_and_listing(client):
+    """A workspace whose default_channel_id is NULL (no 'general' channel) must
+    still support registration and member listing -- there's just no channel
+    to land new members in.
+
+    Accounts always require an existing workspace, so the workspace (and a
+    seed member to authenticate as, since there's no founding endpoint that
+    skips channel creation) are inserted directly via the DB session.
+    """
+    with database_module.SessionLocal() as db:
+        ws = Workspace(workspace_name="Legacy", visibility="public")
+        db.add(ws)
+        db.flush()
+        seed = Member(
+            workspace_id=ws.workspace_id,
+            member_name="Seed",
+            member_type="human",
+            email="seed@test.example",
+            is_admin=True,
+        )
+        db.add(seed)
+        db.commit()
+        ws_id, seed_id = ws.workspace_id, seed.member_id
+
+    headers = {"Authorization": f"Bearer {create_access_token(seed_id)}"}
+
     response = client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
+        f"/workspaces/{ws_id}/register",
+        json={
+            "email": "newcomer@test.example",
+            "password": "s3cret-password",
+            "first_name": "New",
+            "last_name": "Comer",
+        },
     )
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "already_a_member"
+    assert response.status_code == 200
+    newcomer_id = response.json()["member"]["member_id"]
+
+    members = client.get(f"/workspaces/{ws_id}/members", headers=headers).json()
+    member_ids = [m["member_id"] for m in members]
+    assert seed_id in member_ids
+    assert newcomer_id in member_ids
+
+    with database_module.SessionLocal() as db:
+        assert db.query(ChannelMember).count() == 0
