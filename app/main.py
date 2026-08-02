@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.database import init_db
@@ -40,6 +41,27 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(
+    request: Request, exc: IntegrityError
+) -> JSONResponse:
+    """A database constraint fired that the request-level checks didn't catch.
+
+    Happens only when two requests race past the same SELECT-then-INSERT
+    check; the UNIQUE constraint is the backstop. The message is generic on
+    purpose — DB error text would leak schema details.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": {
+                "code": "conflict",
+                "message": "The request conflicts with existing data",
+            }
+        },
     )
 
 
