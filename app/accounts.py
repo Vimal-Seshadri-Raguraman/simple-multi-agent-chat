@@ -10,6 +10,7 @@ default-channel landing can never drift apart.
 from sqlalchemy.orm import Session
 
 from app.errors import EmailTakenError
+from app.handles import generate_unique_handle
 from app.models import ChannelMember, Member, Workspace
 from app.security import hash_password
 
@@ -51,6 +52,9 @@ def create_member_account(
         workspace_id=workspace.workspace_id,
         member_name=display_name or f"{first_name} {last_name}",
         member_type="human",
+        handle=generate_unique_handle(
+            db, workspace.workspace_id, f"{first_name[0]}{last_name}"
+        ),
         email=normalized,
         password_hash=hash_password(password),
         first_name=first_name,

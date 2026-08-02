@@ -30,6 +30,7 @@ def test_member_can_belong_to_workspace_with_admin_flag(db_session):
         member_type="human",
         workspace_id=ws.workspace_id,
         is_admin=True,
+        handle="founder",
     )
     loaded = db_session.get(Member, member.member_id)
     assert loaded.workspace_id == ws.workspace_id
@@ -44,6 +45,7 @@ def test_member_is_admin_defaults_false(db_session):
         member_name="Regular",
         member_type="human",
         workspace_id=ws.workspace_id,
+        handle="regular",
     )
     assert member.is_admin is False
 
@@ -61,6 +63,7 @@ def test_workspace_record_round_trip(db_session):
         member_name="F",
         member_type="human",
         workspace_id=ws.workspace_id,
+        handle="f",
     )
     record = _make(
         db_session,

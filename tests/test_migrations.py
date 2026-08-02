@@ -49,3 +49,34 @@ def test_no_model_migration_drift(tmp_path):
         ctx = MigrationContext.configure(conn)
         diffs = compare_metadata(ctx, Base.metadata)
     assert diffs == [], f"schema drift between models and migrations: {diffs}"
+
+
+def test_handle_backfill_for_existing_members(tmp_path):
+    url = f"sqlite:///{tmp_path}/backfill.db"
+    command.upgrade(_alembic_config(url), "64c28a528e54")  # pre-handles schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workspaces (workspace_id, workspace_name, visibility, created_at)"
+            " VALUES ('w1', 'Acme', 'private', '2026-01-01 00:00:00')"
+        )
+        for member_id, first, last, name in [
+            ("m1", "Rohan", "Mode", "Rohan Mode"),
+            ("m2", "Rita", "Mode", "Rita Mode"),  # collides -> rmode2
+            ("m3", None, None, "Helper Bot"),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, first_name, last_name, created_at)"
+                f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
+                f" {'NULL' if first is None else repr(first)},"
+                f" {'NULL' if last is None else repr(last)}, '2026-01-01 00:00:00')"
+            )
+    command.upgrade(_alembic_config(url), "head")
+    with engine.begin() as conn:
+        handles = dict(
+            conn.exec_driver_sql(
+                "SELECT member_id, handle FROM members ORDER BY member_id"
+            ).fetchall()
+        )
+    assert handles == {"m1": "rmode", "m2": "rmode2", "m3": "helper-bot"}

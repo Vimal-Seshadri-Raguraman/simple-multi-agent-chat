@@ -1,4 +1,9 @@
-from tests.conftest import founder_auth, founder_headers, member_auth
+from tests.conftest import (
+    founder_auth,
+    founder_headers,
+    member_auth,
+    member_headers,
+)
 
 
 def test_register_agent_returns_api_key(client):
@@ -234,3 +239,43 @@ def test_agent_cannot_patch_profile(client):
     )
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden_member_type"
+
+
+def test_human_handle_generated_first_initial_lastname(client):
+    auth = founder_auth(client, "w1")  # founder: first_name="Test", last_name="w1"
+    me = client.get(
+        "/member",
+        params={"id": auth["member_id"]},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert me["handle"] == "tw1"
+
+
+def test_agent_handle_from_display_name(client):
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Helper Bot!"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert agent["handle"] == "helper-bot"
+
+
+def test_patch_handle_and_collision(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    r = client.patch(
+        "/members/me", json={"handle": "boss"}, headers=founder_headers(client, "w1")
+    )
+    assert r.status_code == 200 and r.json()["handle"] == "boss"
+    other = member_auth(client, "m2", "w1")
+    r = client.patch(
+        "/members/me",
+        json={"handle": "boss"},
+        headers=member_headers(client, "m2", "w1"),
+    )
+    assert r.status_code == 409 and r.json()["error"]["code"] == "handle_taken"
+    r = client.patch(
+        "/members/me",
+        json={"handle": "Boss"},
+        headers=member_headers(client, "m2", "w1"),
+    )
+    assert r.status_code == 422  # uppercase fails the pattern

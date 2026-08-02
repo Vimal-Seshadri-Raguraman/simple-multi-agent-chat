@@ -58,6 +58,7 @@ class Member(Base):
     __tablename__ = "members"
     __table_args__ = (
         UniqueConstraint("workspace_id", "email", name="uq_members_workspace_email"),
+        UniqueConstraint("workspace_id", "handle", name="uq_members_workspace_handle"),
     )
 
     member_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
@@ -65,6 +66,7 @@ class Member(Base):
     member_type: Mapped[str] = mapped_column(
         String, nullable=False
     )  # human | agent | bot_app
+    handle: Mapped[str] = mapped_column(String, nullable=False)
     api_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -217,3 +219,25 @@ class WorkspaceRecord(Base):
     )  # active | deleted
     deleted_by: Mapped[str | None] = mapped_column(String, nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class Mention(Base):
+    """One row per `@handle` resolved in a message: the mentioned member's inbox.
+
+    Pending rows (acknowledged_at is None) are the inbox; acknowledged_at
+    set means the mention was handled (read/acked) by that member.
+    """
+
+    __tablename__ = "mentions"
+
+    mention_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    message_id: Mapped[str] = mapped_column(
+        String, ForeignKey("messages.message_id"), nullable=False, index=True
+    )
+    mentioned_member_id: Mapped[str] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)

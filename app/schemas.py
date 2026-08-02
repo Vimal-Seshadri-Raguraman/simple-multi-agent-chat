@@ -46,6 +46,7 @@ class MemberOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     created_at: datetime
     first_name: str | None = None
     last_name: str | None = None
@@ -62,6 +63,7 @@ class MemberRegisterOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     api_key: str
 
 
@@ -76,6 +78,7 @@ class MemberSelfOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     created_at: datetime
     email: str | None
     first_name: str | None
@@ -94,6 +97,9 @@ class MemberProfileUpdate(BaseModel):
     company: str | None = None
     occupation: str | None = None
     job_role: str | None = None
+    handle: str | None = Field(
+        default=None, min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$"
+    )
 
     @field_validator("display_name", "first_name", "last_name", mode="before")
     @classmethod

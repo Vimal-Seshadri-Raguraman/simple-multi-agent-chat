@@ -20,6 +20,7 @@ def test_email_invite_round_trip(db_session):
         member_name="Host",
         member_type="human",
         workspace_id=workspace.workspace_id,
+        handle="host",
     )
     invite = _make(
         db_session,
@@ -44,6 +45,7 @@ def test_code_invite_round_trip(db_session):
         member_name="Host",
         member_type="human",
         workspace_id=workspace.workspace_id,
+        handle="host",
     )
     invite = _make(
         db_session,

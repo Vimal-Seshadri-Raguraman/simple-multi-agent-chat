@@ -15,6 +15,7 @@ from app.models import (
     Channel,
     ChannelMember,
     Member,
+    Mention,
     Message,
     RefreshToken,
     Workspace,
@@ -250,13 +251,13 @@ def delete_workspace(
     entire cascade runs as one transaction, strictly children before parents:
     the workspace's own default_channel_id self-reference is cleared and
     flushed first (it points at a channel that's about to be deleted); then
-    messages -> channel_members -> channels; then, before members can be
-    deleted, everything that still references a member_id is cleared first
-    -- refresh_tokens AND workspace_invites (invite.created_by is a
-    NOT NULL FK to members, so it must go before the members delete, not
-    after); then members; then the workspace row itself; finally the
-    permanent WorkspaceRecord is updated to a tombstone ("deleted", who,
-    when) in the same commit.
+    mentions (FK messages + members) -> messages -> channel_members ->
+    channels; then, before members can be deleted, everything that still
+    references a member_id is cleared first -- refresh_tokens AND
+    workspace_invites (invite.created_by is a NOT NULL FK to members, so it
+    must go before the members delete, not after); then members; then the
+    workspace row itself; finally the permanent WorkspaceRecord is updated
+    to a tombstone ("deleted", who, when) in the same commit.
     """
     require_workspace_admin(member, workspace_id)
     if confirm != _DELETE_CONFIRMATION:
@@ -274,6 +275,14 @@ def delete_workspace(
         for c in db.query(Channel).filter(Channel.workspace_id == workspace_id).all()
     ]
     if channel_ids:
+        message_ids = [
+            m.message_id
+            for m in db.query(Message).filter(Message.channel_id.in_(channel_ids)).all()
+        ]
+        if message_ids:
+            db.query(Mention).filter(Mention.message_id.in_(message_ids)).delete(
+                synchronize_session=False
+            )
         db.query(Message).filter(Message.channel_id.in_(channel_ids)).delete(
             synchronize_session=False
         )
