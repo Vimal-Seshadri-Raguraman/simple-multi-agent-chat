@@ -5,18 +5,28 @@ from app.accounts import create_member_account
 from app.auth import get_current_member
 from app.authorization import require_same_workspace, require_workspace_admin
 from app.database import get_db
-from app.errors import ForbiddenMemberTypeError, LastAdminError, NotFoundError
+from app.errors import (
+    ConfirmationRequiredError,
+    ForbiddenMemberTypeError,
+    LastAdminError,
+    NotFoundError,
+)
 from app.models import (
     Channel,
     ChannelMember,
     Member,
+    Message,
+    RefreshToken,
     Workspace,
+    WorkspaceInvite,
     WorkspaceRecord,
     new_id,
+    utcnow,
 )
 from app.routers.auth import _issue_token_pair
 from app.schemas import (
     FoundWorkspaceIn,
+    InviteOut,
     MemberAdminIn,
     MemberOut,
     MemberSelfOut,
@@ -24,7 +34,10 @@ from app.schemas import (
     WorkspaceOut,
     WorkspaceSearchOut,
     WorkspaceVisibilityIn,
+    build_message_payload,
 )
+
+_DELETE_CONFIRMATION = "delete"
 
 router = APIRouter()
 
@@ -163,3 +176,142 @@ def update_member_admin(
     db.commit()
     db.refresh(target)
     return target
+
+
+@router.get("/workspaces/{workspace_id}/export")
+def export_workspace(
+    workspace_id: str,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Admin-only full JSON dump of a workspace: meta, channels, members, messages, invites.
+
+    Member profiles are MemberOut-shaped (no emails). Messages use the same
+    wire-schema payload as REST/WebSocket, grouped by channel_id.
+    """
+    require_workspace_admin(member, workspace_id)
+    workspace = db.query(Workspace).filter(Workspace.workspace_id == workspace_id).one()
+    channels = db.query(Channel).filter(Channel.workspace_id == workspace_id).all()
+    members = db.query(Member).filter(Member.workspace_id == workspace_id).all()
+    invites = (
+        db.query(WorkspaceInvite)
+        .filter(WorkspaceInvite.workspace_id == workspace_id)
+        .all()
+    )
+    members_by_id = {m.member_id: m for m in members}
+
+    messages_by_channel: dict[str, list[dict]] = {}
+    for channel in channels:
+        channel_messages = (
+            db.query(Message)
+            .filter(Message.channel_id == channel.channel_id)
+            .order_by(Message.seq.asc())
+            .all()
+        )
+        messages_by_channel[channel.channel_id] = [
+            build_message_payload(
+                msg, workspace, channel, members_by_id[msg.sender_member_id]
+            )
+            for msg in channel_messages
+        ]
+
+    return {
+        "workspace": {
+            "workspace_id": workspace.workspace_id,
+            "workspace_name": workspace.workspace_name,
+            "visibility": workspace.visibility,
+            "created_at": workspace.created_at,
+        },
+        "channels": [
+            {
+                "channel_id": c.channel_id,
+                "channel_name": c.channel_name,
+                "created_at": c.created_at,
+            }
+            for c in channels
+        ],
+        "members": [MemberOut.model_validate(m).model_dump() for m in members],
+        "messages": messages_by_channel,
+        "pending_invites": [InviteOut.model_validate(i).model_dump() for i in invites],
+    }
+
+
+@router.delete("/workspaces/{workspace_id}")
+def delete_workspace(
+    workspace_id: str,
+    confirm: str | None = None,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Admin-only, confirmed deletion of a workspace: full cascade + audit tombstone.
+
+    Requires ?confirm=delete exactly (case-sensitive); anything else raises
+    ConfirmationRequiredError before any row is touched. On success, the
+    entire cascade runs as one transaction, strictly children before parents:
+    the workspace's own default_channel_id self-reference is cleared and
+    flushed first (it points at a channel that's about to be deleted); then
+    messages -> channel_members -> channels; then, before members can be
+    deleted, everything that still references a member_id is cleared first
+    -- refresh_tokens AND workspace_invites (invite.created_by is a
+    NOT NULL FK to members, so it must go before the members delete, not
+    after); then members; then the workspace row itself; finally the
+    permanent WorkspaceRecord is updated to a tombstone ("deleted", who,
+    when) in the same commit.
+    """
+    require_workspace_admin(member, workspace_id)
+    if confirm != _DELETE_CONFIRMATION:
+        raise ConfirmationRequiredError(
+            f"Deleting a workspace requires ?confirm={_DELETE_CONFIRMATION}"
+        )
+
+    workspace = db.query(Workspace).filter(Workspace.workspace_id == workspace_id).one()
+
+    workspace.default_channel_id = None
+    db.flush()
+
+    channel_ids = [
+        c.channel_id
+        for c in db.query(Channel).filter(Channel.workspace_id == workspace_id).all()
+    ]
+    if channel_ids:
+        db.query(Message).filter(Message.channel_id.in_(channel_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(ChannelMember).filter(
+            ChannelMember.channel_id.in_(channel_ids)
+        ).delete(synchronize_session=False)
+        db.query(Channel).filter(Channel.workspace_id == workspace_id).delete(
+            synchronize_session=False
+        )
+
+    member_ids = [
+        m.member_id
+        for m in db.query(Member).filter(Member.workspace_id == workspace_id).all()
+    ]
+    if member_ids:
+        db.query(RefreshToken).filter(RefreshToken.member_id.in_(member_ids)).delete(
+            synchronize_session=False
+        )
+    # workspace_invites.created_by is a NOT NULL FK to members, so pending
+    # invites must be cleared before the members delete below, not after.
+    db.query(WorkspaceInvite).filter(
+        WorkspaceInvite.workspace_id == workspace_id
+    ).delete(synchronize_session=False)
+    if member_ids:
+        db.query(Member).filter(Member.workspace_id == workspace_id).delete(
+            synchronize_session=False
+        )
+
+    db.delete(workspace)
+
+    record = (
+        db.query(WorkspaceRecord)
+        .filter(WorkspaceRecord.workspace_id == workspace_id)
+        .one()
+    )
+    record.status = "deleted"
+    record.deleted_by = member.member_id
+    record.deleted_at = utcnow()
+
+    db.commit()
+    return {"status": "deleted"}

@@ -72,3 +72,8 @@ class NotWorkspaceAdminError(AppError):
 class LastAdminError(AppError):
     status_code = 409
     code = "last_admin"
+
+
+class ConfirmationRequiredError(AppError):
+    status_code = 422
+    code = "confirmation_required"
