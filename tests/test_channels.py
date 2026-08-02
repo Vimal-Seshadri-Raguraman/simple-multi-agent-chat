@@ -46,15 +46,10 @@ def test_create_channel_in_nonexistent_workspace_404s(client):
 
 def test_list_channels(client):
     workspace = _create_workspace(client)
-    # Add creator to workspace members
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
-    )
+    # Workspace creation already bootstraps a "general" channel; create one more.
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "random"},
         headers=human_headers(client, "m_1"),
     )
     response = client.get(
@@ -62,7 +57,7 @@ def test_list_channels(client):
         headers=human_headers(client, "m_1"),
     )
     assert response.status_code == 200
-    assert len(response.json()) == 1
+    assert len(response.json()) == 2
 
 
 def test_list_channels_requires_auth(client):
@@ -201,12 +196,7 @@ def test_adding_same_channel_member_twice_conflicts(client):
 
 def test_list_channel_members(client):
     workspace = _create_workspace(client)
-    # Add creator to workspace members
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
-    )
+    # Creator is already a workspace member (auto-added at workspace creation).
     channel = client.post(
         f"/workspaces/{workspace['workspace_id']}/channels",
         json={"channel_name": "general"},

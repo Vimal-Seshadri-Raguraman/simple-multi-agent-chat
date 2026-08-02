@@ -46,12 +46,8 @@ def test_websocket_receives_broadcast_message(client):
             pass
     assert exc_info.value.code == 4403
 
-    # Add m_1 to the workspace, then to the channel.
-    client.post(
-        f"/workspaces/{workspace['workspace_id']}/members",
-        json={"member_id": human_member_id(client, "m_1")},
-        headers=human_headers(client, "m_1"),
-    )
+    # m_1 is already a workspace member (auto-added at creation); add them to
+    # this channel — a non-default channel, so they aren't auto-joined to it.
     client.post(
         f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
         json={"member_id": human_member_id(client, "m_1")},

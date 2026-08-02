@@ -7,7 +7,7 @@ from app.authorization import (
     authorize_workspace_read,
 )
 from app.errors import ForbiddenMemberTypeError, NotAMemberError
-from app.models import ChannelMember, Member, WorkspaceMember
+from app.models import Channel, ChannelMember, Member, Workspace, WorkspaceMember
 
 
 def _make_member(db, member_type: str) -> Member:
@@ -16,6 +16,23 @@ def _make_member(db, member_type: str) -> Member:
     db.commit()
     db.refresh(member)
     return member
+
+
+def _make_workspace(db, workspace_id: str) -> None:
+    """Insert a bare workspace row so FK-constrained membership rows are valid."""
+    db.add(Workspace(workspace_id=workspace_id, workspace_name="Test Workspace"))
+    db.commit()
+
+
+def _make_channel(db, channel_id: str, workspace_id: str = "w_1") -> None:
+    """Insert a bare workspace + channel row so FK-constrained membership rows are valid."""
+    _make_workspace(db, workspace_id)
+    db.add(
+        Channel(
+            channel_id=channel_id, workspace_id=workspace_id, channel_name="general"
+        )
+    )
+    db.commit()
 
 
 def test_human_may_perform_management_action(db_session):
@@ -32,6 +49,7 @@ def test_non_human_may_not_perform_management_action(db_session, member_type):
 
 def test_channel_member_may_post(db_session):
     member = _make_member(db_session, "agent")
+    _make_channel(db_session, "c_1")
     db_session.add(ChannelMember(channel_id="c_1", member_id=member.member_id))
     db_session.commit()
     authorize_post_message(db_session, member, "c_1")  # should not raise
@@ -45,6 +63,7 @@ def test_non_channel_member_may_not_post(db_session):
 
 def test_channel_member_may_read(db_session):
     member = _make_member(db_session, "human")
+    _make_channel(db_session, "c_1")
     db_session.add(ChannelMember(channel_id="c_1", member_id=member.member_id))
     db_session.commit()
     authorize_channel_read(db_session, member, "c_1")  # should not raise
@@ -58,6 +77,7 @@ def test_non_channel_member_may_not_read(db_session):
 
 def test_workspace_member_may_read(db_session):
     member = _make_member(db_session, "agent")
+    _make_workspace(db_session, "w_1")
     db_session.add(WorkspaceMember(workspace_id="w_1", member_id=member.member_id))
     db_session.commit()
     authorize_workspace_read(db_session, member, "w_1")  # should not raise
