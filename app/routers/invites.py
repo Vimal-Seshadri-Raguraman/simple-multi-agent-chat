@@ -180,6 +180,22 @@ def register_by_code(
     workspace = db.get(Workspace, invite.workspace_id)
     if workspace is None:
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+    # If this email also holds a pending reserved seat here, consume it —
+    # otherwise the seat becomes permanently unusable (the email now has an
+    # account) and its existence would leak via create_invite's 409. The
+    # staged delete rides _register_account's single commit; on a failed
+    # registration (e.g. email_taken) nothing is flushed and the seat stays.
+    seat = (
+        db.query(WorkspaceInvite)
+        .filter(
+            WorkspaceInvite.workspace_id == workspace.workspace_id,
+            WorkspaceInvite.invite_type == "email",
+            WorkspaceInvite.email == body.email.lower(),
+        )
+        .first()
+    )
+    if seat is not None:
+        db.delete(seat)
     return _register_account(db, workspace, body)
 
 

@@ -29,11 +29,6 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
-class NotAWorkspaceMemberError(AppError):
-    status_code = 409
-    code = "not_a_workspace_member"
-
-
 class AlreadyAMemberError(AppError):
     status_code = 409
     code = "already_a_member"

@@ -1,5 +1,7 @@
 """Endpoint tests for workspace founding/registration and /auth/login."""
 
+from tests.conftest import founder_auth
+
 FOUND_BODY = {
     "workspace_name": "Wonderland",
     "email": "Alice@Example.com",
@@ -223,3 +225,32 @@ def test_logout_cannot_kill_another_members_token(client):
         "/auth/refresh", json={"refresh_token": tokens_b["refresh_token"]}
     )
     assert response.status_code == 200
+
+
+def test_password_byte_cap_not_char_cap(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    base = {"first_name": "By", "last_name": "Tes"}
+    # 40 two-byte chars = 80 bytes but only 40 characters: must be rejected
+    r = client.post(
+        f"/workspaces/{ws}/register",
+        json={**base, "email": "multi@test.example", "password": "é" * 40},
+    )
+    assert r.status_code == 422
+    # Exactly 72 bytes (36 two-byte chars): allowed
+    r = client.post(
+        f"/workspaces/{ws}/register",
+        json={**base, "email": "edge@test.example", "password": "é" * 36},
+    )
+    assert r.status_code == 200
+    # 72 ASCII chars = 72 bytes: allowed
+    r = client.post(
+        f"/workspaces/{ws}/register",
+        json={**base, "email": "ascii@test.example", "password": "x" * 72},
+    )
+    assert r.status_code == 200
+    # 73 ASCII chars: rejected
+    r = client.post(
+        f"/workspaces/{ws}/register",
+        json={**base, "email": "long@test.example", "password": "x" * 73},
+    )
+    assert r.status_code == 422
