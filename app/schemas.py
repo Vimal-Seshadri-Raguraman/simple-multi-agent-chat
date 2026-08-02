@@ -103,23 +103,27 @@ class MemberProfileUpdate(BaseModel):
         default=None, min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$"
     )
 
-    @field_validator("display_name", "first_name", "last_name", mode="before")
+    @field_validator("display_name", "first_name", "last_name", "handle", mode="before")
     @classmethod
     def _reject_explicit_null(cls, value: str | None) -> str | None:
         """Reject an explicit JSON null for required-on-registration fields.
 
-        `min_length` only constrains the `str` branch of `str | None`; an
-        explicit JSON `null` bypasses it entirely. Pydantic only invokes
-        validators when the field is actually present in the payload (by
-        default it does not validate an unset field's default), so this
-        only fires when the client explicitly sends `null` -- omitting the
-        field entirely still leaves it untouched, as intended for a partial
-        update. Without this check, `PATCH /members/me {"display_name":
-        null}` would set the member's NOT NULL `member_name` column to
-        None (raw 500 IntegrityError outside the error envelope), and
-        `{"first_name": null}` / `{"last_name": null}` would silently wipe
-        registration-required fields (200 OK). company/occupation/job_role
-        are intentionally exempt: explicitly clearing them is legitimate.
+        `min_length`/`pattern` only constrain the `str` branch of
+        `str | None`; an explicit JSON `null` bypasses them entirely.
+        Pydantic only invokes validators when the field is actually present
+        in the payload (by default it does not validate an unset field's
+        default), so this only fires when the client explicitly sends
+        `null` -- omitting the field entirely still leaves it untouched, as
+        intended for a partial update. Without this check, `PATCH
+        /members/me {"display_name": null}` would set the member's NOT NULL
+        `member_name` column to None (raw 500 IntegrityError outside the
+        error envelope), and `{"first_name": null}` / `{"last_name": null}`
+        would silently wipe registration-required fields (200 OK).
+        `{"handle": null}` has the same shape: it skips the taken-check
+        (`handle IS NULL` matches nobody) and hits the members NOT NULL
+        constraint at commit, surfacing as a generic 409 `conflict` instead
+        of a 422. company/occupation/job_role are intentionally exempt:
+        explicitly clearing them is legitimate.
         """
         if value is None:
             raise ValueError("must not be null")

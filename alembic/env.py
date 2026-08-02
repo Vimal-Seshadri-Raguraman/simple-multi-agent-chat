@@ -88,6 +88,16 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # Deliberately a bare `engine_from_config` engine -- it never receives
+    # the `enable_sqlite_foreign_keys` listener that `app/database.py`
+    # attaches to the app's engine, so migrations run with
+    # `PRAGMA foreign_keys` OFF. This is load-bearing: SQLite batch-mode
+    # migrations (e.g. `alter_column`/`create_unique_constraint` on
+    # `members`) recreate the table via copy/drop/rename, and that drop
+    # would fail under FK enforcement on any populated DB, since
+    # messages/channel_members/refresh_tokens/workspace_invites/mentions
+    # all parent to `members`. Do not "fix" this to match runtime FK
+    # enforcement without first making batch migrations FK-safe.
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

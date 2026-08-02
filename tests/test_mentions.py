@@ -90,6 +90,33 @@ def test_duplicate_and_self_mentions(client):
         assert all(r.mentioned_member_id != founder_id for r in rows)
 
 
+def test_literal_token_text_does_not_spoof_a_mention(client):
+    """Posting a literal `<@member_id>` string (member IDs are visible via
+
+    the members listing) must not masquerade as a real mention: no Mention
+    row, no event, and the payload must not falsely claim the victim was
+    mentioned.
+    """
+    ws, general, m2 = _setup(client)
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": f"look <@{m2}> not a real mention"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert posted["mentions"] == []
+
+    with database_module.SessionLocal() as db:
+        rows = (
+            db.query(Mention)
+            .filter(Mention.message_id == posted["Message"]["message_id"])
+            .all()
+        )
+        assert rows == []
+
+    inbox = client.get("/mentions", headers=member_headers(client, "m2", "w1")).json()
+    assert inbox == []
+
+
 def test_channel_ref_resolves_as_link_only(client):
     ws, general, _ = _setup(client)
     client.post(
@@ -104,6 +131,60 @@ def test_channel_ref_resolves_as_link_only(client):
     ).json()
     assert [c["channel_name"] for c in posted["channel_refs"]] == ["reports"]
     assert posted["Message"]["message_text"] == "see #reports and #nonexistent"
+
+
+def test_email_like_text_does_not_trigger_a_mention(client):
+    """A handle-shaped substring inside an email address must not resolve.
+
+    Regression for the missing left word-boundary in HANDLE_PATTERN: with
+    handle "tm2" existing, "rohan@tm2.com" must not create a mention of m2.
+    """
+    ws, general, m2 = _setup(client)
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": "contact rohan@tm2.com for details"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert posted["mentions"] == []
+    assert posted["Message"]["message_text"] == "contact rohan@tm2.com for details"
+
+    with database_module.SessionLocal() as db:
+        rows = (
+            db.query(Mention)
+            .filter(Mention.message_id == posted["Message"]["message_id"])
+            .all()
+        )
+        assert rows == []
+
+
+def test_handle_in_parens_and_at_start_and_after_whitespace_still_mentions(client):
+    """Non-word punctuation, start-of-string, and whitespace before `@` are
+
+    all still valid mention boundaries -- only a preceding word character
+    (as in an email/mid-word `@`) suppresses the match.
+    """
+    ws, general, m2 = _setup(client)
+
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": "(@tm2) please check"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert [m["member_id"] for m in posted["mentions"]] == [m2]
+
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": "@tm2 start of message"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert [m["member_id"] for m in posted["mentions"]] == [m2]
+
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": "hi there @tm2"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert [m["member_id"] for m in posted["mentions"]] == [m2]
 
 
 def test_rename_reflected_at_read_time(client):

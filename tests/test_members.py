@@ -279,3 +279,16 @@ def test_patch_handle_and_collision(client):
         headers=member_headers(client, "m2", "w1"),
     )
     assert r.status_code == 422  # uppercase fails the pattern
+
+
+def test_patch_explicit_null_handle_is_422(client):
+    """Explicit JSON null must be rejected like the sibling required fields,
+
+    not fall through to a DB NOT NULL violation surfaced as a generic 409.
+    """
+    response = client.patch(
+        "/members/me",
+        json={"handle": None},
+        headers=founder_headers(client, "w1"),
+    )
+    assert response.status_code == 422

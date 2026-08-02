@@ -13,9 +13,18 @@ from sqlalchemy.orm import Session
 
 from app.models import Channel, Member, Mention, Message, Workspace
 
-HANDLE_PATTERN = re.compile(r"@([a-z0-9-]{2,32})")
+HANDLE_PATTERN = re.compile(r"(?<![A-Za-z0-9_])@([a-z0-9-]{2,32})")
 TOKEN_PATTERN = re.compile(r"<@([0-9a-fA-F-]{36})>")
 CHANNEL_PATTERN = re.compile(r"#([a-zA-Z0-9_-]{1,80})")
+
+# Matches the literal `<@` opener that a genuine mention token always starts
+# with. Applied to raw inbound text *before* `@handle` rewriting, so a user
+# who types a literal `<@member-id>` string can never masquerade as a real
+# mention: only tokens the rewriter itself produces (after this pass) can
+# ever match TOKEN_PATTERN in stored text. The zero-width space is invisible
+# in any renderer but breaks the `<@` adjacency TOKEN_PATTERN requires.
+RAW_TOKEN_OPENER_PATTERN = re.compile(r"<@")
+_ZERO_WIDTH_SPACE = "\u200b"  # U+200B, invisible in any renderer
 
 
 def canonicalize(
@@ -26,7 +35,17 @@ def canonicalize(
     Returns (canonical_text, mentioned members -- deduped, sender excluded).
     Unresolved handles (no matching member in this workspace) are left
     untouched in the text and never appear in the mentioned list.
+
+    Before any handle rewriting, literal `<@` sequences already present in
+    the raw text are neutralized (see `RAW_TOKEN_OPENER_PATTERN`). Without
+    this, typing a literal `<@<member_id>>` would pass through untouched and
+    be indistinguishable from a real mention token at read time -- the
+    payload would show the member as mentioned with no `Mention` row and no
+    event ever created. This guarantees the invariant: every `<@uuid>` token
+    in stored text was created by this function, never by raw user input.
     """
+    text = RAW_TOKEN_OPENER_PATTERN.sub(f"<{_ZERO_WIDTH_SPACE}@", text)
+
     members_by_handle = {
         m.handle: m
         for m in db.query(Member).filter(Member.workspace_id == workspace_id).all()
