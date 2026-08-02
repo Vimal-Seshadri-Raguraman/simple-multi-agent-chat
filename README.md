@@ -86,7 +86,7 @@ curl -X POST http://127.0.0.1:8000/workspaces -H 'Content-Type: application/json
 
 Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
 
-> **Schema changes:** the project doesn't ship database migrations yet — after upgrading, delete `smac.db` and start fresh. (Alembic migrations are on the near-term roadmap.)
+> **Upgrades:** the server runs database migrations automatically on startup (`alembic upgrade head`), so your data survives version upgrades. Contributors changing the schema: `alembic revision --autogenerate -m "describe change"` and commit the generated file under `alembic/versions/`. (Databases created before migrations existed — pre-v0 dev scratch — must be deleted once.)
 
 ## ⚠️ Local use only (for now)
 

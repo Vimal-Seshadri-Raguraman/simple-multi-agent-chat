@@ -1,12 +1,13 @@
 import os
+from pathlib import Path
 from typing import Generator
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
-
-from app.models import Base
 
 load_dotenv()
 
@@ -53,6 +54,22 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _alembic_config(url: str) -> AlembicConfig:
+    """Programmatic Alembic config pointing at this repo's migration scripts."""
+    config = AlembicConfig(str(_REPO_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_REPO_ROOT / "alembic"))
+    config.set_main_option("sqlalchemy.url", url)
+    return config
+
+
 def init_db() -> None:
-    """Create all tables. Called once at app startup."""
-    Base.metadata.create_all(bind=engine)
+    """Bring the database to the latest schema. Called once at app startup.
+
+    Runs `alembic upgrade head`: builds a fresh database from the migration
+    chain, no-ops on an up-to-date one, and applies pending revisions to an
+    older one — users keep their data across upgrades.
+    """
+    command.upgrade(_alembic_config(DATABASE_URL), "head")
