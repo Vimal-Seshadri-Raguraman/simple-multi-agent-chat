@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Member, RefreshToken, utcnow
+from app.models import Member, RefreshToken, Workspace, utcnow
 
 
 def test_member_auth_columns_default_to_none(db_session):
@@ -16,9 +16,23 @@ def test_member_auth_columns_default_to_none(db_session):
     assert member.company is None
 
 
-def test_duplicate_email_rejected(db_session):
-    m1 = Member(member_name="A", member_type="human", email="a@x.com")
-    m2 = Member(member_name="B", member_type="human", email="a@x.com")
+def test_duplicate_email_same_workspace_rejected(db_session):
+    """Email uniqueness is per-workspace: same email + same workspace_id collides."""
+    ws = Workspace(workspace_name="Acme")
+    db_session.add(ws)
+    db_session.commit()
+    m1 = Member(
+        member_name="A",
+        member_type="human",
+        email="a@x.com",
+        workspace_id=ws.workspace_id,
+    )
+    m2 = Member(
+        member_name="B",
+        member_type="human",
+        email="a@x.com",
+        workspace_id=ws.workspace_id,
+    )
     db_session.add_all([m1, m2])
     with pytest.raises(IntegrityError):
         db_session.commit()

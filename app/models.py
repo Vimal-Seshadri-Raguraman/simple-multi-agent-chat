@@ -56,6 +56,9 @@ class UTCDateTime(TypeDecorator[datetime]):
 
 class Member(Base):
     __tablename__ = "members"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "email", name="uq_members_workspace_email"),
+    )
 
     member_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     member_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -63,9 +66,7 @@ class Member(Base):
         String, nullable=False
     )  # human | agent | bot_app
     api_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    email: Mapped[str | None] = mapped_column(
-        String, nullable=True, unique=True, index=True
-    )
+    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     first_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_name: Mapped[str | None] = mapped_column(String, nullable=True)
