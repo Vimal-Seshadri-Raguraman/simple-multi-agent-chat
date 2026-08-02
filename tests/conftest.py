@@ -1,3 +1,10 @@
+import os
+import tempfile
+
+# Set the test database BEFORE any app imports: the lifespan's init_db() runs at
+# TestClient boot and must never touch a developer's legacy smac.db.
+os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/test-lifespan.db"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine

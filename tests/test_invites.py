@@ -352,3 +352,56 @@ def test_failed_registration_does_not_consume_seat(client):
     # The seat must have survived the failed registration.
     with database_module.SessionLocal() as db:
         assert db.get(WorkspaceInvite, seat_id) is not None
+
+
+def test_code_registration_consumes_matching_email_seat(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    headers = founder_headers(client, "w1")
+    client.post(
+        f"/workspaces/{ws}/invites",
+        json={"invite_type": "email", "email": "dual@test.example"},
+        headers=headers,
+    )
+    code = client.post(
+        f"/workspaces/{ws}/invites", json={"invite_type": "code"}, headers=headers
+    ).json()["code"]
+
+    joined = client.post(
+        "/workspaces/join",
+        json={
+            "code": code,
+            "email": "DUAL@test.example",
+            "password": "dual-pass-12",
+            "first_name": "Du",
+            "last_name": "Al",
+        },
+    )
+    assert joined.status_code == 200
+    remaining = client.get(f"/workspaces/{ws}/invites", headers=headers).json()
+    # The email seat is gone (consumed by the code registration); the code survives.
+    assert [i["invite_type"] for i in remaining] == ["code"]
+
+
+def test_code_registration_leaves_other_seats_alone(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    headers = founder_headers(client, "w1")
+    client.post(
+        f"/workspaces/{ws}/invites",
+        json={"invite_type": "email", "email": "someoneelse@test.example"},
+        headers=headers,
+    )
+    code = client.post(
+        f"/workspaces/{ws}/invites", json={"invite_type": "code"}, headers=headers
+    ).json()["code"]
+    client.post(
+        "/workspaces/join",
+        json={
+            "code": code,
+            "email": "unrelated@test.example",
+            "password": "unrl-pass-12",
+            "first_name": "Un",
+            "last_name": "Rel",
+        },
+    )
+    remaining = client.get(f"/workspaces/{ws}/invites", headers=headers).json()
+    assert sorted(i["invite_type"] for i in remaining) == ["code", "email"]

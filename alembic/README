@@ -1,0 +1,2 @@
+Migrations are applied automatically at server startup via the FastAPI lifespan hook.
+Contributors should run `alembic revision --autogenerate -m "..."` after model changes (env.py's render_item hook handles custom UTCDateTime imports).

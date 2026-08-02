@@ -122,13 +122,23 @@ class RegisterIn(BaseModel):
     """Registration request. Names are required; the rest of the profile is optional."""
 
     email: EmailStr
-    password: str = Field(min_length=8, max_length=72)
+    password: str = Field(min_length=8)
     first_name: str = Field(min_length=1)
     last_name: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)
     company: str | None = None
     occupation: str | None = None
     job_role: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt_limit(cls, value: str) -> str:
+        """bcrypt silently truncates beyond 72 BYTES; reject instead of truncating."""
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError(
+                "password must be at most 72 bytes when UTF-8 encoded (bcrypt limit)"
+            )
+        return value
 
 
 class LoginIn(BaseModel):
