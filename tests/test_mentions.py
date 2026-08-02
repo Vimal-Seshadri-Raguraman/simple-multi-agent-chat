@@ -1,5 +1,7 @@
 """@handle mention parsing/canonicalization and #channel reference resolution."""
 
+import app.database as database_module
+from app.models import Mention
 from tests.conftest import (
     founder_auth,
     founder_headers,
@@ -58,12 +60,30 @@ def test_unresolved_handle_left_alone(client):
 
 def test_duplicate_and_self_mentions(client):
     ws, general, m2 = _setup(client)
+    founder_id = founder_auth(client, "w1")["member_id"]
     posted = client.post(
         f"/workspaces/{ws}/channels/{general}/messages",
         json={"message_text": f"@tm2 @tm2 and @{me_handle(client)} too"},
         headers=founder_headers(client, "w1"),
     ).json()
     assert len(posted["mentions"]) == 1  # deduped, self excluded
+
+    # Assert directly against the DB, not just the payload: the payload's
+    # `mentions` array has the sender's own id filtered out by
+    # build_message_payload regardless of what actually got written, so it
+    # can't catch a regression in canonicalize's self-exclusion guard that
+    # started inserting a Mention row for the sender. Task 4 fans out events
+    # from Mention rows directly, so a masked self-mention row would
+    # self-notify -- this must be checked at the row level.
+    with database_module.SessionLocal() as db:
+        rows = (
+            db.query(Mention)
+            .filter(Mention.message_id == posted["Message"]["message_id"])
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0].mentioned_member_id == m2
+        assert all(r.mentioned_member_id != founder_id for r in rows)
 
 
 def test_channel_ref_resolves_as_link_only(client):
