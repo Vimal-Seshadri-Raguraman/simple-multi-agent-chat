@@ -37,3 +37,15 @@ def test_migrations_match_models(tmp_path):
         migrated_cols = {c["name"] for c in inspector.get_columns(table_name)}
         model_cols = {c.name for c in table.columns}
         assert model_cols == migrated_cols, f"drift in {table_name}"
+
+
+def test_no_model_migration_drift(tmp_path):
+    """Alembic's own comparator must see zero differences of ANY kind."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    engine = _upgraded_engine(tmp_path)
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        diffs = compare_metadata(ctx, Base.metadata)
+    assert diffs == [], f"schema drift between models and migrations: {diffs}"

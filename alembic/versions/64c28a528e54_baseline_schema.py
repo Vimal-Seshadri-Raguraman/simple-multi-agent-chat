@@ -6,6 +6,8 @@ Create Date: 2026-08-02 10:38:33.167710
 
 """
 
+# NOTE: table order relies on SQLite's lax DDL-time FK checking; a future Postgres port must break the workspaces<->channels FK cycle (use_alter) here.
+
 from typing import Sequence, Union
 
 from alembic import op
