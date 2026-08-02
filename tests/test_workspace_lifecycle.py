@@ -1,7 +1,7 @@
 """Workspace export and confirmed deletion with audit tombstone."""
 
 import app.database as database_module
-from app.models import Member, Workspace, WorkspaceRecord
+from app.models import Member, Mention, Workspace, WorkspaceRecord
 from tests.conftest import founder_auth, founder_headers, member_auth, member_headers
 
 
@@ -75,6 +75,40 @@ def test_delete_cascades_and_updates_tombstone(client):
     # dead tokens: the founder's bearer no longer works anywhere
     r = client.get(f"/workspaces/{ws}/members", headers=founder_headers(client, "w1"))
     assert r.status_code == 401
+
+
+def test_delete_cascades_mentions_from_a_real_mention(client):
+    # Regression coverage for the mentions-before-messages cascade order:
+    # unlike _seed's plain "hello" message, this one produces an actual
+    # Mention row (m2's handle is "tm2" -- see app/handles.py slugify), so
+    # the delete's `Mention` cleanup step is actually exercised with rows
+    # present, not a no-op on an empty table.
+    ws = _seed(client)
+    channels = client.get(
+        f"/workspaces/{ws}/channels", headers=founder_headers(client, "w1")
+    ).json()
+    general = channels[0]["channel_id"]
+    posted = client.post(
+        f"/workspaces/{ws}/channels/{general}/messages",
+        json={"message_text": "@tm2 please review"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    assert posted["mentions"], "expected a real mention row to be created"
+
+    r = client.delete(
+        f"/workspaces/{ws}",
+        params={"confirm": "delete"},
+        headers=founder_headers(client, "w1"),
+    )
+    assert r.status_code == 200 and r.json() == {"status": "deleted"}
+    with database_module.SessionLocal() as db:
+        assert db.get(Workspace, ws) is None
+        assert (
+            db.query(Mention)
+            .filter(Mention.message_id == posted["Message"]["message_id"])
+            .count()
+            == 0
+        )
 
 
 def test_delete_admin_only(client):

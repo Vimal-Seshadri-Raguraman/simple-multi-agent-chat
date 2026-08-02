@@ -211,7 +211,7 @@ def export_workspace(
         )
         messages_by_channel[channel.channel_id] = [
             build_message_payload(
-                msg, workspace, channel, members_by_id[msg.sender_member_id]
+                msg, workspace, channel, members_by_id[msg.sender_member_id], db
             )
             for msg in channel_messages
         ]

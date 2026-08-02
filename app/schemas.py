@@ -9,7 +9,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlalchemy.orm import Session
 
+from app.mentions import resolve_payload_refs
 from app.models import Channel, Member, Message, Workspace
 
 
@@ -241,9 +243,29 @@ class InviteOut(BaseModel):
 
 
 def build_message_payload(
-    message: Message, workspace: Workspace, channel: Channel, sender: Member
+    message: Message,
+    workspace: Workspace,
+    channel: Channel,
+    sender: Member,
+    db: Session,
 ) -> dict:
-    """The single source of truth for the wire schema shared by REST and WebSocket."""
+    """The single source of truth for the wire schema shared by REST and WebSocket.
+
+    `mentions` and `channel_refs` are resolved fresh from the stored
+    canonical text on every call (via `resolve_payload_refs`), so a handle
+    or channel rename is reflected immediately without rewriting any
+    stored message -- both arrays are always present, empty when nothing
+    resolves. The sender's own token is excluded from `mentions`: a
+    self-mention is already visible via `Sender` and never produced a
+    `Mention` row at post time (see `canonicalize`), so it's a no-op here
+    too, on both the POST response and every later GET.
+    """
+    mentioned_members, referenced_channels = resolve_payload_refs(
+        db, workspace.workspace_id, message.message_text
+    )
+    mentioned_members = [
+        m for m in mentioned_members if m.member_id != sender.member_id
+    ]
     return {
         "timestamp": message.created_at.isoformat(),
         "workspace": {
@@ -259,4 +281,16 @@ def build_message_payload(
             "message_id": message.message_id,
             "message_text": message.message_text,
         },
+        "mentions": [
+            {
+                "member_id": m.member_id,
+                "handle": m.handle,
+                "member_name": m.member_name,
+            }
+            for m in mentioned_members
+        ],
+        "channel_refs": [
+            {"channel_id": c.channel_id, "channel_name": c.channel_name}
+            for c in referenced_channels
+        ],
     }

@@ -9,7 +9,8 @@ from app.authorization import (
 )
 from app.database import get_db
 from app.errors import NotFoundError
-from app.models import Channel, Member, Message, Workspace
+from app.mentions import canonicalize
+from app.models import Channel, Member, Mention, Message, Workspace
 from app.schemas import MessageCreate, build_message_payload
 from app.ws_manager import manager
 
@@ -59,17 +60,28 @@ async def post_message(
     workspace, channel = _get_workspace_and_channel(db, workspace_id, channel_id)
     authorize_post_message(db, member, channel_id)
 
+    canonical_text, mentioned = canonicalize(
+        db, workspace_id, member.member_id, body.message_text
+    )
     message = Message(
         channel_id=channel_id,
         sender_member_id=member.member_id,
-        message_text=body.message_text,
+        message_text=canonical_text,
         seq=_next_seq(db, channel_id),
     )
     db.add(message)
+    db.flush()  # assigns message.message_id for the Mention rows below
+    for mentioned_member in mentioned:
+        db.add(
+            Mention(
+                message_id=message.message_id,
+                mentioned_member_id=mentioned_member.member_id,
+            )
+        )
     db.commit()
     db.refresh(message)
 
-    payload = build_message_payload(message, workspace, channel, member)
+    payload = build_message_payload(message, workspace, channel, member, db)
     await manager.broadcast(channel_id, payload)
     return payload
 
@@ -104,6 +116,6 @@ def get_messages(
         for s in db.query(Member).filter(Member.member_id.in_(sender_ids)).all()
     }
     return [
-        build_message_payload(m, workspace, channel, senders[m.sender_member_id])
+        build_message_payload(m, workspace, channel, senders[m.sender_member_id], db)
         for m in messages
     ]
