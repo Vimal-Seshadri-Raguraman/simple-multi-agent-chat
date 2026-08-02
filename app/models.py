@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -71,6 +72,10 @@ class Member(Base):
     company: Mapped[str | None] = mapped_column(String, nullable=True)
     occupation: Mapped[str | None] = mapped_column(String, nullable=True)
     job_role: Mapped[str | None] = mapped_column(String, nullable=True)
+    workspace_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("workspaces.workspace_id"), nullable=True, index=True
+    )  # Staging: nullable until the Slack-model cutover makes it required.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
@@ -81,6 +86,9 @@ class Workspace(Base):
 
     workspace_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     workspace_name: Mapped[str] = mapped_column(String, nullable=False)
+    visibility: Mapped[str] = mapped_column(
+        String, nullable=False, default="private"
+    )  # public | private
     default_channel_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("channels.channel_id"), nullable=True
     )
@@ -194,3 +202,28 @@ class WorkspaceInvite(Base):
         UTCDateTime, default=utcnow, nullable=False
     )
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+class WorkspaceRecord(Base):
+    """Permanent ledger row for every workspace that ever existed.
+
+    Written at creation (status "active"), updated at deletion (status
+    "deleted" + who/when). Never deleted — the workspaces row itself is
+    hard-deleted so live queries need no status filtering; this tombstone
+    carries the audit trail and is the single source of truth for nothing
+    at runtime except deletion history (admin checks use Member.is_admin).
+    """
+
+    __tablename__ = "workspace_records"
+
+    workspace_id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_name: Mapped[str] = mapped_column(String, nullable=False)
+    created_by: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="active"
+    )  # active | deleted
+    deleted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
