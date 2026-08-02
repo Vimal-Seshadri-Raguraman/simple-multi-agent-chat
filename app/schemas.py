@@ -24,6 +24,13 @@ class WorkspaceOut(BaseModel):
     visibility: str
 
 
+class WorkspaceSearchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    workspace_id: str
+    workspace_name: str
+    visibility: str
+
+
 class ChannelCreate(BaseModel):
     channel_name: str
 

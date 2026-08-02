@@ -22,6 +22,7 @@ from app.schemas import (
     MemberSelfOut,
     WorkspaceAuthOut,
     WorkspaceOut,
+    WorkspaceSearchOut,
     WorkspaceVisibilityIn,
 )
 
@@ -76,6 +77,23 @@ def found_workspace(
         workspace=WorkspaceOut.model_validate(workspace),
         **tokens.model_dump(),
     )
+
+
+# GET /workspaces/search MUST be defined before any /workspaces/{workspace_id} GET route
+# so FastAPI's router does not interpret "search" as a workspace_id path parameter.
+@router.get("/workspaces/search", response_model=list[WorkspaceSearchOut])
+def search_public_workspaces(
+    name: str | None = None, db: Session = Depends(get_db)
+) -> list[Workspace]:
+    """Search public workspaces by name (case-insensitive substring match).
+
+    Unauthenticated endpoint: no auth dependency, public visibility only.
+    If name is absent or empty, returns all public workspaces.
+    """
+    query = db.query(Workspace).filter(Workspace.visibility == "public")
+    if name:
+        query = query.filter(Workspace.workspace_name.ilike(f"%{name}%"))
+    return query.all()
 
 
 @router.get("/workspaces/{workspace_id}/members", response_model=list[MemberOut])
