@@ -11,7 +11,7 @@ import re
 
 from sqlalchemy.orm import Session
 
-from app.models import Channel, Member
+from app.models import Channel, Member, Mention, Message, Workspace
 
 HANDLE_PATTERN = re.compile(r"@([a-z0-9-]{2,32})")
 TOKEN_PATTERN = re.compile(r"<@([0-9a-fA-F-]{36})>")
@@ -90,3 +90,36 @@ def resolve_payload_refs(
     ]
 
     return mentioned_members, referenced_channels
+
+
+def build_mention_event(db: Session, mention: Mention) -> dict:
+    """The wire shape of one inbox entry: the mention plus its source message.
+
+    Loads the message/channel/workspace/sender chain for `mention` and
+    reuses `build_message_payload` for the "message" value, so an inbox
+    entry always mirrors exactly what the REST/WebSocket message payload
+    looks like right now (handle renames included) -- not a snapshot of
+    what it looked like when the mention was created.
+
+    Imports `build_message_payload` locally: `app.schemas` imports
+    `resolve_payload_refs` from this module, so a module-level import here
+    would be circular.
+    """
+    from app.schemas import build_message_payload
+
+    message = db.get(Message, mention.message_id)
+    assert message is not None  # FK-guaranteed by the mentions table
+    channel = db.get(Channel, message.channel_id)
+    assert channel is not None  # FK-guaranteed by messages.channel_id
+    workspace = db.get(Workspace, channel.workspace_id)
+    assert workspace is not None  # FK-guaranteed by channels.workspace_id
+    sender = db.get(Member, message.sender_member_id)
+    assert sender is not None  # FK-guaranteed by messages.sender_member_id
+
+    return {
+        "event": "mention",
+        "mention_id": mention.mention_id,
+        "created_at": mention.created_at.isoformat(),
+        "mentioned_member_id": mention.mentioned_member_id,
+        "message": build_message_payload(message, workspace, channel, sender, db),
+    }
