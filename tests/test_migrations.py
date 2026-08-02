@@ -1,8 +1,5 @@
 """Migrations are the schema's source of truth for on-disk databases."""
 
-import os
-import tempfile
-
 from alembic import command
 from sqlalchemy import create_engine, inspect
 
