@@ -9,10 +9,10 @@ from app.authorization import (
 )
 from app.database import get_db
 from app.errors import NotFoundError
-from app.mentions import canonicalize
+from app.mentions import build_mention_event, canonicalize
 from app.models import Channel, Member, Mention, Message, Workspace
 from app.schemas import MessageCreate, build_message_payload
-from app.ws_manager import manager
+from app.ws_manager import event_manager, manager
 
 router = APIRouter()
 
@@ -71,18 +71,29 @@ async def post_message(
     )
     db.add(message)
     db.flush()  # assigns message.message_id for the Mention rows below
-    for mentioned_member in mentioned:
-        db.add(
-            Mention(
-                message_id=message.message_id,
-                mentioned_member_id=mentioned_member.member_id,
-            )
+    mention_rows = [
+        Mention(
+            message_id=message.message_id,
+            mentioned_member_id=mentioned_member.member_id,
         )
+        for mentioned_member in mentioned
+    ]
+    for mention_row in mention_rows:
+        db.add(mention_row)
     db.commit()
     db.refresh(message)
+    for mention_row in mention_rows:
+        db.refresh(mention_row)  # populates mention_id/created_at post-commit
 
     payload = build_message_payload(message, workspace, channel, member, db)
+    # Broadcast to the channel first, then fan out mention events -- both
+    # happen strictly after the commit above, never before, so a dead
+    # socket or a slow event push can never roll back a persisted message.
     await manager.broadcast(channel_id, payload)
+    for mention_row in mention_rows:
+        await event_manager.send_to_member(
+            mention_row.mentioned_member_id, build_mention_event(db, mention_row)
+        )
     return payload
 
 

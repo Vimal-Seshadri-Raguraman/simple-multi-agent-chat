@@ -3,7 +3,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import app.database as database
 from app.auth import resolve_ws_credential
 from app.models import Channel, ChannelMember
-from app.ws_manager import manager
+from app.ws_manager import event_manager, manager
 
 router = APIRouter()
 
@@ -67,3 +67,39 @@ async def channel_websocket(
         pass
     finally:
         manager.disconnect(channel_id, websocket)
+
+
+@router.websocket("/ws/workspaces/{workspace_id}/members/me/events")
+async def member_events_websocket(websocket: WebSocket, workspace_id: str) -> None:
+    """A member's private event feed: live mention pushes (Task 4).
+
+    Unlike the channel socket, this is keyed by member_id, not channel_id --
+    a member gets exactly one feed of everything addressed to them,
+    independent of which channels they belong to. Auth/wall mirror the
+    channel socket exactly (see its docstring for the session-scoping
+    rationale).
+    """
+    with database.SessionLocal() as db:
+        raw_credential = websocket.query_params.get("token") or websocket.headers.get(
+            "x-api-key"
+        )
+        member = resolve_ws_credential(db, raw_credential)
+        if member is None:
+            await websocket.close(code=4401)
+            return
+
+        # Same workspace wall as the channel socket: a token only works
+        # inside its own workspace, and a foreign workspace can't be
+        # distinguished from a nonexistent one.
+        if member.workspace_id != workspace_id:
+            await websocket.close(code=4404)
+            return
+
+    await event_manager.connect(member.member_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        event_manager.disconnect(member.member_id, websocket)
