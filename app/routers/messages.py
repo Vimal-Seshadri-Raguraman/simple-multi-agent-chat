@@ -7,8 +7,9 @@ from app.authorization import (
     authorize_post_message,
     require_same_workspace,
 )
+from app import rate_limit
 from app.database import get_db
-from app.errors import NotFoundError
+from app.errors import NotFoundError, RateLimitedError
 from app.mentions import build_mention_event, canonicalize
 from app.models import Channel, Member, Mention, Message, Workspace
 from app.schemas import MessageCreate, build_message_payload
@@ -56,6 +57,8 @@ async def post_message(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> dict:
+    if not rate_limit.post_limiter.allow(member.member_id):
+        raise RateLimitedError("Posting too fast — wait a moment")
     require_same_workspace(member, workspace_id)
     workspace, channel = _get_workspace_and_channel(db, workspace_id, channel_id)
     authorize_post_message(db, member, channel_id)

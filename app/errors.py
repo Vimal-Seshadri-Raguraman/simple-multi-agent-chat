@@ -77,3 +77,8 @@ class LastAdminError(AppError):
 class ConfirmationRequiredError(AppError):
     status_code = 422
     code = "confirmation_required"
+
+
+class RateLimitedError(AppError):
+    status_code = 429
+    code = "rate_limited"
