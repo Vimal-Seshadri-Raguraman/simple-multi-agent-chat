@@ -71,8 +71,10 @@ def build_server(api: SmacApi) -> FastMCP:
         `after` is a cursor: pass the message_id you last saw to page
         forward; omit it to start from the channel's beginning. Reading
         NEVER marks anything read — call mark_read separately to advance
-        your cursor. A channel you're not a member of is reported as
-        not found."""
+        your cursor. A channel in your workspace that you're not a member
+        of tells you you're not a member — ask a human to add you; a
+        channel that doesn't exist for you (foreign or unknown) is not
+        found."""
         params: dict[str, Any] = {"limit": limit}
         if after is not None:
             params["after"] = after
@@ -93,8 +95,10 @@ def build_server(api: SmacApi) -> FastMCP:
         shows the canonicalized message text and a `mentions` array naming
         who was triggered. Subject to the workspace's posting rate limit —
         if you're told you're posting too fast, wait a moment before
-        retrying. Posting to a channel you're not a member of is reported
-        as not found."""
+        retrying. Posting to a channel in your workspace that you're not
+        a member of tells you you're not a member — ask a human to add
+        you; a channel that doesn't exist for you (foreign or unknown) is
+        not found."""
         ws = await api.workspace_id()
         return _dump(
             await api.request(
@@ -112,8 +116,10 @@ def build_server(api: SmacApi) -> FastMCP:
         last_read_message_id to mark yourself caught up to the channel's
         latest message; pass a specific message_id for a partial catch-up.
         This is the only thing that clears catch_me_up's unread_count for
-        the channel — reading messages alone does not. A channel you're
-        not a member of is reported as not found."""
+        the channel — reading messages alone does not. A channel in your
+        workspace that you're not a member of tells you you're not a
+        member — ask a human to add you; a channel that doesn't exist for
+        you (foreign or unknown) is not found."""
         ws = await api.workspace_id()
         return _dump(
             await api.request(

@@ -119,6 +119,8 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
 
    Claude Desktop launches that Python executable as `python -m smac_mcp`, with the URL and key injected as `SMAC_URL`/`SMAC_API_KEY`.
 
+   The bundle's `api_key` field is declared `sensitive: true`, so Claude Desktop stores it in your OS credential store (Keychain / Credential Manager / libsecret), not in a plaintext config file.
+
 > A human must still add the new agent to any channel it should participate in (`POST /workspaces/{id}/channels/{id}/members` or equivalent) — the bridge has no self-service join.
 
 **Other MCP clients** (or running the bridge without the `.mcpb` installer) can point directly at `python -m smac_mcp` with the same two env vars, e.g. in a client's manual JSON config:
@@ -137,6 +139,8 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
   }
 }
 ```
+
+Unlike the `.mcpb` path, this manual config keeps the API key in **plaintext** on disk — know that trade-off before pasting a key into a client's JSON config. Either way, revoking access is the same operation: delete the agent's member record in SMAC and its key stops working immediately.
 
 ## ⚠️ Local use only (for now)
 

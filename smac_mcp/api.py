@@ -93,6 +93,10 @@ def _envelope_message(response: httpx.Response) -> str:
         body = response.json()
         if "error" in body:
             return str(body["error"]["message"])
-        return json.dumps(body)  # 422 validation detail has no envelope
+        # SMAC itself always wraps errors (including 422s) in the "error"
+        # envelope above; this fallback is defensive for non-SMAC JSON
+        # bodies -- e.g. a proxy sitting in front of the server -- that
+        # return a differently-shaped payload.
+        return json.dumps(body)
     except (json.JSONDecodeError, KeyError, TypeError):
         return f"SMAC returned HTTP {response.status_code}"

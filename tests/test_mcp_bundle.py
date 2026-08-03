@@ -31,7 +31,7 @@ def test_manifest_parses_as_json(tmp_path):
     manifest = _read_manifest(build_bundle(tmp_path / "smac.mcpb"))
 
     assert manifest["name"] == "smac"
-    assert "manifest_version" in manifest
+    assert manifest["manifest_version"] == "0.3"
 
 
 def test_manifest_declares_both_user_config_fields(tmp_path):
