@@ -135,7 +135,10 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
     """Pre-existing case-insensitive duplicate names get suffixed in age
     order (collision-checked against candidates, not just the raw counter),
     workspace_name_key/channel_name_key are backfilled to lower(name) for
-    every row, and both unique constraints are enforced afterward."""
+    every row (using Python's Unicode-aware str.lower(), not SQLite's
+    ASCII-only lower(), so accented case variants like 'Équipe'/'équipe'
+    dedupe and key correctly), and both unique constraints are enforced
+    afterward."""
     url = f"sqlite:///{tmp_path}/backfill.db"
     command.upgrade(_alembic_config(url), "d2b0475785e7")  # pre-unique-names schema
     engine = create_engine(url)
@@ -145,6 +148,13 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
             ("w2", "finance", "2026-01-01 00:00:01"),  # -> finance2
             ("w3", "FINANCE", "2026-01-01 00:00:02"),  # "finance2" taken -> FINANCE3
             ("w4", "Ops", "2026-01-01 00:00:03"),  # no collision, untouched
+            ("w5", "Équipe", "2026-01-01 00:00:04"),  # oldest -> keeps name
+            ("w6", "équipe", "2026-01-01 00:00:05"),  # -> équipe2 (dedupe already
+            # used Python lower(); the regression this guards is the *backfilled
+            # key* for the kept "Équipe" row: SQLite's lower() leaves 'É'
+            # untouched, so under the bug workspace_name_key stayed "Équipe"
+            # instead of "équipe", and a later app-created "Équipe"/"équipe"
+            # would then NOT collide against it)
         ]:
             conn.exec_driver_sql(
                 "INSERT INTO workspaces (workspace_id, workspace_name, visibility,"
@@ -193,10 +203,16 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
         "w2": "finance2",
         "w3": "FINANCE3",
         "w4": "Ops",
+        "w5": "Équipe",
+        "w6": "équipe2",
     }
     assert workspace_keys == {
         wid: name.lower() for wid, name in workspace_names.items()
     }
+    # Explicit Unicode assertions: str.lower() (not SQLite's ASCII-only
+    # lower()) must have produced these, since 'É'.lower() == 'é'.
+    assert workspace_keys["w5"] == "équipe"
+    assert workspace_keys["w6"] == "équipe2"
     assert channel_names == {"c1": "reports", "c2": "Reports2"}
     assert channel_keys == {cid: name.lower() for cid, name in channel_names.items()}
 
@@ -215,5 +231,16 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
             conn.exec_driver_sql(
                 "INSERT INTO workspaces (workspace_id, workspace_name,"
                 " workspace_name_key, visibility, created_at) VALUES"
-                " ('w5', 'FiNaNcE', 'finance', 'private', '2026-01-01 00:00:04')"
+                " ('w9', 'FiNaNcE', 'finance', 'private', '2026-01-01 00:00:06')"
+            )
+
+    # Unicode collision: 'ÉQUIPE'.lower() == 'équipe', already claimed by w5
+    # above. If the backfill had used SQLite's ASCII-only lower() this would
+    # NOT collide (the stored key for w5 would be the untouched 'Équipe').
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                " ('w10', 'ÉQUIPE', 'équipe', 'private', '2026-01-01 00:00:07')"
             )

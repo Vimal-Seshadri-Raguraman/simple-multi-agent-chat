@@ -48,6 +48,25 @@ def _dedupe_names(conn, table, name_col, pk_col, scope_col=None):  # type: ignor
         taken.add(f"{key}{n}")
 
 
+def _backfill_keys(conn, table, name_col, key_col, pk_col):  # type: ignore[no-untyped-def]
+    """Backfill key_col = name_col.lower() row by row, in Python.
+
+    SQLite's own lower() is ASCII-only, while the ORM's @validates hooks use
+    Python's str.lower() (full Unicode case-folding, e.g. 'É' -> 'é'). If the
+    backfill used SQL lower(), a migrated 'Équipe' would get key 'Équipe'
+    (untouched) while an app-created 'équipe' gets key 'équipe' -- the two
+    wouldn't collide, silently defeating the unique constraint for any
+    non-ASCII name. Doing this in Python keeps backfill and _dedupe_names
+    (which already lowers in Python) in agreement.
+    """
+    rows = conn.execute(sa.text(f"SELECT {pk_col}, {name_col} FROM {table}")).fetchall()
+    for pk, name in rows:
+        conn.execute(
+            sa.text(f"UPDATE {table} SET {key_col} = :key WHERE {pk_col} = :pk"),
+            {"key": name.lower(), "pk": pk},
+        )
+
+
 def upgrade() -> None:
     """Dedupe pre-existing case-insensitive name collisions, backfill the
     lower(name) shadow key columns, then enforce case-insensitive
@@ -76,10 +95,10 @@ def upgrade() -> None:
                 "channel_name_key", sa.String(), nullable=False, server_default=""
             )
         )
-    conn.execute(
-        sa.text("UPDATE workspaces SET workspace_name_key = lower(workspace_name)")
+    _backfill_keys(
+        conn, "workspaces", "workspace_name", "workspace_name_key", "workspace_id"
     )
-    conn.execute(sa.text("UPDATE channels SET channel_name_key = lower(channel_name)"))
+    _backfill_keys(conn, "channels", "channel_name", "channel_name_key", "channel_id")
     with op.batch_alter_table("workspaces") as batch_op:
         batch_op.create_unique_constraint(
             "uq_workspaces_name_ci", ["workspace_name_key"]
