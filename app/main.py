@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app import __version__
 from app.database import init_db
 from app.errors import AppError
 from app.routers import (
@@ -19,6 +20,13 @@ from app.routers import (
     websocket,
     workspaces,
 )
+from app.schemas import MetaOut
+
+#: Bumped independently of `server_version` only when the wire contract
+#: itself changes; the TUI's /meta handshake (spec Decision 6) compares
+#: both so a mismatched client can tell "newer server" from "incompatible
+#: server" apart.
+API_VERSION = 1
 
 
 @asynccontextmanager
@@ -92,3 +100,9 @@ async def http_exception_handler(
 @app.get("/health")
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/meta", response_model=MetaOut)
+def get_meta() -> MetaOut:
+    """Unauthenticated version handshake for TUI/client compatibility checks."""
+    return MetaOut(server_version=__version__, api_version=API_VERSION)

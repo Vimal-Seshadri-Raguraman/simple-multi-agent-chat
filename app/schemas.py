@@ -74,7 +74,25 @@ class MessageCreate(BaseModel):
 
 
 class MemberSelfOut(BaseModel):
-    """A member's own full profile, including their private email."""
+    """A member's own full profile, including their private email.
+
+    `is_admin` and `workspace_visibility` (SMAC-72 task 6) exist for the
+    TUI's `/whoami` command (spec §0.2), which needs both and had no other
+    source for either: `is_admin` is a real `Member` column but was never
+    exposed on any response before; `workspace_visibility` isn't a member
+    attribute at all (no GET-your-own-workspace endpoint exists), so it's
+    carried here instead -- see `app.accounts.build_member_self_out`,
+    the one place that assembles this schema, for how it's looked up.
+
+    Both are SELF-view-only, same as `email`: `GET /member` (looking up
+    ANOTHER member in your own workspace) nulls them out exactly like it
+    already nulls `email` for a foreign profile -- `/whoami` only ever
+    asks about the caller's own profile (`GET /members/me`), and there's
+    no product reason yet for one member to learn another's admin status
+    or the workspace's visibility through this route (a deliberate,
+    minimal scope -- an admin roster is a feature for another day, not a
+    side effect of this one).
+    """
 
     model_config = ConfigDict(from_attributes=True)
     member_id: str
@@ -89,6 +107,8 @@ class MemberSelfOut(BaseModel):
     company: str | None
     occupation: str | None
     job_role: str | None
+    is_admin: bool | None
+    workspace_visibility: str | None
 
 
 class MemberProfileUpdate(BaseModel):
@@ -158,6 +178,31 @@ class LoginIn(BaseModel):
     workspace_id: str
     email: EmailStr
     password: str
+
+
+class MetaOut(BaseModel):
+    """Unauthenticated version handshake -- see GET /meta."""
+
+    server_version: str
+    api_version: int
+
+
+class DiscoverIn(BaseModel):
+    """Credentials for POST /auth/discover: no workspace_id (spec §2.5)."""
+
+    email: EmailStr
+    password: str
+
+
+class DiscoverWorkspaceOut(BaseModel):
+    workspace_id: str
+    workspace_name: str
+
+
+class DiscoverOut(BaseModel):
+    """Workspaces whose account matches the given credentials. No tokens."""
+
+    workspaces: list[DiscoverWorkspaceOut]
 
 
 class TokenPairOut(BaseModel):

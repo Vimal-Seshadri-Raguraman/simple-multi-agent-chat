@@ -6,6 +6,24 @@ from tests.conftest import (
 )
 
 
+def test_whoami_reports_founder_admin_and_workspace_visibility(client):
+    founder_auth(client, "w1", visibility="private")
+    response = client.get("/members/me", headers=founder_headers(client, "w1"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_admin"] is True
+    assert body["workspace_visibility"] == "private"
+
+
+def test_whoami_reports_non_admin_member_and_public_workspace(client):
+    founder_auth(client, "w1", visibility="public")
+    response = client.get("/members/me", headers=member_headers(client, "m1"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_admin"] is False
+    assert body["workspace_visibility"] == "public"
+
+
 def test_register_agent_returns_api_key(client):
     response = client.post(
         "/members/agents",
@@ -151,6 +169,24 @@ def test_get_other_profile_hides_email(client):
     body = response.json()
     assert body["email"] is None
     assert body["first_name"] == "Test"  # profile fields still visible
+    # is_admin/workspace_visibility (SMAC-72 task 6) are SELF-view-only,
+    # same as email -- looking up ANOTHER member must not leak either,
+    # even though the caller here (the founder) IS an admin themselves.
+    assert body["is_admin"] is None
+    assert body["workspace_visibility"] is None
+
+
+def test_get_own_profile_includes_admin_and_workspace_visibility(client):
+    founder = founder_auth(client, "w1", visibility="private")
+    response = client.get(
+        "/member",
+        params={"id": founder["member_id"]},
+        headers=founder_headers(client, "w1"),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["is_admin"] is True
+    assert body["workspace_visibility"] == "private"
 
 
 def test_search_never_exposes_emails(client):

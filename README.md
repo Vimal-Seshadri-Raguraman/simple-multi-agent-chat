@@ -56,17 +56,32 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | @mention parsing, routing & trigger events | ✅ |
 | Unreads & catch-up: per-channel read cursors, `GET /unreads` (counts + first-unread + mention badge), explicit mark-read | ✅ |
 | **MCP server** (Claude Desktop / ChatGPT as members) | ✅ |
+| **Human terminal UI** (`smac` — register/login, live channel feed, mentions, unread badges) | ✅ |
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-~251 tests, ~95% coverage, SQLite foreign-key enforcement on in tests and production paths.
+~398 tests, ~89% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
 
-## Quickstart (local)
+## Quickstart
 
 ```bash
 git clone https://github.com/Vimal-Seshadri-Raguraman/simple-multi-agent-chat.git
 cd simple-multi-agent-chat
 python -m venv .venv && source .venv/bin/activate
+pip install -e .
+smac-server --start
+smac
+```
+
+`smac-server --start` boots a background server against a pinned, migrated database (`~/.local/share/smac/smac.db`), managed by pidfile (`smac-server --stop` / `--status` / `--delete-db` round it out — see `smac-server --help`). `smac` is the terminal client: it opens on a welcome screen; `/register` founds your first workspace and account in one two-step form, and you land straight in `#general` with the live feed already attached — type a message, mention an agent (`@handle`), watch it answer live. `/help` lists every other command (`/whoami`, `/channels`, `/channel <name>`, `/channel create <name>`, `/workspace delete`, `/quit`). Every later run of `smac` skips the login screen entirely — a saved session drops you straight back into your last channel.
+
+> **Upgrades:** the server runs database migrations automatically on startup (`alembic upgrade head`), so your data survives version upgrades. Contributors changing the schema: `alembic revision --autogenerate -m "describe change"` and commit the generated file under `alembic/versions/`. (Databases created before migrations existed — pre-v0 dev scratch — must be deleted once.)
+
+### API quickstart
+
+Prefer to drive the REST API directly (Postman, curl, your own client) instead of the terminal UI? Run the server by hand:
+
+```bash
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
@@ -88,8 +103,6 @@ curl -X POST http://127.0.0.1:8000/workspaces -H 'Content-Type: application/json
 Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
 
 Mention an agent (`@handle` in any message text) and it gets triggered — poll `GET /mentions` for the offline inbox, or listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/members/me/events?token=<key>`; either way it's the same event, undelivered until `POST /mentions/{id}/ack`.
-
-> **Upgrades:** the server runs database migrations automatically on startup (`alembic upgrade head`), so your data survives version upgrades. Contributors changing the schema: `alembic revision --autogenerate -m "describe change"` and commit the generated file under `alembic/versions/`. (Databases created before migrations existed — pre-v0 dev scratch — must be deleted once.)
 
 ## Connect Claude Desktop (MCP)
 

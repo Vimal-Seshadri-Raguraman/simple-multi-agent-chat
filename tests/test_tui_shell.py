@@ -1,0 +1,925 @@
+"""`smac_cli.app.SmacApp` + `smac_cli.commands`: the TUI shell.
+
+Drives the real `SmacApp` through Textual's own test harness
+(`App.run_test()` + `Pilot`) against a hand-rolled `FakeApi` that
+implements every `SmacApi` method name the shell calls -- no real server,
+no real HTTP. `Path.home` is monkeypatched to `tmp_path` (the same
+pattern `test_tui_api.py` uses) so the workspace-name sidecar cache never
+touches a developer's real `~/.config/smac`.
+
+Because every `SmacApi` call runs on a `run_worker(thread=True)` worker
+(the whole point of the design -- see `smac_cli/app.py`'s module
+docstring), these tests can't just `await pilot.press(...)` and assume
+the effect landed: the effect happens on a background OS thread that
+gets scheduled independently. `_wait_until` polls (with `pilot.pause`,
+which actually yields wall-clock time slices) until the expected UI
+state shows up, or times out.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+import pytest
+
+from smac_cli import CLIENT_VERSION
+from smac_cli.api import Session
+from smac_cli.app import DEFAULT_URL, SmacApp, cache_workspace_name, main, resolve_url
+from smac_cli.errors import RateLimitedError, SessionExpired, Unreachable
+from smac_cli.paths import session_path
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    """Pin the `anyio` pytest plugin (already installed transitively via
+    httpx/fastapi) to the asyncio backend -- the only one installed."""
+    return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect `Path.home()` so the workspace-name cache never touches a
+    developer's real `~/.config/smac`."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return tmp_path
+
+
+class FakeApi:
+    """A stub implementing every `SmacApi` method name the shell calls.
+
+    Mirrors `SmacApi`'s real behavior just closely enough for the shell's
+    logic to be exercised: `login`/`register_found`/`register_into` all
+    set `self.session` and return it, exactly like the real client.
+    """
+
+    def __init__(
+        self, *, session: Session | None = None, server_version: str = CLIENT_VERSION
+    ) -> None:
+        self.url = "http://fake.example"
+        self.session = session
+        self.server_version = server_version
+        self.meta_error: Exception | None = None
+        self.discover_result: list[dict[str, str]] = []
+        self.search_result: list[dict[str, str]] = []
+        self.whoami_error: Exception | None = None
+        self.posts: list[tuple[str, str]] = []
+        self.search_calls: list[str] = []
+        self._next_workspace_id = 0
+        # Live-room stubs (SMAC-72 task 5): a lone "general" channel, no
+        # history, mark-read a no-op, no other members. `ws_channel_url`/
+        # `ws_events_url` are deliberately NOT implemented -- ChannelFeed/
+        # EventBell's reconnect loop treats the resulting `AttributeError`
+        # like any other connect failure (see `smac_cli/live.py`'s module
+        # docstring), so these shell tests never touch a real socket.
+        self.channels_result: list[dict[str, Any]] = [
+            {"channel_id": "general-id", "channel_name": "general"}
+        ]
+        self.messages_result: list[dict[str, Any]] = []
+        self.members_result: list[dict[str, Any]] = []
+        self.mark_read_calls: list[str] = []
+        self.post_error: Exception | None = None
+        # /whoami, /channels+/unreads, /channel create, /workspace delete
+        # (SMAC-72 task 6) stubs.
+        self.whoami_result = {
+            "handle": "vraguraman",
+            "member_id": "m1",
+            "first_name": "Vimal",
+            "last_name": "Raguraman",
+            "member_name": "Vimal Raguraman",
+            "is_admin": True,
+            "workspace_visibility": "private",
+        }
+        self.unreads_result: dict[str, Any] = {"unreads": []}
+        self.create_channel_result: dict[str, Any] | None = None
+        self.create_channel_error: Exception | None = None
+        self.create_channel_calls: list[str] = []
+        self.delete_workspace_calls: int = 0
+        self.delete_workspace_error: Exception | None = None
+
+    def meta(self) -> dict[str, Any]:
+        if self.meta_error is not None:
+            raise self.meta_error
+        return {"server_version": self.server_version, "api_version": 1}
+
+    def discover(self, email: str, password: str) -> list[dict[str, str]]:
+        return self.discover_result
+
+    def _new_session(self, workspace_id: str, email: str) -> Session:
+        session = Session(
+            url=self.url,
+            workspace_id=workspace_id,
+            access_token="at",
+            refresh_token="rt",
+            email=email,
+        )
+        self.session = session
+        return session
+
+    def login(self, workspace_id: str, email: str, password: str) -> Session:
+        return self._new_session(workspace_id, email)
+
+    def register_found(
+        self,
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str,
+        workspace_name: str,
+        visibility: str,
+    ) -> Session:
+        self._next_workspace_id += 1
+        return self._new_session(f"ws-{self._next_workspace_id}", email)
+
+    def register_into(
+        self,
+        workspace_id: str,
+        email: str,
+        password: str,
+        first_name: str,
+        last_name: str,
+    ) -> Session:
+        return self._new_session(workspace_id, email)
+
+    def search_public(self, q: str = "") -> list[dict[str, str]]:
+        self.search_calls.append(q)
+        q_lower = q.lower()
+        return [w for w in self.search_result if q_lower in w["workspace_name"].lower()]
+
+    def whoami(self) -> dict[str, Any]:
+        if self.whoami_error is not None:
+            raise self.whoami_error
+        return self.whoami_result
+
+    def post(self, channel_id: str, text: str) -> dict[str, Any]:
+        self.posts.append((channel_id, text))
+        if self.post_error is not None:
+            raise self.post_error
+        return {}
+
+    def channels(self) -> list[dict[str, Any]]:
+        return self.channels_result
+
+    def messages(
+        self, channel_id: str, after: str | None = None, limit: int = 15
+    ) -> list[dict[str, Any]]:
+        return self.messages_result
+
+    def mark_read(self, channel_id: str) -> dict[str, Any]:
+        self.mark_read_calls.append(channel_id)
+        return {}
+
+    def members(self) -> list[dict[str, Any]]:
+        return self.members_result
+
+    def unreads(self) -> dict[str, Any]:
+        return self.unreads_result
+
+    def create_channel(self, name: str) -> dict[str, Any]:
+        self.create_channel_calls.append(name)
+        if self.create_channel_error is not None:
+            raise self.create_channel_error
+        if self.create_channel_result is not None:
+            return self.create_channel_result
+        return {"channel_id": f"{name}-id", "channel_name": name}
+
+    def delete_workspace(self) -> dict[str, Any]:
+        self.delete_workspace_calls += 1
+        if self.delete_workspace_error is not None:
+            raise self.delete_workspace_error
+        return {"status": "deleted"}
+
+
+async def _wait_until(
+    pilot: Any, predicate: Callable[[], bool], *, timeout: float = 3.0
+) -> None:
+    """Poll `predicate` (giving the background worker thread real
+    wall-clock time via `pilot.pause`) until it's true, or raise."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"condition not met within {timeout}s")
+        await pilot.pause(0.01)
+
+
+def _body_text(app: SmacApp) -> str:
+    return "\n".join(app._log_lines)
+
+
+# --------------------------------------------------------------------------
+# Welcome screen / startup states
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_welcome_screen_shows_commands_and_server_status() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        text = _body_text(app)
+        assert "/register" in text
+        assert "/login" in text
+        assert "server: http://fake.example" in text
+        assert "running (v" in text
+        assert app.header_text == "SMAC — not logged in"
+
+
+@pytest.mark.anyio
+async def test_server_unreachable_shows_not_reachable_status() -> None:
+    fake = FakeApi()
+    fake.meta_error = Unreachable(fake.url)
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("not reachable" in line for line in app._log_lines)
+        )
+        assert "smac-server --start" in _body_text(app)
+
+
+@pytest.mark.anyio
+async def test_version_mismatch_shows_update_system_line() -> None:
+    fake = FakeApi(server_version="9.9.9")
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("update: git pull" in line for line in app._log_lines)
+        )
+        text = _body_text(app)
+        assert f"server 9.9.9, client {CLIENT_VERSION}" in text
+
+
+@pytest.mark.anyio
+async def test_matching_version_shows_no_update_line() -> None:
+    app = SmacApp(FakeApi(server_version=CLIENT_VERSION))
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        assert "update: git pull" not in _body_text(app)
+
+
+@pytest.mark.anyio
+async def test_session_restore_lands_in_general_with_cached_name(
+    tmp_path: Path,
+) -> None:
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-cached",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    cache_workspace_name("ws-cached", "AI Finance Co")
+    app = SmacApp(FakeApi(session=session))
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
+        assert app.current_channel_name == "general"
+        # No welcome banner: a restored valid session skips it entirely.
+        assert "Welcome to SMAC" not in _body_text(app)
+
+
+@pytest.mark.anyio
+async def test_session_expired_falls_back_to_welcome_screen() -> None:
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    fake = FakeApi(session=session)
+    fake.whoami_error = SessionExpired()
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("session expired" in line for line in app._log_lines)
+        )
+        assert app.header_text == "SMAC — not logged in"
+        assert "Welcome to SMAC" in _body_text(app)
+
+
+# --------------------------------------------------------------------------
+# Footer input contract: pull-up + dispatch
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_slash_shows_pullup_filters_and_escape_dismisses() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+
+        await pilot.press("/")
+        await _wait_until(pilot, lambda: app.pullup.display)
+        # register, login, channel, help, quit, whoami, channels, unreads,
+        # workspace (SMAC-72 task 6 adds the last four).
+        assert app.pullup.option_count == 9
+
+        await pilot.press(*"re")
+        await _wait_until(pilot, lambda: app.pullup.option_count == 1)
+        assert str(app.pullup.get_option_at_index(0).id) == "register"
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: not app.pullup.display)
+        # Escape dismisses the suggestions but doesn't clear the draft.
+        assert app.footer_input.value == "/re"
+
+
+@pytest.mark.anyio
+async def test_unknown_command_shows_system_line() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/bogus")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot,
+            lambda: any("unknown command: /bogus" in line for line in app._log_lines),
+        )
+
+
+@pytest.mark.anyio
+async def test_bare_text_logged_out_shows_not_logged_in_line() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: any("not logged in" in line for line in app._log_lines)
+        )
+
+
+@pytest.mark.anyio
+async def test_empty_enter_is_a_no_op() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        lines_before = len(app._log_lines)
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert len(app._log_lines) == lines_before
+
+
+# --------------------------------------------------------------------------
+# /register: the two-step form
+# --------------------------------------------------------------------------
+
+
+async def _run_register(
+    pilot: Any, app: SmacApp, *, visibility: str | None = None
+) -> None:
+    await pilot.press("/")
+    await _wait_until(pilot, lambda: app.pullup.display)
+    await pilot.press(*"register")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "email")
+    await pilot.press(*"vimal@example.com")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "password")
+    assert app.footer_input.password is True
+    await pilot.press(*"hunter2-pass")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
+    assert app.footer_input.password is False
+    await pilot.press(*"Vimal")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
+    await pilot.press(*"Raguraman")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "workspace name")
+    await pilot.press(*"AI Finance Co")
+    await pilot.press("enter")
+
+    await _wait_until(pilot, lambda: "visibility" in app.footer_input.placeholder)
+    if visibility is not None:
+        await pilot.press(*visibility)
+    await pilot.press("enter")
+
+
+@pytest.mark.anyio
+async def test_register_two_step_form_lands_in_general() -> None:
+    fake = FakeApi()
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _run_register(pilot, app)
+
+        await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
+        assert app.current_channel_name == "general"
+        text = _body_text(app)
+        assert "step 1 of 2: create your account" in text
+        assert "step 2 of 2: your workspace" in text
+        # Account-created banner precedes the workspace-founded banner
+        # (spec Frame 4's order), and both precede the header settling.
+        assert text.index("account created") < text.index(
+            'workspace "AI Finance Co" founded'
+        )
+        assert "@vraguraman" in text
+        assert fake.session is not None
+
+
+@pytest.mark.anyio
+async def test_register_form_escape_cancels_and_resets_header() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/register")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "email")
+        assert app.header_text == "SMAC — creating your account"
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        assert app.api.session is None
+
+
+# --------------------------------------------------------------------------
+# /login: one-match, multi-match picker, zero-match join frame
+# --------------------------------------------------------------------------
+
+
+async def _start_login(pilot: Any, app: SmacApp, email: str, password: str) -> None:
+    await pilot.press(*"/login")
+    await pilot.press("enter")
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "email")
+    await pilot.press(*email)
+    await pilot.press("enter")
+    await _wait_until(pilot, lambda: app.footer_input.placeholder == "password")
+    await pilot.press(*password)
+    await pilot.press("enter")
+
+
+@pytest.mark.anyio
+async def test_login_one_match_auto_login_updates_header() -> None:
+    fake = FakeApi()
+    fake.discover_result = [{"workspace_id": "ws-1", "workspace_name": "AI Finance Co"}]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "vimal@example.com", "pw")
+        await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
+        assert fake.session is not None
+        assert fake.session.workspace_id == "ws-1"
+
+
+@pytest.mark.anyio
+async def test_login_multi_match_shows_picker_with_both_names() -> None:
+    fake = FakeApi()
+    fake.discover_result = [
+        {"workspace_id": "ws-1", "workspace_name": "AI Finance Co"},
+        {"workspace_id": "ws-2", "workspace_name": "Research Lab"},
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "vimal@example.com", "pw")
+
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — choose a workspace")
+        await _wait_until(pilot, lambda: app.pullup.option_count == 2)
+        labels = {app.pullup.get_option_at_index(i).prompt for i in (0, 1)}
+        assert any("AI Finance Co" in str(label) for label in labels)
+        assert any("Research Lab" in str(label) for label in labels)
+        # The "your accounts:" caption is a plain line (Frame 3b draws it
+        # un-wrapped), not a dim "── ── " system line.
+        assert "your accounts:" in app._log_lines
+        assert "── your accounts: ──" not in app._log_lines
+
+        # Select the second entry and confirm it logs into THAT workspace.
+        await pilot.press("down")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.header_text == "Research Lab — #general")
+        assert fake.session is not None
+        assert fake.session.workspace_id == "ws-2"
+
+
+@pytest.mark.anyio
+async def test_login_multi_match_escape_cancels_and_resets_header() -> None:
+    fake = FakeApi()
+    fake.discover_result = [
+        {"workspace_id": "ws-1", "workspace_name": "AI Finance Co"},
+        {"workspace_id": "ws-2", "workspace_name": "Research Lab"},
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "vimal@example.com", "pw")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — choose a workspace")
+        await _wait_until(pilot, lambda: app.pullup.option_count == 2)
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        assert app.api.session is None
+        assert not app.pullup.display
+
+
+@pytest.mark.anyio
+async def test_login_zero_match_join_flow_filters_and_registers() -> None:
+    fake = FakeApi()
+    fake.discover_result = []
+    fake.search_result = [
+        {
+            "workspace_id": "ws-pub-1",
+            "workspace_name": "AI Finance Co",
+            "visibility": "public",
+        },
+        {
+            "workspace_id": "ws-pub-2",
+            "workspace_name": "Open Research",
+            "visibility": "public",
+        },
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "new@example.com", "pw")
+
+        await _wait_until(
+            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
+        )
+        await _wait_until(pilot, lambda: app.pullup.option_count == 2)
+        # The caption and the "/register" hint are plain lines (Frame 3c
+        # draws both un-wrapped), not dim "── ── " system lines.
+        assert "public workspaces (type to search):" in app._log_lines
+        assert "(or /register to create your own)" in app._log_lines
+        assert "── public workspaces (type to search): ──" not in app._log_lines
+
+        await pilot.press(*"fin")
+        await _wait_until(pilot, lambda: app.pullup.option_count == 1)
+        assert str(app.pullup.get_option_at_index(0).id) == "ws-pub-1"
+        assert "fin" in fake.search_calls
+
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
+        await pilot.press(*"New")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
+        await pilot.press(*"Member")
+        await pilot.press("enter")
+
+        await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
+        assert fake.session is not None
+        assert fake.session.workspace_id == "ws-pub-1"
+
+
+@pytest.mark.anyio
+async def test_login_zero_match_join_frame_escape_cancels_and_resets_header() -> None:
+    fake = FakeApi()
+    fake.discover_result = []
+    fake.search_result = [
+        {
+            "workspace_id": "ws-pub-1",
+            "workspace_name": "AI Finance Co",
+            "visibility": "public",
+        },
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "new@example.com", "pw")
+        await _wait_until(
+            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
+        )
+        await _wait_until(pilot, lambda: app.pullup.option_count == 1)
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        assert app.api.session is None
+        assert not app.pullup.display
+
+
+@pytest.mark.anyio
+async def test_login_zero_match_shows_wrong_password_hint() -> None:
+    """Finding H: zero discover matches is byte-identical (by design) for
+    an unknown email AND a real account's mistyped password -- a
+    returning user with a typo lands in the join frame with no clue why.
+    One system line softens that without changing the response shape."""
+    fake = FakeApi()
+    fake.discover_result = []
+    fake.search_result = []
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "returning@example.com", "typo'd-password")
+        await _wait_until(
+            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
+        )
+        text = _body_text(app)
+        assert "no workspaces found for these credentials" in text
+        assert "double-check your password" in text
+        assert "/register" in text
+
+        # Resolve the still-pending join-frame picker (same cleanup every
+        # other escape-cancels test in this module does) -- otherwise the
+        # command worker sits blocked on `choose()`'s `event.wait()`
+        # forever, since no selection was ever made.
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+
+
+# --------------------------------------------------------------------------
+# /help, /quit
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_help_lists_registered_commands() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/help")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: any("commands" in line for line in app._log_lines)
+        )
+        text = _body_text(app)
+        assert "/register" in text
+        assert "/login" in text
+        assert "/quit" in text
+
+
+@pytest.mark.anyio
+async def test_quit_prints_goodbye_and_exits() -> None:
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/quit")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: any("goodbye" in line for line in app._log_lines)
+        )
+
+
+# --------------------------------------------------------------------------
+# post_current: 429 preserves the draft (SMAC-72 task 5)
+#
+# Exercised against `FakeApi` (deterministic, instant) rather than a real
+# server: `tests/conftest.py` sets `RATE_LIMIT_POSTS=1000` for the whole
+# suite (so the many message-heavy tests elsewhere don't trip it), which
+# makes actually exhausting the real limiter within a real-server test
+# impractically slow -- `post_current`'s error-handling logic itself is
+# what's under test here, not the server's rate limiter.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_rate_limited_send_preserves_draft_and_shows_server_message() -> None:
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    fake = FakeApi(session=session)
+    fake.post_error = RateLimitedError(
+        "rate_limited", "Posting too fast — wait a moment"
+    )
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: any("too fast" in line for line in app._log_lines)
+        )
+        assert fake.posts == [("general-id", "hello there")]
+        # The draft is restored into the input, never silently lost.
+        assert app.footer_input.value == "hello there"
+
+
+@pytest.mark.anyio
+async def test_non_rate_limit_error_does_not_restore_draft() -> None:
+    from smac_cli.errors import NotAMemberError
+
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    fake = FakeApi(session=session)
+    fake.post_error = NotAMemberError(
+        "not_a_member", "You are not a member of this channel"
+    )
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: any("not a member" in line for line in app._log_lines)
+        )
+        # Only a 429 preserves the draft -- any other error just reports.
+        assert app.footer_input.value == ""
+
+
+# --------------------------------------------------------------------------
+# `resolve_url` / `main`: SMAC_URL env var + --url flag precedence
+# (finding A -- `smac-server --port 9000` used to be permanently
+# unreachable from `smac`: no flag, no env var, and a session file only
+# ever gets a URL from a login that couldn't happen against a non-default
+# port in the first place).
+# --------------------------------------------------------------------------
+
+
+def test_resolve_url_defaults_when_nothing_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SMAC_URL", raising=False)
+    assert resolve_url([]) == DEFAULT_URL
+
+
+def test_resolve_url_env_var_wins_over_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+    assert resolve_url([]) == "http://env.example:9000"
+
+
+def test_resolve_url_flag_wins_over_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+    assert (
+        resolve_url(["--url", "http://flag.example:9001"]) == "http://flag.example:9001"
+    )
+
+
+def test_resolve_url_flag_wins_over_default_with_no_env_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SMAC_URL", raising=False)
+    assert (
+        resolve_url(["--url", "http://flag.example:9001"]) == "http://flag.example:9001"
+    )
+
+
+def test_main_uses_session_url_ignoring_flag_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restored session's own URL wins over BOTH `--url` and `SMAC_URL`
+    -- it holds the tokens for the specific server it logged into, so
+    letting an ambient env var or flag redirect it would silently send
+    those tokens to a different server."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = Session(
+        url="http://session.example:8000",
+        workspace_id="w1",
+        access_token="a",
+        refresh_token="r",
+        email="e@test.example",
+    )
+    session.save(session_path())
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main(["--url", "http://flag.example:9001"])
+
+    assert captured["url"] == "http://session.example:8000"
+
+
+def test_main_uses_flag_over_env_when_no_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main(["--url", "http://flag.example:9001"])
+
+    assert captured["url"] == "http://flag.example:9001"
+
+
+def test_main_uses_env_over_default_when_no_session_or_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main([])
+
+    assert captured["url"] == "http://env.example:9000"
+
+
+# --------------------------------------------------------------------------
+# _call_ui: post-shutdown fallback drops the update instead of mutating
+# widgets from a worker thread (finding I).
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_call_ui_drops_update_after_shutdown_instead_of_mutating() -> None:
+    """`run_test()`'s own teardown does NOT reset `_loop`/`_thread_id` the
+    way `App.run()`'s real production shutdown does (`app._loop = None`,
+    `app._thread_id = 0`, set at the very end of Textual's `run_async`) --
+    so those are set explicitly here to reproduce a genuinely closed loop,
+    the state a straggling background feed/bell thread's callback
+    (`_deliver_from_feed_thread`) can actually hit post-shutdown. The call
+    is made from a REAL different OS thread, same as any such callback
+    always is -- never the app's own thread."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+    app._loop = None
+    app._thread_id = 0
+
+    called = {"ran": False}
+    error: list[BaseException] = []
+
+    def fn() -> None:
+        called["ran"] = True
+
+    def call_from_worker() -> None:
+        try:
+            app._call_ui(fn)
+        except BaseException as exc:  # pragma: no cover - surfaced via `error`
+            error.append(exc)
+
+    worker = threading.Thread(target=call_from_worker)
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert not worker.is_alive()
+    assert error == []
+    assert called["ran"] is False
+
+
+@pytest.mark.anyio
+async def test_call_ui_still_runs_fn_directly_from_the_app_thread() -> None:
+    """The legitimate same-thread fallback (e.g. `action_clean_quit`
+    calling `system_line` directly on the event loop, never via
+    `call_from_thread`) must keep working -- only the post-shutdown case
+    changed. `run_test()` runs the app on the same OS thread as the test
+    coroutine, so this call is exactly the "already on the app thread"
+    case `_call_ui` special-cases."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        called = {"ran": False}
+
+        def fn() -> None:
+            called["ran"] = True
+
+        app._call_ui(fn)
+
+        assert called["ran"] is True

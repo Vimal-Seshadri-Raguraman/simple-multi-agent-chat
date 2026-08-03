@@ -8,13 +8,22 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_member
 from app.database import get_db
 from app.errors import InvalidCredentialsError, InvalidTokenError
-from app.models import Member, RefreshToken, utcnow
-from app.schemas import LoginIn, LogoutIn, RefreshIn, TokenPairOut
+from app.models import Member, RefreshToken, Workspace, utcnow
+from app.schemas import (
+    DiscoverIn,
+    DiscoverOut,
+    DiscoverWorkspaceOut,
+    LoginIn,
+    LogoutIn,
+    RefreshIn,
+    TokenPairOut,
+)
 from app.security import (
     ACCESS_TOKEN_TTL_MINUTES,
     REFRESH_TOKEN_TTL_DAYS,
     create_access_token,
     generate_refresh_token,
+    hash_password,
     hash_token,
     verify_password,
 )
@@ -22,6 +31,16 @@ from app.security import (
 router = APIRouter()
 
 _LOGIN_FAILED_MESSAGE = "Invalid email or password"
+
+# A precomputed bcrypt hash of a password no account will ever have. When
+# POST /auth/discover finds zero email-matching accounts, it still runs one
+# verify_password() against this hash (see `discover` below) purely to burn
+# the same order-of-magnitude time a real "email matches, password is
+# wrong" attempt would -- so "unknown email" isn't distinguishable from
+# "known email, wrong password" by response latency, matching the
+# byte-identical-response invariant already required of the response body
+# (spec §2.5).
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-parity-only")
 
 
 def _issue_token_pair(db: Session, member: Member) -> TokenPairOut:
@@ -65,6 +84,67 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> TokenPairOut:
     ):
         raise InvalidCredentialsError(_LOGIN_FAILED_MESSAGE)
     return _issue_token_pair(db, member)
+
+
+@router.post("/auth/discover", response_model=DiscoverOut)
+def discover(body: DiscoverIn, db: Session = Depends(get_db)) -> DiscoverOut:
+    """Find every workspace whose account matches the given credentials.
+
+    Unauthenticated by design (spec §2.5): this is how the TUI's `/login`
+    decides whether to auto-login (one match), show a workspace picker
+    (several), or fall into the join flow (zero) -- no workspace_id is
+    known up front, unlike /auth/login.
+
+    Email is normalized exactly like /auth/login (lowercased). Candidates
+    are every human account (password_hash IS NOT NULL -- agents/bots
+    never have one, see Member) whose email matches, ordered by
+    workspace_name so the response is deterministically ordered. Every
+    candidate's password is verified -- there is no early exit once one
+    match is found, so the response time doesn't reveal how many
+    workspaces share the email beyond what the (also uniform) matched-list
+    length already would. Only rows where the password verifies are
+    returned, so the caller only ever learns of workspaces they can
+    actually open.
+
+    When zero accounts have a matching email, one dummy password
+    verification still runs (against `_DUMMY_PASSWORD_HASH`, not any real
+    account's hash) so that "unknown email" costs the same as "known
+    email, wrong password" and both produce the exact same
+    byte-identical `{"workspaces": []}` body -- neither timing nor content
+    can be used to probe which emails or workspaces exist.
+
+    No tokens are issued here: the TUI follows up with the existing
+    workspace-first /auth/login for whichever workspace the caller picks,
+    so all token-issuing logic stays in one place.
+    """
+    normalized_email = body.email.lower()
+    candidates = (
+        db.query(Member, Workspace)
+        .join(Workspace, Workspace.workspace_id == Member.workspace_id)
+        .filter(
+            Member.email == normalized_email,
+            Member.password_hash.is_not(None),
+        )
+        .order_by(Workspace.workspace_name)
+        .all()
+    )
+    if not candidates:
+        verify_password(body.password, _DUMMY_PASSWORD_HASH)
+        return DiscoverOut(workspaces=[])
+    matches: list[DiscoverWorkspaceOut] = []
+    for member, workspace in candidates:
+        # The `.is_not(None)` filter above guarantees this at the SQL level;
+        # mypy can't see through it, so narrow explicitly rather than
+        # asserting away real None-safety.
+        password_hash = member.password_hash
+        if password_hash is not None and verify_password(body.password, password_hash):
+            matches.append(
+                DiscoverWorkspaceOut(
+                    workspace_id=workspace.workspace_id,
+                    workspace_name=workspace.workspace_name,
+                )
+            )
+    return DiscoverOut(workspaces=matches)
 
 
 @router.post("/auth/refresh", response_model=TokenPairOut)
