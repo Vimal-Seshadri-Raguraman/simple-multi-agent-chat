@@ -78,6 +78,8 @@ def test_full_flow_human_agent_bot_app_all_post_and_are_visible(client):
             "Channel",
             "Sender",
             "Message",
+            "mentions",
+            "channel_refs",
         }
         assert message["workspace"]["workspace_id"] == founder["workspace_id"]
         assert message["Channel"]["channel_id"] == channel["channel_id"]

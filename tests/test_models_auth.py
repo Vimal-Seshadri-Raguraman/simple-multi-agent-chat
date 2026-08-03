@@ -33,12 +33,14 @@ def test_duplicate_email_same_workspace_rejected(db_session):
         member_type="human",
         email="a@x.com",
         workspace_id=ws.workspace_id,
+        handle="a",
     )
     m2 = Member(
         member_name="B",
         member_type="human",
         email="a@x.com",
         workspace_id=ws.workspace_id,
+        handle="b",
     )
     db_session.add_all([m1, m2])
     with pytest.raises(IntegrityError):
@@ -51,10 +53,16 @@ def test_multiple_null_emails_allowed(db_session):
     db_session.add_all(
         [
             Member(
-                member_name="Agent1", member_type="agent", workspace_id=ws.workspace_id
+                member_name="Agent1",
+                member_type="agent",
+                workspace_id=ws.workspace_id,
+                handle="agent1",
             ),
             Member(
-                member_name="Agent2", member_type="agent", workspace_id=ws.workspace_id
+                member_name="Agent2",
+                member_type="agent",
+                workspace_id=ws.workspace_id,
+                handle="agent2",
             ),
         ]
     )
@@ -83,6 +91,7 @@ def _make_member(db_session, name: str) -> Member:
         member_name=name,
         member_type="human",
         workspace_id=_make_workspace(db_session).workspace_id,
+        handle=name.lower(),
     )
     db_session.add(member)
     db_session.commit()

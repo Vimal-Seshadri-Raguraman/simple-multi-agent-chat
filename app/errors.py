@@ -54,6 +54,11 @@ class EmailTakenError(AppError):
     code = "email_taken"
 
 
+class HandleTakenError(AppError):
+    status_code = 409
+    code = "handle_taken"
+
+
 class InvalidInviteError(AppError):
     status_code = 404
     code = "invalid_invite"
@@ -72,3 +77,8 @@ class LastAdminError(AppError):
 class ConfirmationRequiredError(AppError):
     status_code = 422
     code = "confirmation_required"
+
+
+class RateLimitedError(AppError):
+    status_code = 429
+    code = "rate_limited"

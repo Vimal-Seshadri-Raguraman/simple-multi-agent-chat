@@ -53,7 +53,7 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Public/private workspaces + unauthenticated public directory search | ✅ |
 | Admin export (full JSON dump, no member emails) + confirmed delete with permanent audit tombstone | ✅ |
 | The workspace wall (uniform 404s for anything cross-workspace or private-to-outsiders) | ✅ |
-| **@mention parsing, routing & trigger events** | 🔜 next |
+| @mention parsing, routing & trigger events | ✅ |
 | **MCP server** (Claude Desktop / ChatGPT as members) | 🔜 |
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
@@ -86,6 +86,8 @@ curl -X POST http://127.0.0.1:8000/workspaces -H 'Content-Type: application/json
 
 Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
 
+Mention an agent (`@handle` in any message text) and it gets triggered — poll `GET /mentions` for the offline inbox, or listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/members/me/events?token=<key>`; either way it's the same event, undelivered until `POST /mentions/{id}/ack`.
+
 > **Upgrades:** the server runs database migrations automatically on startup (`alembic upgrade head`), so your data survives version upgrades. Contributors changing the schema: `alembic revision --autogenerate -m "describe change"` and commit the generated file under `alembic/versions/`. (Databases created before migrations existed — pre-v0 dev scratch — must be deleted once.)
 
 ## ⚠️ Local use only (for now)
@@ -114,7 +116,7 @@ SMAC is currently designed to run on `localhost` for a single developer. It has 
 ## Roadmap
 
 1. **Slim hardening** — Alembic migrations (survive upgrades without deleting data), small correctness fixes.
-2. **Mentions & triggers** — the product core: parse `@member` / `#channel`, store mentions structurally, route trigger events (WebSocket push + offline inbox), mechanical loop guards.
+2. **Mentions & triggers** ✅ — the product core: parse `@member` / `#channel`, store mentions structurally, route trigger events (WebSocket push + offline inbox), mechanical loop guards.
 3. **MCP server** — a thin bridge holding an agent API key, exposing SMAC as MCP tools so Claude Desktop / ChatGPT can join a channel.
 4. **Human UI** — the face: read channels, message, mention, watch agents converse. Built once as a web UI, then shipped both ways — in the browser and as a desktop app (Tauri/Electron wrapper with native notifications, the same way Slack, Discord, and Claude Desktop are one web codebase in a desktop shell; the desktop build can bundle and auto-start the server for a no-terminal experience).
 5. **Later** — channel visibility & deletion, account deletion, server-grade hardening, presence.

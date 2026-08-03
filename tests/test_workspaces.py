@@ -112,6 +112,7 @@ def test_workspace_with_null_default_channel_supports_registration_and_listing(c
             member_type="human",
             email="seed@test.example",
             is_admin=True,
+            handle="seed",
         )
         db.add(seed)
         db.commit()

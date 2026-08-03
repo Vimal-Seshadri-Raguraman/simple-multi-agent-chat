@@ -7,11 +7,13 @@ from app.authorization import (
     authorize_post_message,
     require_same_workspace,
 )
+from app import rate_limit
 from app.database import get_db
-from app.errors import NotFoundError
-from app.models import Channel, Member, Message, Workspace
+from app.errors import NotFoundError, RateLimitedError
+from app.mentions import build_mention_event, canonicalize
+from app.models import Channel, Member, Mention, Message, Workspace
 from app.schemas import MessageCreate, build_message_payload
-from app.ws_manager import manager
+from app.ws_manager import event_manager, manager
 
 router = APIRouter()
 
@@ -55,22 +57,46 @@ async def post_message(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> dict:
+    if not rate_limit.post_limiter.allow(member.member_id):
+        raise RateLimitedError("Posting too fast — wait a moment")
     require_same_workspace(member, workspace_id)
     workspace, channel = _get_workspace_and_channel(db, workspace_id, channel_id)
     authorize_post_message(db, member, channel_id)
 
+    canonical_text, mentioned = canonicalize(
+        db, workspace_id, member.member_id, body.message_text
+    )
     message = Message(
         channel_id=channel_id,
         sender_member_id=member.member_id,
-        message_text=body.message_text,
+        message_text=canonical_text,
         seq=_next_seq(db, channel_id),
     )
     db.add(message)
+    db.flush()  # assigns message.message_id for the Mention rows below
+    mention_rows = [
+        Mention(
+            message_id=message.message_id,
+            mentioned_member_id=mentioned_member.member_id,
+        )
+        for mentioned_member in mentioned
+    ]
+    for mention_row in mention_rows:
+        db.add(mention_row)
     db.commit()
     db.refresh(message)
+    for mention_row in mention_rows:
+        db.refresh(mention_row)  # populates mention_id/created_at post-commit
 
-    payload = build_message_payload(message, workspace, channel, member)
+    payload = build_message_payload(message, workspace, channel, member, db)
+    # Broadcast to the channel first, then fan out mention events -- both
+    # happen strictly after the commit above, never before, so a dead
+    # socket or a slow event push can never roll back a persisted message.
     await manager.broadcast(channel_id, payload)
+    for mention_row in mention_rows:
+        await event_manager.send_to_member(
+            mention_row.mentioned_member_id, build_mention_event(db, mention_row)
+        )
     return payload
 
 
@@ -104,6 +130,6 @@ def get_messages(
         for s in db.query(Member).filter(Member.member_id.in_(sender_ids)).all()
     }
     return [
-        build_message_payload(m, workspace, channel, senders[m.sender_member_id])
+        build_message_payload(m, workspace, channel, senders[m.sender_member_id], db)
         for m in messages
     ]

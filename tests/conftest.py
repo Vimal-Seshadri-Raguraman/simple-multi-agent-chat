@@ -5,6 +5,13 @@ import tempfile
 # TestClient boot and must never touch a developer's legacy smac.db.
 os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/test-lifespan.db"
 
+# Default the suite-wide posting rate limit high BEFORE any app imports (the
+# module-level `post_limiter` in app/rate_limit.py is constructed at import
+# time from this env var), so the ~190 unrelated tests can never trip it.
+# The rate-limit tests themselves construct/monkeypatch a small limiter
+# explicitly rather than relying on this default.
+os.environ.setdefault("RATE_LIMIT_POSTS", "1000")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine

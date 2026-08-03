@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.authorization import authorize_management_action
 from app.database import get_db
-from app.errors import NotFoundError
+from app.errors import HandleTakenError, NotFoundError
+from app.handles import generate_unique_handle
 from app.models import Member
 from app.schemas import (
     MemberOut,
@@ -24,6 +25,7 @@ def _register(
     member = Member(
         member_name=member_name,
         member_type=member_type,
+        handle=generate_unique_handle(db, workspace_id, member_name),
         api_key_hash=hash_api_key(raw_key),
         workspace_id=workspace_id,
     )
@@ -34,6 +36,7 @@ def _register(
         member_id=member.member_id,
         member_name=member.member_name,
         member_type=member.member_type,
+        handle=member.handle,
         api_key=raw_key,
     )
 
@@ -116,6 +119,22 @@ def update_my_profile(
     updates = body.model_dump(exclude_unset=True)
     if "display_name" in updates:
         current_member.member_name = updates.pop("display_name")
+    if "handle" in updates:
+        new_handle = updates.pop("handle")
+        taken = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == current_member.workspace_id,
+                Member.handle == new_handle,
+                Member.member_id != current_member.member_id,
+            )
+            .first()
+        )
+        if taken is not None:
+            raise HandleTakenError(
+                f"Handle '{new_handle}' is already in use in this workspace"
+            )
+        current_member.handle = new_handle
     for field, value in updates.items():
         setattr(current_member, field, value)
     db.add(current_member)

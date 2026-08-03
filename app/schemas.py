@@ -9,7 +9,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from sqlalchemy.orm import Session
 
+from app.mentions import resolve_payload_refs
 from app.models import Channel, Member, Message, Workspace
 
 
@@ -46,6 +48,7 @@ class MemberOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     created_at: datetime
     first_name: str | None = None
     last_name: str | None = None
@@ -62,6 +65,7 @@ class MemberRegisterOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     api_key: str
 
 
@@ -76,6 +80,7 @@ class MemberSelfOut(BaseModel):
     member_id: str
     member_name: str
     member_type: str
+    handle: str
     created_at: datetime
     email: str | None
     first_name: str | None
@@ -94,24 +99,31 @@ class MemberProfileUpdate(BaseModel):
     company: str | None = None
     occupation: str | None = None
     job_role: str | None = None
+    handle: str | None = Field(
+        default=None, min_length=2, max_length=32, pattern=r"^[a-z0-9-]+$"
+    )
 
-    @field_validator("display_name", "first_name", "last_name", mode="before")
+    @field_validator("display_name", "first_name", "last_name", "handle", mode="before")
     @classmethod
     def _reject_explicit_null(cls, value: str | None) -> str | None:
         """Reject an explicit JSON null for required-on-registration fields.
 
-        `min_length` only constrains the `str` branch of `str | None`; an
-        explicit JSON `null` bypasses it entirely. Pydantic only invokes
-        validators when the field is actually present in the payload (by
-        default it does not validate an unset field's default), so this
-        only fires when the client explicitly sends `null` -- omitting the
-        field entirely still leaves it untouched, as intended for a partial
-        update. Without this check, `PATCH /members/me {"display_name":
-        null}` would set the member's NOT NULL `member_name` column to
-        None (raw 500 IntegrityError outside the error envelope), and
-        `{"first_name": null}` / `{"last_name": null}` would silently wipe
-        registration-required fields (200 OK). company/occupation/job_role
-        are intentionally exempt: explicitly clearing them is legitimate.
+        `min_length`/`pattern` only constrain the `str` branch of
+        `str | None`; an explicit JSON `null` bypasses them entirely.
+        Pydantic only invokes validators when the field is actually present
+        in the payload (by default it does not validate an unset field's
+        default), so this only fires when the client explicitly sends
+        `null` -- omitting the field entirely still leaves it untouched, as
+        intended for a partial update. Without this check, `PATCH
+        /members/me {"display_name": null}` would set the member's NOT NULL
+        `member_name` column to None (raw 500 IntegrityError outside the
+        error envelope), and `{"first_name": null}` / `{"last_name": null}`
+        would silently wipe registration-required fields (200 OK).
+        `{"handle": null}` has the same shape: it skips the taken-check
+        (`handle IS NULL` matches nobody) and hits the members NOT NULL
+        constraint at commit, surfacing as a generic 409 `conflict` instead
+        of a 422. company/occupation/job_role are intentionally exempt:
+        explicitly clearing them is legitimate.
         """
         if value is None:
             raise ValueError("must not be null")
@@ -235,9 +247,29 @@ class InviteOut(BaseModel):
 
 
 def build_message_payload(
-    message: Message, workspace: Workspace, channel: Channel, sender: Member
+    message: Message,
+    workspace: Workspace,
+    channel: Channel,
+    sender: Member,
+    db: Session,
 ) -> dict:
-    """The single source of truth for the wire schema shared by REST and WebSocket."""
+    """The single source of truth for the wire schema shared by REST and WebSocket.
+
+    `mentions` and `channel_refs` are resolved fresh from the stored
+    canonical text on every call (via `resolve_payload_refs`), so a handle
+    or channel rename is reflected immediately without rewriting any
+    stored message -- both arrays are always present, empty when nothing
+    resolves. The sender's own token is excluded from `mentions`: a
+    self-mention is already visible via `Sender` and never produced a
+    `Mention` row at post time (see `canonicalize`), so it's a no-op here
+    too, on both the POST response and every later GET.
+    """
+    mentioned_members, referenced_channels = resolve_payload_refs(
+        db, workspace.workspace_id, message.message_text
+    )
+    mentioned_members = [
+        m for m in mentioned_members if m.member_id != sender.member_id
+    ]
     return {
         "timestamp": message.created_at.isoformat(),
         "workspace": {
@@ -253,4 +285,16 @@ def build_message_payload(
             "message_id": message.message_id,
             "message_text": message.message_text,
         },
+        "mentions": [
+            {
+                "member_id": m.member_id,
+                "handle": m.handle,
+                "member_name": m.member_name,
+            }
+            for m in mentioned_members
+        ],
+        "channel_refs": [
+            {"channel_id": c.channel_id, "channel_name": c.channel_name}
+            for c in referenced_channels
+        ],
     }

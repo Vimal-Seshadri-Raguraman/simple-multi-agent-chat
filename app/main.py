@@ -13,6 +13,7 @@ from app.routers import (
     channels,
     invites,
     members,
+    mentions,
     messages,
     websocket,
     workspaces,
@@ -29,6 +30,7 @@ app = FastAPI(title="Simple Multi-Agent Chat", lifespan=lifespan)
 
 app.include_router(auth.router)
 app.include_router(members.router)
+app.include_router(mentions.router)
 app.include_router(invites.router)
 app.include_router(workspaces.router)
 app.include_router(channels.router)

@@ -21,7 +21,10 @@ def _make_member(db, member_type: str, workspace_id: str = "w_1") -> Member:
     """Insert a member with a valid workspace (workspace_id is NOT NULL post-cutover)."""
     _make_workspace(db, workspace_id)
     member = Member(
-        member_name="Test", member_type=member_type, workspace_id=workspace_id
+        member_name="Test",
+        member_type=member_type,
+        workspace_id=workspace_id,
+        handle="test",
     )
     db.add(member)
     db.commit()
