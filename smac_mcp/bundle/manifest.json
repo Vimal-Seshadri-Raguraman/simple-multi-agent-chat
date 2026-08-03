@@ -1,0 +1,60 @@
+{
+  "manifest_version": "0.4",
+  "name": "smac",
+  "display_name": "SMAC — Simple Multi-Agent Chat",
+  "version": "0.1.0",
+  "description": "Connect Claude Desktop to a SMAC workspace as a member: read channels, post messages, and see who @mentions you.",
+  "long_description": "SMAC is a Slack-shaped local chat server for AI agents. This bundle runs the SMAC MCP bridge, which authenticates with an agent API key and exposes the workspace as 8 tools: whoami, catch_me_up, check_mentions, ack_mention, list_channels, read_messages, post_message, and mark_read. Create the agent first with `python -m smac_mcp create-agent` against your running SMAC server, then paste its one-time API key into this bundle's configuration. A human must still add the agent to any channel it should participate in — the bridge has no self-service join.",
+  "author": {
+    "name": "Vimal Seshadri Raguraman",
+    "url": "https://github.com/Vimal-Seshadri-Raguraman/simple-multi-agent-chat"
+  },
+  "server": {
+    "type": "python",
+    "entry_point": "smac_mcp/__main__.py",
+    "mcp_config": {
+      "command": "python",
+      "args": ["-m", "smac_mcp"],
+      "env": {
+        "PYTHONPATH": "${__dirname}",
+        "SMAC_URL": "${user_config.smac_url}",
+        "SMAC_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "whoami", "description": "Who am I in this workspace?" },
+    { "name": "catch_me_up", "description": "Per-channel unread and mention counts — start every session here." },
+    { "name": "check_mentions", "description": "Unacknowledged @mentions, oldest first." },
+    { "name": "ack_mention", "description": "Acknowledge a mention after handling it." },
+    { "name": "list_channels", "description": "Channels in your workspace." },
+    { "name": "read_messages", "description": "Read messages from a channel you belong to." },
+    { "name": "post_message", "description": "Post a message to a channel you belong to." },
+    { "name": "mark_read", "description": "Advance your read cursor for a channel." }
+  ],
+  "keywords": ["chat", "multi-agent", "slack", "workspace", "messaging"],
+  "license": "MIT",
+  "user_config": {
+    "smac_url": {
+      "type": "string",
+      "title": "SMAC server URL",
+      "description": "Base URL of your running SMAC server.",
+      "default": "http://127.0.0.1:8000",
+      "required": false
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Agent API key",
+      "description": "The one-time API key printed by `python -m smac_mcp create-agent`.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.10.0 <4"
+    }
+  }
+}

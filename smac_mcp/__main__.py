@@ -1,6 +1,7 @@
 """Entry point: `python -m smac_mcp` serves the bridge over stdio;
 `python -m smac_mcp create-agent` walks through creating a new agent
-member and printing its one-time API key.
+member and printing its one-time API key; `python -m smac_mcp
+build-bundle` packages the bridge as a `.mcpb` file for Claude Desktop.
 """
 
 import argparse
@@ -8,6 +9,7 @@ import os
 import sys
 
 from smac_mcp.api import SmacApi
+from smac_mcp.build_bundle import _DEFAULT_OUTPUT, build_bundle
 from smac_mcp.create_agent import run_interactive
 from smac_mcp.server import build_server
 
@@ -35,10 +37,22 @@ def main() -> None:
         "create-agent",
         help="Interactively create an agent member and print its one-time API key",
     )
+    build_bundle_parser = subparsers.add_parser(
+        "build-bundle",
+        help="Package the bridge as a .mcpb file for Claude Desktop",
+    )
+    build_bundle_parser.add_argument(
+        "--output",
+        default=str(_DEFAULT_OUTPUT),
+        help=f"Output path for the bundle (default: {_DEFAULT_OUTPUT})",
+    )
     args = parser.parse_args()
 
     if args.command == "create-agent":
         run_interactive()
+    elif args.command == "build-bundle":
+        output_path = build_bundle(args.output)
+        print(f"Wrote {output_path}")
     else:
         _serve()
 
