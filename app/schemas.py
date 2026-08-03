@@ -160,6 +160,31 @@ class LoginIn(BaseModel):
     password: str
 
 
+class MetaOut(BaseModel):
+    """Unauthenticated version handshake -- see GET /meta."""
+
+    server_version: str
+    api_version: int
+
+
+class DiscoverIn(BaseModel):
+    """Credentials for POST /auth/discover: no workspace_id (spec §2.5)."""
+
+    email: EmailStr
+    password: str
+
+
+class DiscoverWorkspaceOut(BaseModel):
+    workspace_id: str
+    workspace_name: str
+
+
+class DiscoverOut(BaseModel):
+    """Workspaces whose account matches the given credentials. No tokens."""
+
+    workspaces: list[DiscoverWorkspaceOut]
+
+
 class TokenPairOut(BaseModel):
     """An access/refresh token pair, mirrored after every login/refresh."""
 
