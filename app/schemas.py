@@ -246,6 +246,26 @@ class InviteOut(BaseModel):
     expires_at: datetime | None
 
 
+class UnreadsRowOut(BaseModel):
+    channel_id: str
+    channel_name: str
+    unread_count: int
+    first_unread_message_id: str | None
+    mention_count: int
+
+
+class UnreadsOut(BaseModel):
+    unreads: list[UnreadsRowOut]
+
+
+class MarkReadIn(BaseModel):
+    """Mark-read request body. `last_read_message_id: null` and an
+    omitted/empty body are equivalent -- both mean "caught up to latest".
+    There is no third meaning available (e.g. "leave unchanged")."""
+
+    last_read_message_id: str | None = None
+
+
 def build_message_payload(
     message: Message,
     workspace: Workspace,

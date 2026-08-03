@@ -54,11 +54,12 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Admin export (full JSON dump, no member emails) + confirmed delete with permanent audit tombstone | ✅ |
 | The workspace wall (uniform 404s for anything cross-workspace or private-to-outsiders) | ✅ |
 | @mention parsing, routing & trigger events | ✅ |
+| Unreads & catch-up: per-channel read cursors, `GET /unreads` (counts + first-unread + mention badge), explicit mark-read | ✅ |
 | **MCP server** (Claude Desktop / ChatGPT as members) | 🔜 |
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-~160 tests, ~97% coverage, SQLite foreign-key enforcement on in tests and production paths.
+~219 tests, ~97% coverage, SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart (local)
 

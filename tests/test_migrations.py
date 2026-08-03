@@ -80,3 +80,50 @@ def test_handle_backfill_for_existing_members(tmp_path):
             ).fetchall()
         )
     assert handles == {"m1": "rmode", "m2": "rmode2", "m3": "helper-bot"}
+
+
+def test_read_cursor_backfill_sets_caught_up(tmp_path):
+    """Upgrading a populated DB backfills last_read_seq to each channel's
+    current max seq (0 for channels with no messages)."""
+    url = f"sqlite:///{tmp_path}/backfill.db"
+    command.upgrade(_alembic_config(url), "6adc7d247755")  # pre-read-cursors schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workspaces (workspace_id, workspace_name, visibility, created_at)"
+            " VALUES ('w1', 'Acme', 'private', '2026-01-01 00:00:00')"
+        )
+        for member_id, name in [("m1", "Rohan Mode"), ("m2", "Rita Mode")]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, handle, created_at)"
+                f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
+                f" '{member_id}', '2026-01-01 00:00:00')"
+            )
+        for channel_id, name in [("c1", "general"), ("c2", "empty")]:
+            conn.exec_driver_sql(
+                "INSERT INTO channels (channel_id, workspace_id, channel_name,"
+                " created_at) VALUES"
+                f" ('{channel_id}', 'w1', '{name}', '2026-01-01 00:00:00')"
+            )
+        for channel_id in ("c1", "c2"):
+            conn.exec_driver_sql(
+                "INSERT INTO channel_members (channel_id, member_id)"
+                f" VALUES ('{channel_id}', 'm1')"
+            )
+        for seq in (1, 2, 3):
+            conn.exec_driver_sql(
+                "INSERT INTO messages (message_id, seq, channel_id,"
+                " sender_member_id, message_text, created_at) VALUES"
+                f" ('msg{seq}', {seq}, 'c1', 'm1', 'hello {seq}',"
+                " '2026-01-01 00:00:00')"
+            )
+    command.upgrade(_alembic_config(url), "head")
+    with engine.begin() as conn:
+        cursors = dict(
+            conn.exec_driver_sql(
+                "SELECT channel_id, last_read_seq FROM channel_members"
+                " ORDER BY channel_id"
+            ).fetchall()
+        )
+    assert cursors == {"c1": 3, "c2": 0}

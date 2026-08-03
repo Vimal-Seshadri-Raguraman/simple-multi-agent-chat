@@ -11,7 +11,7 @@ from app import rate_limit
 from app.database import get_db
 from app.errors import NotFoundError, RateLimitedError
 from app.mentions import build_mention_event, canonicalize
-from app.models import Channel, Member, Mention, Message, Workspace
+from app.models import Channel, ChannelMember, Member, Mention, Message, Workspace
 from app.schemas import MessageCreate, build_message_payload
 from app.ws_manager import event_manager, manager
 
@@ -74,6 +74,17 @@ async def post_message(
     )
     db.add(message)
     db.flush()  # assigns message.message_id for the Mention rows below
+
+    # Own-post cursor advance: posting implies having seen everything up to
+    # and including your own message. Inside the same transaction as the
+    # message insert/mentions, before commit, so it can never advance the
+    # cursor without the post itself landing (and vice versa). The `if`
+    # guard is defensive only -- posting already requires channel membership
+    # via authorize_post_message above.
+    sender_membership = db.get(ChannelMember, (channel_id, member.member_id))
+    if sender_membership is not None:
+        sender_membership.last_read_seq = message.seq
+
     mention_rows = [
         Mention(
             message_id=message.message_id,
