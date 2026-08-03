@@ -246,6 +246,18 @@ class InviteOut(BaseModel):
     expires_at: datetime | None
 
 
+class UnreadsRowOut(BaseModel):
+    channel_id: str
+    channel_name: str
+    unread_count: int
+    first_unread_message_id: str | None
+    mention_count: int
+
+
+class UnreadsOut(BaseModel):
+    unreads: list[UnreadsRowOut]
+
+
 def build_message_payload(
     message: Message,
     workspace: Workspace,
