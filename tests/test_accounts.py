@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.accounts import create_member_account
+from app.accounts import create_account, create_member_account
 from app.errors import EmailTakenError
 from app.models import Channel, ChannelMember, Member, Workspace
 
@@ -20,6 +20,17 @@ def _workspace(db_session, with_default_channel=True, name="Acme"):
     return ws
 
 
+def _account(db_session, email, password="password-123"):
+    """SMAC-79 Task 1: create_member_account now requires a linked global
+    Account (dual-write) -- this mirrors what
+    app.accounts.get_or_create_account_for_email does in the real
+    endpoints, without pulling in the get-or-create semantics these unit
+    tests don't need."""
+    account = create_account(db_session, email, password)
+    db_session.flush()
+    return account
+
+
 def test_creates_account_in_workspace_and_default_channel(db_session):
     ws = _workspace(db_session)
     member = create_member_account(
@@ -29,6 +40,7 @@ def test_creates_account_in_workspace_and_default_channel(db_session):
         password="password-123",
         first_name="Alice",
         last_name="L",
+        account=_account(db_session, "Alice@Test.Example"),
     )
     db_session.commit()
     assert member.workspace_id == ws.workspace_id
@@ -53,6 +65,7 @@ def test_duplicate_email_same_workspace_rejected(db_session):
         password="password-123",
         first_name="A",
         last_name="One",
+        account=_account(db_session, "a@test.example"),
     )
     db_session.commit()
     with pytest.raises(EmailTakenError):
@@ -63,6 +76,7 @@ def test_duplicate_email_same_workspace_rejected(db_session):
             password="password-456",
             first_name="A",
             last_name="Two",
+            account=_account(db_session, "a@test.example"),
         )
 
 
@@ -70,6 +84,7 @@ def test_same_email_different_workspaces_ok(db_session):
     ws1, ws2 = _workspace(db_session, name="Acme"), _workspace(
         db_session, name="Acme Two"
     )
+    shared_account = _account(db_session, "a@test.example")
     m1 = create_member_account(
         db_session,
         ws1,
@@ -77,6 +92,7 @@ def test_same_email_different_workspaces_ok(db_session):
         password="password-123",
         first_name="A",
         last_name="One",
+        account=shared_account,
     )
     m2 = create_member_account(
         db_session,
@@ -85,10 +101,12 @@ def test_same_email_different_workspaces_ok(db_session):
         password="password-456",
         first_name="A",
         last_name="Two",
+        account=shared_account,
     )
     db_session.commit()
     assert m1.member_id != m2.member_id
     assert {m1.workspace_id, m2.workspace_id} == {ws1.workspace_id, ws2.workspace_id}
+    assert m1.account_id == m2.account_id == shared_account.account_id
 
 
 def test_admin_flag_and_null_default_channel(db_session):
@@ -102,6 +120,7 @@ def test_admin_flag_and_null_default_channel(db_session):
         last_name="Ounder",
         is_admin=True,
         display_name="The Founder",
+        account=_account(db_session, "f@test.example"),
     )
     db_session.commit()
     assert member.is_admin is True
@@ -120,6 +139,7 @@ def test_does_not_commit_caller_must(db_session):
         password="password-123",
         first_name="Roll",
         last_name="Back",
+        account=_account(db_session, "rollback@test.example"),
     )
     member_id = member.member_id
     db_session.rollback()

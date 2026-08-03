@@ -74,16 +74,38 @@ def verify_password(raw: str, hashed: str) -> bool:
     return bcrypt.checkpw(raw.encode("utf-8"), hashed.encode("utf-8"))
 
 
-def create_access_token(member_id: str) -> str:
-    """Issue a short-lived JWT whose subject is the member id."""
+def create_access_token(
+    subject_id: str, *, scope: str | None = None, account_id: str | None = None
+) -> str:
+    """Issue a short-lived JWT.
+
+    `subject_id` is a member id for workspace-tier tokens or an account id
+    for account-tier tokens. `scope` is omitted by default, producing the
+    pre-Identity-v2 (SMAC-79) token shape -- bare `sub`+`exp`, no `scope`
+    claim -- required for exact backward compatibility with every existing
+    legacy caller (`app.routers.auth._issue_token_pair` and everything
+    that flows through it). Pass `scope="workspace"` or `scope="account"`
+    for a new two-tier token; workspace-tier tokens additionally carry
+    `account_id` (today's claim shape + account_id, per spec §2).
+    """
     expires = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)
-    return jwt.encode(
-        {"sub": member_id, "exp": expires}, SECRET_KEY, algorithm=_JWT_ALGORITHM
-    )
+    claims: dict[str, object] = {"sub": subject_id, "exp": expires}
+    if scope is not None:
+        claims["scope"] = scope
+    if account_id is not None:
+        claims["account_id"] = account_id
+    return jwt.encode(claims, SECRET_KEY, algorithm=_JWT_ALGORITHM)
 
 
-def decode_access_token(token: str) -> str | None:
-    """Return the member id from a valid JWT, or None if invalid/expired."""
+def decode_access_token_claims(token: str) -> dict[str, object] | None:
+    """Return the full claim set of a valid JWT (at least `sub`+`exp`,
+    optionally `scope`/`account_id`), or None if invalid/expired/malformed.
+
+    The two-tier auth dependencies (`app.auth.resolve_member`,
+    `resolve_account`) need the `scope` claim to enforce the token-tier
+    boundary; `decode_access_token` below stays as the sub-only
+    convenience wrapper every pre-existing caller already uses.
+    """
     try:
         payload = jwt.decode(
             token,
@@ -92,6 +114,16 @@ def decode_access_token(token: str) -> str | None:
             options={"require": ["exp", "sub"]},
         )
     except jwt.InvalidTokenError:
+        return None
+    if not isinstance(payload.get("sub"), str):
+        return None
+    return payload
+
+
+def decode_access_token(token: str) -> str | None:
+    """Return the subject id from a valid JWT, or None if invalid/expired."""
+    payload = decode_access_token_claims(token)
+    if payload is None:
         return None
     sub = payload.get("sub")
     return sub if isinstance(sub, str) else None

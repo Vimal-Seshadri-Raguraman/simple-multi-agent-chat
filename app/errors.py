@@ -49,6 +49,22 @@ class InvalidTokenError(AppError):
     code = "invalid_token"
 
 
+class WorkspaceTokenRequiredError(AppError):
+    """A real, valid credential was presented -- just the wrong tier
+    (account-scope) for a workspace-scope endpoint (spec §2)."""
+
+    status_code = 401
+    code = "workspace_token_required"
+
+
+class AccountTokenRequiredError(AppError):
+    """A real, valid credential was presented -- just the wrong tier
+    (workspace/legacy-scope) for an account-scope endpoint (spec §2)."""
+
+    status_code = 401
+    code = "account_token_required"
+
+
 class EmailTakenError(AppError):
     status_code = 409
     code = "email_taken"

@@ -214,6 +214,71 @@ class TokenPairOut(BaseModel):
     expires_in: int
 
 
+class AccountCreateIn(BaseModel):
+    """POST /accounts: create a global account (spec §2)."""
+
+    email: EmailStr
+    password: str = Field(min_length=8)
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt_limit(cls, value: str) -> str:
+        """bcrypt silently truncates beyond 72 BYTES; reject instead of truncating."""
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError(
+                "password must be at most 72 bytes when UTF-8 encoded (bcrypt limit)"
+            )
+        return value
+
+
+class AccountLoginIn(BaseModel):
+    """POST /accounts/login: global login, no workspace_id (spec §2)."""
+
+    email: EmailStr
+    password: str
+
+
+class AccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    account_id: str
+    email: str | None
+    created_at: datetime
+
+
+class AccountAuthOut(BaseModel):
+    """POST /accounts' response shape: the new account, auto-logged-in."""
+
+    account: AccountOut
+    tokens: TokenPairOut
+
+
+class AccountMembershipOut(BaseModel):
+    """One of the caller's workspace profiles, as surfaced by
+    POST /accounts/login and GET /accounts/me."""
+
+    workspace_id: str
+    workspace_name: str
+    member_id: str
+    handle: str
+
+
+class AccountLoginOut(AccountAuthOut):
+    """POST /accounts/login's response shape: account + tokens + every
+    workspace the account already has a profile in (the real thing
+    /auth/discover used to simulate)."""
+
+    workspaces: list[AccountMembershipOut]
+
+
+class AccountMeOut(BaseModel):
+    """GET /accounts/me: the caller's own account + their memberships."""
+
+    account_id: str
+    email: str | None
+    created_at: datetime
+    memberships: list[AccountMembershipOut]
+
+
 class FoundWorkspaceIn(RegisterIn):
     """Found a workspace: workspace details + the founder's account in one body."""
 

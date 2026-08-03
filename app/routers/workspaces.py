@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.accounts import build_member_self_out, create_member_account
-from app.auth import get_current_member
+from app.accounts import (
+    build_member_self_out,
+    create_member_account,
+    get_or_create_account_for_email,
+)
+from app.auth import get_current_account, get_current_member
 from app.authorization import require_same_workspace, require_workspace_admin
 from app.database import get_db
 from app.errors import (
@@ -13,6 +17,7 @@ from app.errors import (
     WorkspaceNameTakenError,
 )
 from app.models import (
+    Account,
     Channel,
     ChannelMember,
     Member,
@@ -25,12 +30,13 @@ from app.models import (
     new_id,
     utcnow,
 )
-from app.routers.auth import _issue_token_pair
+from app.routers.auth import _issue_token_pair, _issue_workspace_token_pair
 from app.schemas import (
     FoundWorkspaceIn,
     InviteOut,
     MemberAdminIn,
     MemberOut,
+    TokenPairOut,
     WorkspaceAuthOut,
     WorkspaceOut,
     WorkspaceSearchOut,
@@ -72,6 +78,7 @@ def found_workspace(
     db.add(general)
     db.flush()
     workspace.default_channel_id = general.channel_id
+    account = get_or_create_account_for_email(db, body.email, body.password)
     founder = create_member_account(
         db,
         workspace,
@@ -79,6 +86,7 @@ def found_workspace(
         password=body.password,
         first_name=body.first_name,
         last_name=body.last_name,
+        account=account,
         display_name=body.display_name,
         company=body.company,
         occupation=body.occupation,
@@ -100,6 +108,32 @@ def found_workspace(
         workspace=WorkspaceOut.model_validate(workspace),
         **tokens.model_dump(),
     )
+
+
+@router.post("/workspaces/{workspace_id}/token", response_model=TokenPairOut)
+def mint_workspace_token(
+    workspace_id: str,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+) -> TokenPairOut:
+    """Exchange an account token for a workspace token pair (spec §2).
+
+    The caller must hold a membership (a `Member` row linked to this
+    account) in `workspace_id`; a non-membership is the uniform 404 --
+    "the wall" -- indistinguishable from a nonexistent workspace, exactly
+    like `require_same_workspace` already does for workspace-tier
+    callers.
+    """
+    member = (
+        db.query(Member)
+        .filter(
+            Member.workspace_id == workspace_id, Member.account_id == account.account_id
+        )
+        .first()
+    )
+    if member is None:
+        raise NotFoundError(f"Workspace '{workspace_id}' not found")
+    return _issue_workspace_token_pair(db, member)
 
 
 # GET /workspaces/search MUST be defined before any /workspaces/{workspace_id} GET route

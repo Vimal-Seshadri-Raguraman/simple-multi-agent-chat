@@ -244,3 +244,159 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
                 " workspace_name_key, visibility, created_at) VALUES"
                 " ('w10', 'ÉQUIPE', 'équipe', 'private', '2026-01-01 00:00:07')"
             )
+
+
+def test_identity_v2_migration_a_backfill(tmp_path):
+    """Migration A backfill (spec §5 steps 1-3, SMAC-79 Task 1):
+
+    - same-email-two-workspaces with DIFFERENT passwords collapse into
+      ONE account; the OLDER member (by created_at then member_id)
+      donates its password_hash AND its email's original casing; both
+      members link to that one account via account_id.
+    - a same-email-same-password pair also collapses to one (different)
+      account, proving grouping is by email, not incidentally by hash.
+    - each agent/bot member gets its own BRAND-NEW account (no
+      cross-workspace merging), with no email/password.
+    - uq_accounts_email_ci is enforced afterward.
+    """
+    url = f"sqlite:///{tmp_path}/backfill.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")  # pre-identity-v2 schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        for workspace_id, name, key, created_at in [
+            ("w1", "Acme", "acme", "2026-01-01 00:00:00"),
+            ("w2", "Beta", "beta", "2026-01-01 00:00:01"),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                f" ('{workspace_id}', '{name}', '{key}', 'private', '{created_at}')"
+            )
+        # Same email (case-variant), DIFFERENT passwords -- m1 is older,
+        # so it must donate both its password_hash and its email casing.
+        for member_id, workspace_id, email, password_hash, handle, created_at in [
+            (
+                "m1",
+                "w1",
+                "Dup@Example.com",
+                "hash-oldest",
+                "dupuser",
+                "2026-01-01 00:00:00",
+            ),
+            (
+                "m2",
+                "w2",
+                "dup@example.com",
+                "hash-newest",
+                "dupuser2",
+                "2026-01-01 00:00:05",
+            ),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, handle, email, password_hash,"
+                " created_at) VALUES"
+                f" ('{member_id}', 'Dup User', 'human', '{workspace_id}', 0,"
+                f" '{handle}', '{email}', '{password_hash}', '{created_at}')"
+            )
+        # A second, distinct email shared by two members with the SAME
+        # password -- must also collapse to one (different) account.
+        for member_id, workspace_id, handle, created_at in [
+            ("m3", "w1", "sameuser", "2026-01-01 00:00:02"),
+            ("m4", "w2", "sameuser2", "2026-01-01 00:00:03"),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, handle, email, password_hash,"
+                " created_at) VALUES"
+                f" ('{member_id}', 'Same User', 'human', '{workspace_id}', 0,"
+                f" '{handle}', 'same@example.com', 'hash-same', '{created_at}')"
+            )
+        # An agent member: own brand-new account, no email/password.
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, created_at) VALUES"
+            " ('m5', 'Agent Bot', 'agent', 'w1', 0, 'agentbot',"
+            " '2026-01-01 00:00:04')"
+        )
+
+    command.upgrade(_alembic_config(url), "head")
+
+    with engine.begin() as conn:
+        member_accounts = dict(
+            conn.exec_driver_sql(
+                "SELECT member_id, account_id FROM members ORDER BY member_id"
+            ).fetchall()
+        )
+        accounts_by_id = {
+            row[0]: row
+            for row in conn.exec_driver_sql(
+                "SELECT account_id, account_type, email, email_key,"
+                " password_hash FROM accounts"
+            ).fetchall()
+        }
+
+    # Every member links to a real account.
+    assert all(account_id is not None for account_id in member_accounts.values())
+    assert set(member_accounts.values()) <= set(accounts_by_id.keys())
+
+    # m1 (oldest) and m2 share one account; m1 donated its password AND
+    # its email's original casing (NOT lowercased/overwritten).
+    assert member_accounts["m1"] == member_accounts["m2"]
+    dup_account = accounts_by_id[member_accounts["m1"]]
+    assert dup_account[1] == "human"  # account_type
+    assert dup_account[2] == "Dup@Example.com"  # email casing from oldest row
+    assert dup_account[3] == "dup@example.com"  # email_key
+    assert dup_account[4] == "hash-oldest"  # oldest member's password wins
+
+    # m3 and m4 (distinct email, same password) also collapse to one
+    # account -- a DIFFERENT account than the m1/m2 group.
+    assert member_accounts["m3"] == member_accounts["m4"]
+    assert member_accounts["m3"] != member_accounts["m1"]
+    same_account = accounts_by_id[member_accounts["m3"]]
+    assert same_account[4] == "hash-same"
+
+    # The agent gets its own brand-new account: no email/password, and
+    # not merged with either human group.
+    agent_account = accounts_by_id[member_accounts["m5"]]
+    assert agent_account[1] == "agent"
+    assert agent_account[2] is None
+    assert agent_account[4] is None
+    assert member_accounts["m5"] not in (member_accounts["m1"], member_accounts["m3"])
+
+    inspector = inspect(engine)
+    account_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("accounts")
+    }
+    assert "uq_accounts_email_ci" in account_constraints
+
+    # Case-insensitive uniqueness is enforced going forward.
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO accounts (account_id, account_type, email,"
+                " email_key, password_hash, created_at) VALUES"
+                " ('acct-x', 'human', 'DUP@EXAMPLE.COM', 'dup@example.com',"
+                " 'x', '2026-01-01 00:00:06')"
+            )
+
+
+def test_drift_guard_catches_missing_migration_a(tmp_path):
+    """Red -> green proof for migration A: with the migration chain
+    stopped one revision short (at 86eb92b1f702, the pre-Identity-v2
+    head), the model/migration comparator MUST report drift, since
+    Base.metadata now includes `accounts`, `members.account_id`, and the
+    refresh_tokens additions that 86eb92b1f702 alone doesn't create. This
+    is the "red" half of the red -> green proof that
+    test_no_model_migration_drift (green, against `head`) is the "green"
+    half of."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    url = f"sqlite:///{tmp_path}/pre_identity_v2.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        diffs = compare_metadata(ctx, Base.metadata)
+    assert diffs != [], "expected drift against the pre-Identity-v2 schema, found none"

@@ -7,7 +7,11 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.accounts import build_member_self_out, create_member_account
+from app.accounts import (
+    build_member_self_out,
+    create_member_account,
+    get_or_create_account_for_email,
+)
 from app.auth import get_current_member
 from app.authorization import authorize_management_action, require_same_workspace
 from app.database import get_db
@@ -146,6 +150,7 @@ def _register_account(
     db: Session, workspace: Workspace, body: RegisterIn
 ) -> WorkspaceAuthOut:
     """Shared tail of both registration paths: create account, commit, log in."""
+    account = get_or_create_account_for_email(db, body.email, body.password)
     member = create_member_account(
         db,
         workspace,
@@ -153,6 +158,7 @@ def _register_account(
         password=body.password,
         first_name=body.first_name,
         last_name=body.last_name,
+        account=account,
         display_name=body.display_name,
         company=body.company,
         occupation=body.occupation,

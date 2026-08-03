@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_member
 from app.database import get_db
 from app.errors import InvalidCredentialsError, InvalidTokenError
-from app.models import Member, RefreshToken, Workspace, utcnow
+from app.models import Account, Member, RefreshToken, Workspace, utcnow
 from app.schemas import (
     DiscoverIn,
     DiscoverOut,
@@ -44,7 +44,16 @@ _DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing-parity-only")
 
 
 def _issue_token_pair(db: Session, member: Member) -> TokenPairOut:
-    """Create an access JWT and a stored, hashed refresh token for a member."""
+    """Create an access JWT and a stored, hashed refresh token for a member.
+
+    LEGACY shape, unchanged since before Identity v2 (SMAC-79): no `scope`
+    claim on the JWT, no `scope`/`account_id`/`workspace_id` set on the
+    stored row (the column defaults to "workspace" server-side). Every
+    pre-existing caller (workspace founding, workspace-scoped
+    /auth/login, invite registration) keeps using this exact function so
+    none of that behavior can drift. New two-tier callers use
+    `_issue_workspace_token_pair`/`_issue_account_token_pair` below.
+    """
     raw_refresh = generate_refresh_token()
     db.add(
         RefreshToken(
@@ -56,6 +65,62 @@ def _issue_token_pair(db: Session, member: Member) -> TokenPairOut:
     db.commit()
     return TokenPairOut(
         access_token=create_access_token(member.member_id),
+        refresh_token=raw_refresh,
+        expires_in=ACCESS_TOKEN_TTL_MINUTES * 60,
+    )
+
+
+def _issue_workspace_token_pair(db: Session, member: Member) -> TokenPairOut:
+    """Create a WORKSPACE-tier token pair (spec §2): the JWT carries an
+    explicit `scope="workspace"` claim + `account_id` (today's claims
+    shape + account_id); the stored refresh row records `scope`,
+    `workspace_id`, and `account_id` so `/auth/refresh` can echo them back
+    on rotation. Used by `POST /workspaces/{id}/token` and by
+    `/auth/refresh` when rotating a workspace-scope row (including
+    legacy rows, which read back as `scope="workspace"` via the column's
+    server default -- see RefreshToken's docstring).
+    """
+    raw_refresh = generate_refresh_token()
+    db.add(
+        RefreshToken(
+            token_hash=hash_token(raw_refresh),
+            member_id=member.member_id,
+            account_id=member.account_id,
+            scope="workspace",
+            workspace_id=member.workspace_id,
+            expires_at=utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),
+        )
+    )
+    db.commit()
+    return TokenPairOut(
+        access_token=create_access_token(
+            member.member_id, scope="workspace", account_id=member.account_id
+        ),
+        refresh_token=raw_refresh,
+        expires_in=ACCESS_TOKEN_TTL_MINUTES * 60,
+    )
+
+
+def _issue_account_token_pair(db: Session, account: Account) -> TokenPairOut:
+    """Create an ACCOUNT-tier token pair (spec §2): JWT `scope="account"`,
+    subject is the account id; the stored refresh row has `account_id`
+    set and `member_id`/`workspace_id` NULL (a brand-new account may have
+    no member at all yet). Used by `POST /accounts`, `POST
+    /accounts/login`, and `/auth/refresh` when rotating an account-scope
+    row.
+    """
+    raw_refresh = generate_refresh_token()
+    db.add(
+        RefreshToken(
+            token_hash=hash_token(raw_refresh),
+            account_id=account.account_id,
+            scope="account",
+            expires_at=utcnow() + timedelta(days=REFRESH_TOKEN_TTL_DAYS),
+        )
+    )
+    db.commit()
+    return TokenPairOut(
+        access_token=create_access_token(account.account_id, scope="account"),
         refresh_token=raw_refresh,
         expires_in=ACCESS_TOKEN_TTL_MINUTES * 60,
     )
@@ -149,7 +214,14 @@ def discover(body: DiscoverIn, db: Session = Depends(get_db)) -> DiscoverOut:
 
 @router.post("/auth/refresh", response_model=TokenPairOut)
 def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
-    """Rotate a refresh token: revoke the presented one, issue a new pair."""
+    """Rotate a refresh token: revoke the presented one, issue a new pair
+    in the SAME scope the stored row carries (spec §2). Legacy rows never
+    had a `scope` written explicitly, so they read back as `scope=
+    "workspace"` via the column's server default -- old sessions keep
+    refreshing exactly as before, just via `_issue_workspace_token_pair`
+    now instead of `_issue_token_pair` (both produce a workspace-tier
+    pair `get_current_member` accepts identically).
+    """
     row = db.get(RefreshToken, hash_token(body.refresh_token))
     if row is None:
         raise InvalidTokenError("Refresh token is invalid or expired")
@@ -157,7 +229,16 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
         db.delete(row)
         db.commit()
         raise InvalidTokenError("Refresh token is invalid or expired")
-    member = db.get(Member, row.member_id)
+
+    if row.scope == "account":
+        account = db.get(Account, row.account_id) if row.account_id else None
+        db.delete(row)
+        if account is None:
+            db.commit()
+            raise InvalidTokenError("Refresh token is invalid or expired")
+        return _issue_account_token_pair(db, account)
+
+    member = db.get(Member, row.member_id) if row.member_id else None
     db.delete(row)
     if member is None:
         # SQLite FK enforcement (PRAGMA foreign_keys) isn't guaranteed to be
@@ -165,7 +246,7 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
         # missing owner the same as any other invalid/expired token.
         db.commit()
         raise InvalidTokenError("Refresh token is invalid or expired")
-    return _issue_token_pair(db, member)
+    return _issue_workspace_token_pair(db, member)
 
 
 @router.post("/auth/logout")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.accounts import build_member_self_out
+from app.accounts import build_member_self_out, create_agent_account
 from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.authorization import authorize_management_action
 from app.database import get_db
@@ -23,12 +23,17 @@ def _register(
     db: Session, member_name: str, member_type: str, workspace_id: str
 ) -> MemberRegisterOut:
     raw_key = generate_api_key()
+    # Identity v2 (SMAC-79 Task 1) dual-write: every agent/bot member gets
+    # its own brand-new, identity-only global Account (no email/password;
+    # the API key stays right here on Member, per-workspace, unchanged).
+    account = create_agent_account(db, member_type)
     member = Member(
         member_name=member_name,
         member_type=member_type,
         handle=generate_unique_handle(db, workspace_id, member_name),
         api_key_hash=hash_api_key(raw_key),
         workspace_id=workspace_id,
+        account_id=account.account_id,
     )
     db.add(member)
     db.commit()
