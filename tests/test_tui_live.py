@@ -111,6 +111,21 @@ def _found_workspace(url: str) -> SmacApi:
     return api
 
 
+def _found_public_workspace(url: str) -> SmacApi:
+    """Same as `_found_workspace`, but public -- so a second human can
+    `register_into` it directly (no invite flow needed for this test)."""
+    api = SmacApi(url)
+    api.register_found(
+        email=f"{_unique('founder')}@test.example",
+        password=_TEST_PASSWORD,
+        first_name="Ada",
+        last_name="Lovelace",
+        workspace_name=_unique("wksp"),
+        visibility="public",
+    )
+    return api
+
+
 def _general_channel_id(api: SmacApi) -> str:
     match = next(c for c in api.channels() if c["channel_name"].lower() == "general")
     return str(match["channel_id"])
@@ -283,6 +298,35 @@ async def test_posted_message_appears_in_feed_including_self_echo(
 
 
 @pytest.mark.anyio
+async def test_self_mention_renders_as_own_handle_not_raw_token(
+    real_smac_server: tuple[str, Path],
+) -> None:
+    """Finding G: `build_message_payload` excludes the sender from their
+    own message's `mentions` array, but `canonicalize` (app/mentions.py)
+    still rewrites a self-mention into a `<@member_id>` token same as any
+    other -- without `smac_cli.app._ensure_self_identity`'s `extra_handles`
+    fallback (`smac_cli.render.message_line`), that token renders as the
+    raw id forever instead of `@yourhandle`.
+    """
+    url, _home_dir = real_smac_server
+    founder = _found_workspace(url)
+    assert founder.session is not None
+    handle = founder.whoami()["handle"]
+
+    app = SmacApp(_app_api_for(founder))
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*f"note to self @{handle}, follow up tomorrow")
+        await pilot.press("enter")
+
+        await _wait_until(pilot, lambda: "note to self" in _body_text(app))
+        line = next(l for l in app._log_lines if "note to self" in l)
+        assert f"@{handle}" in line
+        assert "<@" not in line
+
+
+@pytest.mark.anyio
 async def test_message_from_another_member_appears_with_rendered_mention(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -368,6 +412,89 @@ async def test_switching_channel_loads_history_and_marks_read(
             return bool(row["unread_count"] == 0)
 
         await _wait_until(pilot, _caught_up)
+
+
+@pytest.mark.anyio
+async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
+    real_smac_server: tuple[str, Path],
+) -> None:
+    """T5 fix-before-merge: entering a channel you're not a member of used
+    to leave the feed retrying invisibly forever -- each retry called
+    `ws_channel_url`, which refreshes unconditionally, silently rotating
+    the single-use refresh token and rewriting session.json every backoff
+    cycle, with no visible sign anything was wrong (a WS 403 rejection
+    never sets `_ever_connected`, so no "disconnected" line ever printed
+    either). The guard: `enter_channel` must catch `NotAMemberError` from
+    the history load specifically, skip `_start_channel_feed` entirely,
+    and show a system line instead.
+
+    Founder creates a channel and adds no one else to it; a second human
+    (joined via the public directory, so a member of the workspace but
+    NOT of that channel) tries `/channel <name>` into it.
+    """
+    url, _home_dir = real_smac_server
+    founder = _found_public_workspace(url)
+    assert founder.session is not None
+    workspace_id = founder.session.workspace_id
+
+    private_channel = _create_channel(founder, _unique("reports"))
+    channel_name = private_channel["channel_name"]
+    # Deliberately no `_add_channel_member` call -- the founder is the only
+    # member of this channel.
+
+    joiner_api = SmacApi(url)
+    joiner_api.register_into(
+        workspace_id,
+        f"{_unique('joiner')}@test.example",
+        _TEST_PASSWORD,
+        "Alan",
+        "Turing",
+    )
+    assert joiner_api.session is not None
+    initial_refresh_token = joiner_api.session.refresh_token
+
+    app = SmacApp(joiner_api)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        # The initial, legitimate entry into #general (a channel the
+        # joiner IS a member of) itself performs ONE expected token
+        # refresh -- `_ensure_event_bell`/`_start_channel_feed`'s `ws_*_
+        # url()` calls always refresh unconditionally (see `SmacApi.
+        # _ws_url`'s docstring) -- but they run asynchronously on
+        # background threads that can still be mid-flight right after
+        # `current_channel_id` is set (which happens synchronously, at
+        # the very top of `enter_channel`, before either of them runs).
+        # Wait for that startup refresh to actually land before taking
+        # the baseline, so the assertion below is specifically about the
+        # REJECTED channel never causing another rotation -- not a race
+        # against this normal one.
+        await _wait_until(
+            pilot,
+            lambda: joiner_api.session is not None
+            and joiner_api.session.refresh_token != initial_refresh_token,
+        )
+        assert joiner_api.session is not None
+        stored_refresh_token = joiner_api.session.refresh_token
+
+        await pilot.press(*f"/channel {channel_name}")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: any("not a member" in line for line in app._log_lines)
+        )
+        line = next(l for l in app._log_lines if "not a member" in l)
+        assert channel_name in line
+        assert "ask" in line.lower()  # told to ask an admin, not left guessing
+        # No feed was ever attached for the rejected channel.
+        assert app._channel_feed is None
+
+        # Give the (removed) feed loop a couple of backoff cycles' worth of
+        # wall-clock time to prove the fix, not just the immediate state:
+        # before the guard, this window is exactly where a background
+        # retry loop would have redeemed the refresh token again.
+        await pilot.pause(2.5)
+        assert joiner_api.session is not None
+        assert joiner_api.session.refresh_token == stored_refresh_token
 
 
 @pytest.mark.anyio

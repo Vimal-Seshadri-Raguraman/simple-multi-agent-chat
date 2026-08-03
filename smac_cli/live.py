@@ -12,7 +12,7 @@ required) and reusable outside the TUI.
 
 **Reconnection:** any failure at all -- a dropped connection, a refused
 one, a bad `ws_url_provider` -- is treated identically: back off (1s,
-doubling, capped at 30s, ±25% jitter so many clients reconnecting at
+doubling, capped at 30s, +0-25% jitter so many clients reconnecting at
 once don't thunder-herd) and try again, forever, until `stop()`. The
 `except Exception` in `_run` is deliberately broad: a reconnect loop
 that can itself crash the daemon thread on some unanticipated failure

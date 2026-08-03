@@ -105,6 +105,12 @@ def cmd_login(app: "SmacApp", args: str) -> None:
     - **zero matches** -- the public-directory join frame: a live-filtered
       `app.choose(..., filterable=True)` over `api.search_public`, then
       name prompts + `api.register_into` for whichever workspace is picked.
+      Zero matches is byte-identical (by design, §2.5's security contract)
+      whether the email is unknown OR a real account's password was just
+      mistyped -- finding H: a one-line hint here softens the confusing
+      case of a returning user with a typo'd password landing in "join a
+      workspace" with no clue why, without weakening that contract (it's
+      just a system line, not a different response shape).
     """
     from smac_cli.app import cache_workspace_name
 
@@ -133,6 +139,11 @@ def cmd_login(app: "SmacApp", args: str) -> None:
 
     # Zero matches: the join frame -- live-filtered public directory.
     app.set_header("SMAC — no workspace yet: join one")
+    app.system_line(
+        "no workspaces found for these credentials — if you already have an "
+        "account, double-check your password; otherwise pick a workspace "
+        "below or /register"
+    )
     app.write_line("public workspaces (type to search):")
 
     def _search(query: str) -> list[tuple[str, str]]:

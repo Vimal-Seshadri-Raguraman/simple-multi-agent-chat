@@ -100,8 +100,15 @@ def _read_pidfile() -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        info: dict[str, Any] = json.loads(path.read_text())
+        info = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
+        path.unlink(missing_ok=True)
+        return None
+    if not isinstance(info, dict):
+        # Valid JSON (e.g. `[1]` or `"oops"`) but not the `{...}` shape
+        # this file is always written as -- treat it exactly like a
+        # stale/corrupt pidfile rather than letting `.get` below raise
+        # `AttributeError` and crash every command that reads it.
         path.unlink(missing_ok=True)
         return None
     pid = info.get("pid")
@@ -114,6 +121,32 @@ def _read_pidfile() -> dict[str, Any] | None:
 def _write_pidfile(info: dict[str, Any]) -> None:
     """Persist `info` (pid/port/db_path/started_at) as pidfile JSON."""
     pidfile_path().write_text(json.dumps(info))
+
+
+def _terminate_child(process: "subprocess.Popen[bytes]") -> None:
+    """TERM the still-running child, escalate to KILL if it doesn't exit.
+
+    Used by `_start`'s readiness-timeout path (finding D): before this,
+    a slow start (>15s) left the spawned uvicorn running unmanaged --
+    no pidfile was written for it, so it held the port forever and every
+    later `--start` failed mysteriously with nothing `--stop` could
+    reach (no recorded pid). Mirrors `_stop`'s own TERM-then-KILL
+    escalation, just against the `Popen` handle `_start` already has in
+    hand rather than a pid read back from a file.
+    """
+    if process.poll() is not None:
+        return  # already exited on its own
+    process.terminate()
+    try:
+        process.wait(timeout=_STOP_TIMEOUT_S)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    process.kill()
+    try:
+        process.wait(timeout=_STOP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _tail_log(n: int = 20) -> list[str]:
@@ -129,8 +162,10 @@ def _start(port: int) -> None:
 
     Refuses (no-op) if a pidfile names a live process already. On
     success, writes the pidfile and prints the URL. On a readiness
-    timeout, prints the last 20 log lines and exits 1 -- no pidfile is
-    written, so a subsequent `--start` retries cleanly.
+    timeout, terminates the still-running child (finding D -- it used to
+    be left running unmanaged, holding the port forever with no pidfile
+    to reach it by), prints the last 20 log lines, and exits 1 -- no
+    pidfile is written, so a subsequent `--start` retries cleanly.
     """
     running = _read_pidfile()
     if running is not None:
@@ -184,6 +219,7 @@ def _start(port: int) -> None:
         time.sleep(_READY_POLL_INTERVAL_S)
 
     if not ready:
+        _terminate_child(process)
         print("smac-server did not become ready in time -- last log lines:")
         for line in _tail_log(20):
             print(line)

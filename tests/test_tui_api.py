@@ -16,6 +16,7 @@ that's allowed to import `app` even though `smac_cli` itself never does.
 
 from __future__ import annotations
 
+import os
 import stat
 import uuid
 from pathlib import Path
@@ -170,6 +171,39 @@ def test_session_load_missing_field_returns_none(tmp_path: Path) -> None:
     assert Session.load(path) is None
 
 
+def test_session_save_creates_file_via_os_open_with_no_perms_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding C: the file must be created with mode 0o600 from its very
+    first byte (`os.open(..., O_CREAT, 0o600)`), not `write_text` then
+    `chmod` -- the latter briefly creates the file at the process umask's
+    default perms before the chmod call lands. Spying on `os.open` proves
+    the fix uses the atomic-at-creation path rather than merely asserting
+    the end state (which the old, vulnerable code also satisfied)."""
+    path = tmp_path / "session.json"
+    observed_create_modes: list[int] = []
+    real_open = os.open
+
+    def spy_open(file: object, flags: int, mode: int = 0o777) -> int:
+        if flags & os.O_CREAT:
+            observed_create_modes.append(mode)
+        return real_open(file, flags, mode)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", spy_open)
+    session = Session(
+        url="http://x.test",
+        workspace_id="w1",
+        access_token="a",
+        refresh_token="r",
+        email="e@test.example",
+    )
+
+    session.save(path)
+
+    assert observed_create_modes == [0o600]
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 # --------------------------------------------------------------------------
 # Refresh-on-401 (unit-level, MockTransport)
 # --------------------------------------------------------------------------
@@ -304,6 +338,46 @@ def test_401_then_refresh_succeeds_but_retry_still_401_raises_session_expired(
     assert calls["refresh"] == 1  # exactly one refresh attempt
     assert api.session is None
     assert not session_path().exists()
+
+
+def test_401_then_refresh_succeeds_but_session_nulled_concurrently_raises_session_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding J: `self.session` can be nulled by a concurrent force-expiry
+    (another thread's own failed refresh invalidating this shared
+    `SmacApi` instance) in the narrow window between `_refresh()` returning
+    successfully here and the retry reading `self.session.access_token`.
+    Before the guard this crashed with `AttributeError`; it must now raise
+    the same clean `SessionExpired` a normal failed refresh would.
+    """
+    _seed_session(tmp_path, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/workspaces/w1/channels":
+            return httpx.Response(
+                401, json={"error": {"code": "invalid_token", "message": "expired"}}
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    session = Session.load(session_path())
+    assert session is not None
+    api = SmacApi(
+        "http://fake.test", session=session, transport=httpx.MockTransport(handler)
+    )
+
+    def fake_refresh() -> None:
+        # Simulate a concurrent thread's own (successful, from ITS point of
+        # view) redemption of the same rotating token, followed by a force
+        # -expiry that nulls the shared session -- without ever making a
+        # real network call here, since the point under test is purely
+        # `_authed_request`'s handling of `self.session` being `None`
+        # right after `_refresh()` returns.
+        api.session = None
+
+    monkeypatch.setattr(api, "_refresh", fake_refresh)
+
+    with pytest.raises(SessionExpired):
+        api.channels()
 
 
 def test_ws_channel_url_refreshes_and_embeds_fresh_token(

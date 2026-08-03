@@ -60,7 +60,7 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-~376 tests, ~89% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
+~398 tests, ~89% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart
 

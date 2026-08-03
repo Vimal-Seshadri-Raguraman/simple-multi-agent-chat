@@ -18,6 +18,7 @@ state shows up, or times out.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -26,8 +27,9 @@ import pytest
 
 from smac_cli import CLIENT_VERSION
 from smac_cli.api import Session
-from smac_cli.app import SmacApp, cache_workspace_name
+from smac_cli.app import DEFAULT_URL, SmacApp, cache_workspace_name, main, resolve_url
 from smac_cli.errors import RateLimitedError, SessionExpired, Unreachable
+from smac_cli.paths import session_path
 
 
 @pytest.fixture
@@ -617,6 +619,37 @@ async def test_login_zero_match_join_frame_escape_cancels_and_resets_header() ->
         assert not app.pullup.display
 
 
+@pytest.mark.anyio
+async def test_login_zero_match_shows_wrong_password_hint() -> None:
+    """Finding H: zero discover matches is byte-identical (by design) for
+    an unknown email AND a real account's mistyped password -- a
+    returning user with a typo lands in the join frame with no clue why.
+    One system line softens that without changing the response shape."""
+    fake = FakeApi()
+    fake.discover_result = []
+    fake.search_result = []
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "returning@example.com", "typo'd-password")
+        await _wait_until(
+            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
+        )
+        text = _body_text(app)
+        assert "no workspaces found for these credentials" in text
+        assert "double-check your password" in text
+        assert "/register" in text
+
+        # Resolve the still-pending join-frame picker (same cleanup every
+        # other escape-cancels test in this module does) -- otherwise the
+        # command worker sits blocked on `choose()`'s `event.wait()`
+        # forever, since no selection was ever made.
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+
+
 # --------------------------------------------------------------------------
 # /help, /quit
 # --------------------------------------------------------------------------
@@ -721,3 +754,172 @@ async def test_non_rate_limit_error_does_not_restore_draft() -> None:
         )
         # Only a 429 preserves the draft -- any other error just reports.
         assert app.footer_input.value == ""
+
+
+# --------------------------------------------------------------------------
+# `resolve_url` / `main`: SMAC_URL env var + --url flag precedence
+# (finding A -- `smac-server --port 9000` used to be permanently
+# unreachable from `smac`: no flag, no env var, and a session file only
+# ever gets a URL from a login that couldn't happen against a non-default
+# port in the first place).
+# --------------------------------------------------------------------------
+
+
+def test_resolve_url_defaults_when_nothing_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SMAC_URL", raising=False)
+    assert resolve_url([]) == DEFAULT_URL
+
+
+def test_resolve_url_env_var_wins_over_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+    assert resolve_url([]) == "http://env.example:9000"
+
+
+def test_resolve_url_flag_wins_over_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+    assert (
+        resolve_url(["--url", "http://flag.example:9001"]) == "http://flag.example:9001"
+    )
+
+
+def test_resolve_url_flag_wins_over_default_with_no_env_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SMAC_URL", raising=False)
+    assert (
+        resolve_url(["--url", "http://flag.example:9001"]) == "http://flag.example:9001"
+    )
+
+
+def test_main_uses_session_url_ignoring_flag_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A restored session's own URL wins over BOTH `--url` and `SMAC_URL`
+    -- it holds the tokens for the specific server it logged into, so
+    letting an ambient env var or flag redirect it would silently send
+    those tokens to a different server."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = Session(
+        url="http://session.example:8000",
+        workspace_id="w1",
+        access_token="a",
+        refresh_token="r",
+        email="e@test.example",
+    )
+    session.save(session_path())
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main(["--url", "http://flag.example:9001"])
+
+    assert captured["url"] == "http://session.example:8000"
+
+
+def test_main_uses_flag_over_env_when_no_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main(["--url", "http://flag.example:9001"])
+
+    assert captured["url"] == "http://flag.example:9001"
+
+
+def test_main_uses_env_over_default_when_no_session_or_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
+
+    captured: dict[str, str] = {}
+
+    def fake_run(self: SmacApp) -> None:
+        captured["url"] = self.api.url
+
+    monkeypatch.setattr(SmacApp, "run", fake_run)
+
+    main([])
+
+    assert captured["url"] == "http://env.example:9000"
+
+
+# --------------------------------------------------------------------------
+# _call_ui: post-shutdown fallback drops the update instead of mutating
+# widgets from a worker thread (finding I).
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_call_ui_drops_update_after_shutdown_instead_of_mutating() -> None:
+    """`run_test()`'s own teardown does NOT reset `_loop`/`_thread_id` the
+    way `App.run()`'s real production shutdown does (`app._loop = None`,
+    `app._thread_id = 0`, set at the very end of Textual's `run_async`) --
+    so those are set explicitly here to reproduce a genuinely closed loop,
+    the state a straggling background feed/bell thread's callback
+    (`_deliver_from_feed_thread`) can actually hit post-shutdown. The call
+    is made from a REAL different OS thread, same as any such callback
+    always is -- never the app's own thread."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+    app._loop = None
+    app._thread_id = 0
+
+    called = {"ran": False}
+    error: list[BaseException] = []
+
+    def fn() -> None:
+        called["ran"] = True
+
+    def call_from_worker() -> None:
+        try:
+            app._call_ui(fn)
+        except BaseException as exc:  # pragma: no cover - surfaced via `error`
+            error.append(exc)
+
+    worker = threading.Thread(target=call_from_worker)
+    worker.start()
+    worker.join(timeout=5.0)
+
+    assert not worker.is_alive()
+    assert error == []
+    assert called["ran"] is False
+
+
+@pytest.mark.anyio
+async def test_call_ui_still_runs_fn_directly_from_the_app_thread() -> None:
+    """The legitimate same-thread fallback (e.g. `action_clean_quit`
+    calling `system_line` directly on the event loop, never via
+    `call_from_thread`) must keep working -- only the post-shutdown case
+    changed. `run_test()` runs the app on the same OS thread as the test
+    coroutine, so this call is exactly the "already on the app thread"
+    case `_call_ui` special-cases."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        called = {"ran": False}
+
+        def fn() -> None:
+            called["ran"] = True
+
+        app._call_ui(fn)
+
+        assert called["ran"] is True

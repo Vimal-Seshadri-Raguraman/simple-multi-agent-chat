@@ -17,6 +17,7 @@ a refresh-on-401 retry also fails.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -50,8 +51,25 @@ class Session:
     email: str
 
     def save(self, path: Path) -> None:
-        """Write this session to `path` as JSON, chmod 600 (contains secrets)."""
-        path.write_text(json.dumps(asdict(self)), encoding="utf-8")
+        """Write this session to `path` as JSON, chmod 600 (contains secrets).
+
+        Creates the file via `os.open` with mode `0o600` from the very
+        first byte (finding C) rather than `write_text` then `chmod`: the
+        latter briefly creates the file at the process umask's default
+        perms (typically `0o644`) before the follow-up `chmod` call
+        lands -- a real, if narrow, window on the very first save where
+        another local user could read a freshly-created token file.
+        `O_CREAT`'s mode is applied atomically at creation (still subject
+        to umask narrowing it further, but never widening it), so there
+        is no window where this file exists more permissive than 600. The
+        trailing `chmod` still runs too, for the (rarer) case of an
+        already-existing file at `path` with different perms from some
+        other source -- `os.open`'s mode argument only applies when it
+        actually creates the file.
+        """
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(self)))
         path.chmod(0o600)
 
     @classmethod
@@ -228,6 +246,16 @@ class SmacApi:
         )
         if response.status_code == 401:
             self._refresh()
+            if self.session is None:
+                # Finding J: a concurrent force-expiry -- another thread's
+                # own failed refresh redeeming this same token first, then
+                # invalidating the shared session -- can null `self.session`
+                # in the narrow window between `_refresh()` returning
+                # successfully here and this retry reading `self.session.
+                # access_token` below. Surface the same `SessionExpired` a
+                # normal failed refresh would, rather than an
+                # `AttributeError` crashing whatever worker called this.
+                raise SessionExpired()
             response = self._send(
                 method,
                 path,

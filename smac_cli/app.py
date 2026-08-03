@@ -25,7 +25,9 @@ that).
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +43,7 @@ from smac_cli import CLIENT_VERSION
 from smac_cli.api import DEFAULT_MESSAGE_LIMIT, Session, SmacApi
 from smac_cli.commands import COMMANDS
 from smac_cli.errors import (
+    NotAMemberError,
     RateLimitedError,
     SessionExpired,
     SmacError,
@@ -50,9 +53,13 @@ from smac_cli.live import ChannelFeed, EventBell
 from smac_cli.paths import config_dir, session_path
 from smac_cli.render import bell_line, message_line
 
-#: Where `smac` talks by default when no saved session says otherwise --
-#: matches `smac_cli.server`'s own default port (spec Frame 1).
+#: Where `smac` talks by default when no saved session says otherwise, no
+#: `SMAC_URL` env var is set, and no `--url` flag was passed -- matches
+#: `smac_cli.server`'s own default port (spec Frame 1).
 DEFAULT_URL = "http://127.0.0.1:8000"
+
+#: The env var `resolve_url` checks between `--url` and `DEFAULT_URL`.
+_URL_ENV_VAR = "SMAC_URL"
 
 _WORKSPACE_NAME_CACHE_FILE = "workspace_name_cache.json"
 
@@ -311,6 +318,14 @@ class SmacApp(App[None]):
         self.header_text = "SMAC — not logged in"
         # -- live room state (SMAC-72 task 5) -------------------------------
         self._member_handles: dict[str, str] = {}
+        #: The caller's own member_id/handle (finding G) -- resolved once
+        #: per session via `_ensure_self_identity`, and passed to
+        #: `message_line` as `extra_handles` so a self-mention renders as
+        #: `@yourhandle` rather than the raw `<@uuid>` token
+        #: `build_message_payload` never includes the sender in `mentions`
+        #: for.
+        self._self_member_id: str | None = None
+        self._self_handle: str | None = None
         self._channel_feed: ChannelFeed | None = None
         self._event_bell: EventBell | None = None
         self._following = True
@@ -376,14 +391,30 @@ class SmacApp(App[None]):
         Command handlers (and the things they call: `system_line`,
         `set_header`, ...) run on a worker thread; the handful of call
         sites that are already on the event loop (message handlers) just
-        run `fn` directly -- `call_from_thread` raises `RuntimeError` when
-        called from the app's own thread, which is exactly the signal
-        this needs to fall back on.
+        need `fn` run directly.
+
+        `Textual.App.call_from_thread` raises `RuntimeError` in TWO
+        distinct situations that used to be handled identically here
+        (finding I): called from the app's own thread (`self._thread_id ==
+        threading.get_ident()`, the legitimate same-thread case above), or
+        called after the app has already shut down (`self._loop is None`
+        -- `_thread_id` is reset to `0` at that point too, which can never
+        equal a real thread ident). Checking the thread ourselves FIRST
+        (rather than catching the ambiguous exception) tells the two
+        apart: the same-thread case still runs `fn` directly, exactly as
+        before, but a genuine post-shutdown call from a background feed/
+        bell thread (`_deliver_from_feed_thread`'s callbacks, e.g. a
+        straggling `_refresh_after_reconnect`) now DROPS the update
+        instead of mutating dead widgets from a worker thread -- there's
+        nothing live left for it to touch once the loop is gone.
         """
+        if threading.get_ident() == self._thread_id:
+            fn()
+            return
         try:
             self.call_from_thread(fn)
         except RuntimeError:
-            fn()
+            pass  # loop already closed -- nothing left to update
 
     # -- public helpers for smac_cli.commands ------------------------------
 
@@ -436,6 +467,8 @@ class SmacApp(App[None]):
         self.current_channel_name = None
         self.current_channel_id = None
         self._member_handles = {}
+        self._self_member_id = None
+        self._self_handle = None
 
         def _clear_body() -> None:
             self._log_lines.clear()
@@ -516,16 +549,31 @@ class SmacApp(App[None]):
         self._call_ui(_prepare_body)
 
         self._refresh_member_handles()
+        self._ensure_self_identity()
 
         try:
             pages = _walk_message_pages(self.api, channel_id)
+        except NotAMemberError:
+            # T5 fix-before-merge: a channel you're not a member of must
+            # not attach a live feed at all -- `_start_channel_feed` calls
+            # `ws_channel_url`, which refreshes unconditionally, so every
+            # retry of a permanently-rejected feed would otherwise rotate
+            # the single-use refresh token and rewrite session.json forever
+            # (the WS 403 never sets `_ever_connected`, so no "disconnected"
+            # line would ever print either -- this would fail silently).
+            self.system_line(
+                f"you're not a member of #{channel_name} — "
+                "ask a workspace admin to add you"
+            )
+            return
         except SmacError as exc:
             self.system_line(exc.message)
             pages = []
         recent = pages[-1] if pages else []
         for payload in recent:
             self._enrich_sender_handle(payload)
-        lines = [message_line(payload) for payload in recent]
+        extra_handles = self._self_extra_handles()
+        lines = [message_line(payload, extra_handles) for payload in recent]
 
         def _populate() -> None:
             self._log_lines.extend(lines)
@@ -557,6 +605,35 @@ class SmacApp(App[None]):
         except SmacError:
             return
         self._member_handles = {m["member_id"]: m["handle"] for m in members}
+
+    def _ensure_self_identity(self) -> None:
+        """Populate `_self_member_id`/`_self_handle` once per session (via
+        `GET /members/me`) -- see `__init__`'s docstring on why: a
+        self-mention token has no entry in a message payload's own
+        `mentions` array (`build_message_payload` excludes the sender),
+        so `message_line` needs this directory as a fallback to render it
+        as `@yourhandle` instead of the raw `<@uuid>` token (finding G). A
+        failure here just leaves self-mentions unresolved a little longer
+        (retried on the next channel entry); it never blocks entering."""
+        if self._self_member_id is not None:
+            return
+        try:
+            me = self.api.whoami()
+        except SmacError:
+            return
+        member_id = me.get("member_id")
+        handle = me.get("handle")
+        if isinstance(member_id, str) and isinstance(handle, str):
+            self._self_member_id = member_id
+            self._self_handle = handle
+
+    def _self_extra_handles(self) -> dict[str, str] | None:
+        """`{self_member_id: self_handle}` for `message_line`'s
+        `extra_handles` fallback, or `None` if self-identity isn't known
+        yet (see `_ensure_self_identity`)."""
+        if self._self_member_id and self._self_handle:
+            return {self._self_member_id: self._self_handle}
+        return None
 
     def _enrich_sender_handle(self, payload: dict[str, Any]) -> None:
         """Inject `payload["Sender"]["handle"]` from `_member_handles`, if
@@ -639,7 +716,7 @@ class SmacApp(App[None]):
             return
 
         self._enrich_sender_handle(payload)
-        line = message_line(payload)
+        line = message_line(payload, self._self_extra_handles())
         self._log_lines.append(line)
         self.body.write(escape(line))
         self._newest_loaded_message_id = payload["Message"]["message_id"]
@@ -676,7 +753,9 @@ class SmacApp(App[None]):
             return
         for payload in missed:
             self._enrich_sender_handle(payload)
-        lines = [message_line(payload) for payload in missed]
+        lines = [
+            message_line(payload, self._self_extra_handles()) for payload in missed
+        ]
 
         def apply() -> None:
             if self.current_channel_id != channel_id:
@@ -858,7 +937,8 @@ class SmacApp(App[None]):
     def _prepend_history(self, older: list[dict[str, Any]]) -> None:
         for payload in older:
             self._enrich_sender_handle(payload)
-        new_lines = [message_line(payload) for payload in older]
+        extra_handles = self._self_extra_handles()
+        new_lines = [message_line(payload, extra_handles) for payload in older]
         self._log_lines = new_lines + self._log_lines
         self.body.clear()
         for line in self._log_lines:
@@ -1227,10 +1307,53 @@ class SmacApp(App[None]):
         self.enter_general()
 
 
-def main() -> None:
-    """Entry point for the `smac` console script."""
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="smac", description="The SMAC TUI client.")
+    parser.add_argument(
+        "--url",
+        default=None,
+        help=(
+            "SMAC server URL to talk to (overrides the SMAC_URL env var and "
+            f"the default {DEFAULT_URL}). Ignored if a saved session already "
+            "names a server -- that session's own URL always wins."
+        ),
+    )
+    return parser
+
+
+def resolve_url(argv: list[str] | None = None) -> str:
+    """The server URL to use when no saved session already names one.
+
+    Precedence: `--url` flag > `SMAC_URL` env var > `DEFAULT_URL`. Finding
+    A (spec gap): without this, `smac-server --start --port 9000` was
+    unreachable from `smac` forever -- there was no way to ever log in
+    against a non-default URL in the first place, since a session file
+    (the only other source of a URL) only gets written *after* a login
+    that couldn't happen. A restored session's own URL is deliberately
+    NOT considered here -- see `main`, which checks that first and never
+    calls this function at all when one exists.
+    """
+    args = _build_arg_parser().parse_args(argv)
+    if args.url:
+        return args.url
+    env_url = os.environ.get(_URL_ENV_VAR)
+    if env_url:
+        return env_url
+    return DEFAULT_URL
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point for the `smac` console script.
+
+    `argv` defaults to `None`, which makes `argparse` read `sys.argv`
+    itself (the normal console-script path); tests pass an explicit list.
+    """
     session = Session.load(session_path())
-    url = session.url if session is not None else DEFAULT_URL
+    # A restored session holds the tokens for the specific server it logged
+    # into -- it wins over any `--url`/`SMAC_URL` a caller might also have
+    # set, rather than silently sending its bearer tokens to a different
+    # server.
+    url = session.url if session is not None else resolve_url(argv)
     api = SmacApi(url, session=session)
     app = SmacApp(api)
     app.run()

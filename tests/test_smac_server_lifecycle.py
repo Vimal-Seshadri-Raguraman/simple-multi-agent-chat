@@ -133,6 +133,27 @@ def test_stale_pidfile_is_treated_as_not_running_and_cleaned(home: Path) -> None
     assert not pidfile.exists()
 
 
+def test_valid_json_non_dict_pidfile_is_treated_as_stale_and_cleaned(
+    home: Path,
+) -> None:
+    """Finding E: `json.loads` happily parses `[1]` or `"oops"` -- valid
+    JSON, but not the `{...}` shape this file is always written as. Before
+    the `isinstance(info, dict)` guard, `info.get("pid")` raised
+    `AttributeError` and crashed `--start`/`--stop`/`--status`/
+    `--delete-db` alike; it must now be treated exactly like any other
+    stale/corrupt pidfile instead."""
+    config_dir = home / ".config" / "smac"
+    config_dir.mkdir(parents=True)
+    pidfile = config_dir / "server.pid"
+    pidfile.write_text(json.dumps([1, 2, 3]))
+
+    result = _run(home, "--status")
+
+    assert result.returncode == 0
+    assert "not running" in result.stdout
+    assert not pidfile.exists()
+
+
 def test_no_flags_prints_usage_and_status(home: Path) -> None:
     result = _run(home)
     assert result.returncode == 0
@@ -245,3 +266,62 @@ def test_start_reports_documented_error_when_repo_root_unresolvable(
 
     assert exc_info.value.code == 1
     assert smac_server.REPO_CHECKOUT_ERROR in capsys.readouterr().out
+
+
+class _FakeUnresponsiveProcess:
+    """A `subprocess.Popen`-shaped stub that never becomes ready and
+    responds to a graceful `terminate()` -- for `_start`'s readiness-
+    timeout path (finding D), without actually spawning uvicorn."""
+
+    def __init__(self) -> None:
+        self.pid = 999_999
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return None  # never exits on its own
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.terminated or self.killed:
+            return 0
+        raise subprocess.TimeoutExpired(cmd="fake-uvicorn", timeout=timeout or 0)
+
+
+def test_start_terminates_child_on_readiness_timeout(
+    monkeypatch: pytest.MonkeyPatch, home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Finding D: before this, a readiness timeout left the spawned
+    uvicorn running unmanaged (no pidfile written to reach it by) --
+    holding the port forever and making every later `--start` fail
+    mysteriously. `_start` must now TERM (escalating to KILL if needed)
+    the still-running child before reporting the timeout and exiting 1.
+    """
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(smac_server, "_find_repo_root", lambda: _REPO_ROOT)
+    monkeypatch.setattr(smac_server, "_READY_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(smac_server, "_READY_POLL_INTERVAL_S", 0.05)
+
+    fake_process = _FakeUnresponsiveProcess()
+    monkeypatch.setattr(smac_server.subprocess, "Popen", lambda *a, **k: fake_process)
+
+    def fake_get(*args: object, **kwargs: object) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(smac_server.httpx, "get", fake_get)
+
+    with pytest.raises(SystemExit) as exc_info:
+        smac_server._start(_free_port())
+
+    assert exc_info.value.code == 1
+    assert fake_process.terminated is True
+    out = capsys.readouterr().out
+    assert "did not become ready" in out
+    # No pidfile is left behind for an orphaned, unmanaged process to hide
+    # under -- a subsequent `--start` must be able to retry cleanly.
+    assert not pidfile_path().exists()

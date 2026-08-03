@@ -127,6 +127,61 @@ def test_message_line_no_mentions_array_present() -> None:
 
 
 # --------------------------------------------------------------------------
+# message_line: extra_handles / self-mention fallback (finding G)
+#
+# `build_message_payload` excludes the sender from its own `mentions` array
+# (the server has no reason to tell you who you already know you are), but
+# `canonicalize` (app/mentions.py) still rewrites a self-mention into a
+# `<@member_id>` token same as any other -- `extra_handles` is the client's
+# fallback directory for exactly that case (`smac_cli.app` passes
+# `{self_member_id: self_handle}`).
+# --------------------------------------------------------------------------
+
+
+def test_message_line_resolves_self_mention_via_extra_handles() -> None:
+    payload = _payload(
+        sender_id="self-1",
+        text="note to self <@self-1>, follow up tomorrow",
+        mentions=[],  # the sender is never in their own message's mentions
+    )
+
+    line = message_line(payload, extra_handles={"self-1": "vraguraman"})
+
+    assert line == "[14:02] vraguraman: note to self @vraguraman, follow up tomorrow"
+    assert "<@" not in line
+
+
+def test_message_line_without_extra_handles_leaves_self_mention_raw() -> None:
+    """The pre-fix behavior, still correct when the caller has no directory
+    to offer (e.g. `_ensure_self_identity` hasn't resolved yet): an
+    unresolved token is left exactly as stored, never raising."""
+    payload = _payload(text="note to self <@self-1>", mentions=[])
+
+    assert message_line(payload) == "[14:02] vraguraman: note to self <@self-1>"
+
+
+def test_message_line_extra_handles_never_shadows_a_real_mentions_entry() -> None:
+    """A stale/wrong `extra_handles` entry must never override what the
+    payload's own authoritative `mentions` array says for that id."""
+    payload = _payload(
+        text="<@member-2> ping",
+        mentions=[
+            {"member_id": "member-2", "handle": "analyst", "member_name": "Analyst"}
+        ],
+    )
+
+    line = message_line(payload, extra_handles={"member-2": "wrong-handle"})
+
+    assert line == "[14:02] vraguraman: @analyst ping"
+
+
+def test_message_line_extra_handles_none_is_the_default() -> None:
+    payload = _payload(text="hi")
+
+    assert message_line(payload) == message_line(payload, None)
+
+
+# --------------------------------------------------------------------------
 # bell_line
 # --------------------------------------------------------------------------
 
