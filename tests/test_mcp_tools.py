@@ -48,7 +48,7 @@ def test_whoami_returns_own_profile(client):
     assert result["member_name"] == "Bridge Bot"
 
 
-def test_catch_me_up_reflects_channel_membership(client):
+def test_notifications_reflects_channel_membership(client):
     founder = founder_auth(client, "w1")
     agent = _agent(client)
     general_id = general_channel_id(client, "w1")
@@ -56,7 +56,7 @@ def test_catch_me_up_reflects_channel_membership(client):
     api = _api_for(client, api_key=agent["api_key"])
     server = build_server(api)
 
-    result = json.loads(asyncio.run(_tool(server, "catch_me_up")()))
+    result = json.loads(asyncio.run(_tool(server, "notifications")()))
 
     assert result["unreads"][0]["channel_name"] == "general"
     assert result["unreads"][0]["unread_count"] == 0
@@ -99,7 +99,7 @@ def test_post_message_then_read_and_check_mentions(client):
     # reading never marks read: posting your own message DOES advance your
     # own cursor server-side though, so assert on unread_count staying 0
     # (the invariant we can observe) rather than "nothing changed at all".
-    caught_up = json.loads(asyncio.run(_tool(server, "catch_me_up")()))
+    caught_up = json.loads(asyncio.run(_tool(server, "notifications")()))
     assert caught_up["unreads"][0]["unread_count"] == 0
 
 
@@ -143,13 +143,13 @@ def test_mark_read_zeroes_unread_count(client):
     api = _api_for(client, api_key=agent["api_key"])
     server = build_server(api)
 
-    before = json.loads(asyncio.run(_tool(server, "catch_me_up")()))
+    before = json.loads(asyncio.run(_tool(server, "notifications")()))
     assert before["unreads"][0]["unread_count"] == 1
 
     marked = json.loads(asyncio.run(_tool(server, "mark_read")(channel_id=general_id)))
     assert marked["unread_count"] == 0
 
-    after = json.loads(asyncio.run(_tool(server, "catch_me_up")()))
+    after = json.loads(asyncio.run(_tool(server, "notifications")()))
     assert after["unreads"][0]["unread_count"] == 0
 
 

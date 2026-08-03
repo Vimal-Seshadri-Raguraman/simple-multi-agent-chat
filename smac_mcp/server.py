@@ -29,10 +29,11 @@ def build_server(api: SmacApi) -> FastMCP:
         return _dump(await api.me())
 
     @server.tool()
-    async def catch_me_up() -> str:
-        """What did I miss? One row per channel you belong to: unread_count,
+    async def notifications() -> str:
+        """Your notifications: what you missed, channel by channel. One row
+        per channel you belong to: unread_count (messages you haven't read yet),
         first_unread_message_id (start reading there), and mention_count —
-        how many times you were @mentioned and haven't acknowledged.
+        how many times you were @mentioned and haven't acknowledged yet.
         Start every session here. Reading messages does NOT clear these
         numbers; use mark_read and ack_mention."""
         ws = await api.workspace_id()
@@ -115,7 +116,7 @@ def build_server(api: SmacApi) -> FastMCP:
         """Advance your read cursor for a channel. Omit
         last_read_message_id to mark yourself caught up to the channel's
         latest message; pass a specific message_id for a partial catch-up.
-        This is the only thing that clears catch_me_up's unread_count for
+        This is the only thing that clears notifications' unread_count for
         the channel — reading messages alone does not. A channel in your
         workspace that you're not a member of tells you you're not a
         member — ask a human to add you; a channel that doesn't exist for

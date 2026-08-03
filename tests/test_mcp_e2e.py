@@ -82,9 +82,9 @@ def test_claude_is_summoned_replies_and_cleans_up(client):
     # The inbox is now empty.
     assert json.loads(asyncio.run(_tool(server, "check_mentions")())) == []
 
-    # catch_me_up reflects reality: Claude has read up through its own reply
+    # notifications reflects reality: Claude has read up through its own reply
     # (posting advances your own cursor), so general is caught up already.
-    caught_up = json.loads(asyncio.run(_tool(server, "catch_me_up")()))
+    caught_up = json.loads(asyncio.run(_tool(server, "notifications")()))
     general_row = [r for r in caught_up["unreads"] if r["channel_name"] == "general"][0]
     assert general_row["unread_count"] == 0
     assert general_row["mention_count"] == 0

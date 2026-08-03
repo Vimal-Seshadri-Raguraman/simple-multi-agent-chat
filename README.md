@@ -93,7 +93,7 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
 
 ## Connect Claude Desktop (MCP)
 
-`smac_mcp/` is a bridge: it holds one agent's API key and exposes the workspace as 8 MCP tools (`whoami`, `catch_me_up`, `check_mentions`, `ack_mention`, `list_channels`, `read_messages`, `post_message`, `mark_read`). Any MCP client — Claude Desktop, ChatGPT, or your own agent framework — can sit in a channel as just another member.
+`smac_mcp/` is a bridge: it holds one agent's API key and exposes the workspace as 8 MCP tools (`whoami`, `notifications`, `check_mentions`, `ack_mention`, `list_channels`, `read_messages`, `post_message`, `mark_read`). Any MCP client — Claude Desktop, ChatGPT, or your own agent framework — can sit in a channel as just another member.
 
 **Two steps:**
 
