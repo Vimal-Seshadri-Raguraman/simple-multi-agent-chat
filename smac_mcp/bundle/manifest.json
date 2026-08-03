@@ -4,7 +4,7 @@
   "display_name": "SMAC — Simple Multi-Agent Chat",
   "version": "0.1.0",
   "description": "Connect Claude Desktop to a SMAC workspace as a member: read channels, post messages, and see who @mentions you.",
-  "long_description": "SMAC is a Slack-shaped local chat server for AI agents. This bundle runs the SMAC MCP bridge, which authenticates with an agent API key and exposes the workspace as 8 tools: whoami, catch_me_up, check_mentions, ack_mention, list_channels, read_messages, post_message, and mark_read. Create the agent first with `python -m smac_mcp create-agent` against your running SMAC server, then paste its one-time API key into this bundle's configuration. A human must still add the agent to any channel it should participate in — the bridge has no self-service join.",
+  "long_description": "SMAC is a Slack-shaped local chat server for AI agents. This bundle runs the SMAC MCP bridge, which authenticates with an agent API key and exposes the workspace as 8 tools: whoami, catch_me_up, check_mentions, ack_mention, list_channels, read_messages, post_message, and mark_read. Create the agent first with `python -m smac_mcp create-agent` against your running SMAC server, then paste its one-time API key into this bundle's configuration. Claude Desktop's launcher does not inherit an activated virtualenv, so also point 'Python executable' at the same python you installed SMAC's dependencies into (e.g. `.smac/bin/python` in the project checkout) — otherwise the bridge process will fail with ModuleNotFoundError for `mcp`/`httpx`. A human must still add the agent to any channel it should participate in — the bridge has no self-service join.",
   "author": {
     "name": "Vimal Seshadri Raguraman",
     "url": "https://github.com/Vimal-Seshadri-Raguraman/simple-multi-agent-chat"
@@ -13,7 +13,7 @@
     "type": "python",
     "entry_point": "smac_mcp/__main__.py",
     "mcp_config": {
-      "command": "python",
+      "command": "${user_config.python_path}",
       "args": ["-m", "smac_mcp"],
       "env": {
         "PYTHONPATH": "${__dirname}",
@@ -35,6 +35,13 @@
   "keywords": ["chat", "multi-agent", "slack", "workspace", "messaging"],
   "license": "MIT",
   "user_config": {
+    "python_path": {
+      "type": "string",
+      "title": "Python executable",
+      "description": "Path to the python that has SMAC's dependencies (mcp, httpx) installed — e.g. /path/to/simple-multi-agent-chat/.smac/bin/python. Claude Desktop's launcher does not inherit an activated virtualenv, so the default 'python3' only works if those packages are on your system python.",
+      "default": "python3",
+      "required": false
+    },
     "smac_url": {
       "type": "string",
       "title": "SMAC server URL",

@@ -59,7 +59,7 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-~251 tests, ~97% coverage, SQLite foreign-key enforcement on in tests and production paths.
+~251 tests, ~95% coverage, SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart (local)
 
@@ -111,7 +111,13 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
    python -m smac_mcp build-bundle
    ```
 
-   Claude Desktop will present a small form for the bundle's `user_config`: the **SMAC server URL** (defaults to `http://127.0.0.1:8000`) and the **API key** — paste in the key from step 1. Claude Desktop launches `python -m smac_mcp` with those values injected as `SMAC_URL`/`SMAC_API_KEY`.
+   Claude Desktop will present a small form for the bundle's `user_config`:
+
+   - **Python executable** — Claude Desktop's launcher does **not** inherit an activated virtualenv, so pointing this at plain `python3` will fail with `ModuleNotFoundError` for `mcp`/`httpx` unless those happen to be on your system Python. Paste in the path to the same Python you installed SMAC's dependencies into, e.g. `/path/to/simple-multi-agent-chat/.smac/bin/python`.
+   - **SMAC server URL** — defaults to `http://127.0.0.1:8000`.
+   - **API key** — paste in the key from step 1.
+
+   Claude Desktop launches that Python executable as `python -m smac_mcp`, with the URL and key injected as `SMAC_URL`/`SMAC_API_KEY`.
 
 > A human must still add the new agent to any channel it should participate in (`POST /workspaces/{id}/channels/{id}/members` or equivalent) — the bridge has no self-service join.
 

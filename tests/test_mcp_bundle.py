@@ -44,6 +44,15 @@ def test_manifest_declares_both_user_config_fields(tmp_path):
     assert user_config["api_key"]["required"] is True
 
 
+def test_manifest_declares_python_path_field_defaulting_to_python3(tmp_path):
+    manifest = _read_manifest(build_bundle(tmp_path / "smac.mcpb"))
+
+    python_path = manifest["user_config"]["python_path"]
+    assert python_path["type"] == "string"
+    assert python_path["default"] == "python3"
+    assert python_path["required"] is False
+
+
 def test_manifest_maps_user_config_into_env_vars(tmp_path):
     manifest = _read_manifest(build_bundle(tmp_path / "smac.mcpb"))
 
@@ -56,7 +65,7 @@ def test_manifest_invokes_python_dash_m_smac_mcp(tmp_path):
     manifest = _read_manifest(build_bundle(tmp_path / "smac.mcpb"))
 
     mcp_config = manifest["server"]["mcp_config"]
-    assert mcp_config["command"] == "python"
+    assert mcp_config["command"] == "${user_config.python_path}"
     assert mcp_config["args"] == ["-m", "smac_mcp"]
 
 
