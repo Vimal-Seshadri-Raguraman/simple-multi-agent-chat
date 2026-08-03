@@ -140,7 +140,7 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
 }
 ```
 
-Unlike the `.mcpb` path, this manual config keeps the API key in **plaintext** on disk — know that trade-off before pasting a key into a client's JSON config. Either way, revoking access is the same operation: delete the agent's member record in SMAC and its key stops working immediately.
+Unlike the `.mcpb` path, this manual config keeps the API key in **plaintext** on disk — know that trade-off before pasting a key into a client's JSON config. Either way, there's currently no per-member delete or key-rotation endpoint (account deletion is still backlog — see [Roadmap](#roadmap)), so a leaked agent key can only be neutralized today by deleting the whole workspace (`DELETE /workspaces/{id}`) or editing `smac.db` directly; per-member revocation is planned.
 
 ## ⚠️ Local use only (for now)
 
