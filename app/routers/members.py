@@ -90,8 +90,11 @@ def get_member(
     """A member's profile within the caller's own workspace.
 
     A member in a foreign workspace simply doesn't exist for you -> 404,
-    via the same not-found path as an unknown member_id. Email is included
-    only when fetching your own.
+    via the same not-found path as an unknown member_id. `email`,
+    `is_admin`, and `workspace_visibility` are all included only when
+    fetching your own profile -- nulled out for anyone else's (SMAC-72
+    task 6's `is_admin`/`workspace_visibility` addition is scoped to the
+    caller's own `/whoami` view, same as `email` already was).
     """
     member = (
         db.query(Member)
@@ -106,6 +109,8 @@ def get_member(
     profile = build_member_self_out(db, member)
     if member.member_id != current_member.member_id:
         profile.email = None
+        profile.is_admin = None
+        profile.workspace_visibility = None
     return profile
 
 

@@ -20,18 +20,21 @@ don't need their own `try`/`except` around it. A handler that lets a
 `smac_cli.errors.SmacError` propagate gets it turned into a message-only
 system line by that same caller -- this is what makes `/workspace
 delete`'s not-an-admin case "just work" with no special-casing here.
-`/channel create`'s 409 is the one exception: spec §0.2's frame for it
-shows the server's `code: message` envelope verbatim (`channel_name_taken:
-A channel named '...' already exists...`), not just the message, so
-`cmd_channel` catches that one itself rather than letting it fall through
-to the generic (message-only) handling every other command relies on.
+`/channel create`'s 409 is the one narrow exception: spec §0.2's frame
+for it shows the server's `code: message` envelope verbatim
+(`channel_name_taken: A channel named '...' already exists...`), not just
+the message, so `cmd_channel` catches exactly `NameTakenError` itself
+(never the broader `SmacError` -- an unreachable server, a rate limit,
+etc. during `/channel create` still falls through to the same generic
+message-only handling every other command gets) rather than letting that
+one case fall through to it.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
-from smac_cli.errors import SmacError
+from smac_cli.errors import NameTakenError
 
 if TYPE_CHECKING:
     from smac_cli.app import SmacApp
@@ -160,10 +163,13 @@ def cmd_channel(app: "SmacApp", args: str) -> None:
     Case-insensitive (SMAC-68 guarantees workspace-wide channel-name
     uniqueness regardless of case). An unknown name to switch to shows a
     system line and leaves the current channel untouched. A duplicate
-    name to create raises `NameTakenError`, caught here specifically
-    (unlike every other command's errors) so the server's full `code:
-    message` envelope renders verbatim, matching spec §0.2's frame --
-    `enter_channel` is never reached in that case.
+    name to create raises `NameTakenError`, caught here specifically (and
+    ONLY that class -- any other `SmacError`, e.g. `Unreachable` or
+    `RateLimitedError`, is deliberately left to propagate to
+    `SmacApp._run_command`'s generic message-only handling, same as every
+    other command) so the server's full `code: message` envelope renders
+    verbatim, matching spec §0.2's frame -- `enter_channel` is never
+    reached in the 409 case.
     """
     text = args.strip()
     parts = text.split(None, 1)
@@ -174,7 +180,7 @@ def cmd_channel(app: "SmacApp", args: str) -> None:
             return
         try:
             created = app.api.create_channel(name)
-        except SmacError as exc:
+        except NameTakenError as exc:
             app.system_line(f"{exc.code}: {exc.message}")
             return
         app.enter_channel(created["channel_id"], created["channel_name"])
@@ -306,7 +312,9 @@ def cmd_help(app: "SmacApp", args: str) -> None:
     app.system_line("/channel create <name>  new channel")
     app.system_line(f"/workspace delete  {COMMANDS['workspace'][1]}")
     app.system_line(f"/quit              {COMMANDS['quit'][1]}")
-    app.system_line("anything without / is a message to the current channel")
+    app.system_line(
+        "anything without / is a message to the current channel (#general when you arrive)"
+    )
 
 
 @_register("quit", "exit")

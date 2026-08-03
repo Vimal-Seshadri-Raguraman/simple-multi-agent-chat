@@ -275,6 +275,28 @@ async def test_channel_create_conflict_renders_server_envelope_verbatim() -> Non
         assert app.current_channel_name == before_channel
 
 
+@pytest.mark.anyio
+async def test_channel_create_non_conflict_error_renders_message_only() -> None:
+    """Only `NameTakenError` (the 409 case) gets the code-prefixed
+    rendering -- every other `SmacError` during `/channel create` falls
+    through to `SmacApp._run_command`'s ordinary message-only handling,
+    same as every other command in this app."""
+    fake = _logged_in_fake()
+    fake.create_channel_error = SmacError("rate_limited", "Posting too fast")
+    app = _app_with(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        before_channel = app.current_channel_name
+        await _run_command(pilot, "/channel create Reports")
+        await _wait_until(pilot, lambda: "Posting too fast" in _body_text(app))
+        text = _body_text(app)
+        assert "Posting too fast" in text
+        assert "rate_limited:" not in text
+        assert "rate_limited" not in text
+        # The failed create never switched the channel.
+        assert app.current_channel_name == before_channel
+
+
 # --------------------------------------------------------------------------
 # FakeApi: /workspace delete -- the two-step typed confirmation
 # --------------------------------------------------------------------------
