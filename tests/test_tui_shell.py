@@ -62,7 +62,6 @@ class FakeApi:
         self.meta_error: Exception | None = None
         self.discover_result: list[dict[str, str]] = []
         self.search_result: list[dict[str, str]] = []
-        self.whoami_result: dict[str, Any] = {"handle": "vraguraman", "member_id": "m1"}
         self.whoami_error: Exception | None = None
         self.posts: list[tuple[str, str]] = []
         self.search_calls: list[str] = []
@@ -80,6 +79,23 @@ class FakeApi:
         self.members_result: list[dict[str, Any]] = []
         self.mark_read_calls: list[str] = []
         self.post_error: Exception | None = None
+        # /whoami, /channels+/unreads, /channel create, /workspace delete
+        # (SMAC-72 task 6) stubs.
+        self.whoami_result = {
+            "handle": "vraguraman",
+            "member_id": "m1",
+            "first_name": "Vimal",
+            "last_name": "Raguraman",
+            "member_name": "Vimal Raguraman",
+            "is_admin": True,
+            "workspace_visibility": "private",
+        }
+        self.unreads_result: dict[str, Any] = {"unreads": []}
+        self.create_channel_result: dict[str, Any] | None = None
+        self.create_channel_error: Exception | None = None
+        self.create_channel_calls: list[str] = []
+        self.delete_workspace_calls: int = 0
+        self.delete_workspace_error: Exception | None = None
 
     def meta(self) -> dict[str, Any]:
         if self.meta_error is not None:
@@ -155,6 +171,23 @@ class FakeApi:
 
     def members(self) -> list[dict[str, Any]]:
         return self.members_result
+
+    def unreads(self) -> dict[str, Any]:
+        return self.unreads_result
+
+    def create_channel(self, name: str) -> dict[str, Any]:
+        self.create_channel_calls.append(name)
+        if self.create_channel_error is not None:
+            raise self.create_channel_error
+        if self.create_channel_result is not None:
+            return self.create_channel_result
+        return {"channel_id": f"{name}-id", "channel_name": name}
+
+    def delete_workspace(self) -> dict[str, Any]:
+        self.delete_workspace_calls += 1
+        if self.delete_workspace_error is not None:
+            raise self.delete_workspace_error
+        return {"status": "deleted"}
 
 
 async def _wait_until(
@@ -282,7 +315,9 @@ async def test_slash_shows_pullup_filters_and_escape_dismisses() -> None:
 
         await pilot.press("/")
         await _wait_until(pilot, lambda: app.pullup.display)
-        assert app.pullup.option_count == 5  # register, login, channel, help, quit
+        # register, login, channel, help, quit, whoami, channels, unreads,
+        # workspace (SMAC-72 task 6 adds the last four).
+        assert app.pullup.option_count == 9
 
         await pilot.press(*"re")
         await _wait_until(pilot, lambda: app.pullup.option_count == 1)

@@ -7,7 +7,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.accounts import create_member_account
+from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_member
 from app.authorization import authorize_management_action, require_same_workspace
 from app.database import get_db
@@ -18,7 +18,6 @@ from app.schemas import (
     CodeRegisterIn,
     InviteCreateIn,
     InviteOut,
-    MemberSelfOut,
     RegisterIn,
     WorkspaceAuthOut,
     WorkspaceOut,
@@ -163,7 +162,7 @@ def _register_account(
     db.refresh(member)
     tokens = _issue_token_pair(db, member)
     return WorkspaceAuthOut(
-        member=MemberSelfOut.model_validate(member),
+        member=build_member_self_out(db, member),
         workspace=WorkspaceOut.model_validate(workspace),
         **tokens.model_dump(),
     )

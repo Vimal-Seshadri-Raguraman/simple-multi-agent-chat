@@ -74,7 +74,16 @@ class MessageCreate(BaseModel):
 
 
 class MemberSelfOut(BaseModel):
-    """A member's own full profile, including their private email."""
+    """A member's own full profile, including their private email.
+
+    `is_admin` and `workspace_visibility` (SMAC-72 task 6) exist for the
+    TUI's `/whoami` command (spec §0.2), which needs both and had no other
+    source for either: `is_admin` is a real `Member` column but was never
+    exposed on any response before; `workspace_visibility` isn't a member
+    attribute at all (no GET-your-own-workspace endpoint exists), so it's
+    carried here instead -- see `app.accounts.build_member_self_out`,
+    the one place that assembles this schema, for how it's looked up.
+    """
 
     model_config = ConfigDict(from_attributes=True)
     member_id: str
@@ -89,6 +98,8 @@ class MemberSelfOut(BaseModel):
     company: str | None
     occupation: str | None
     job_role: str | None
+    is_admin: bool
+    workspace_visibility: str
 
 
 class MemberProfileUpdate(BaseModel):

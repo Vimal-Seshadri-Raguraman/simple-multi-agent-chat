@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.accounts import create_member_account
+from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_member
 from app.authorization import require_same_workspace, require_workspace_admin
 from app.database import get_db
@@ -31,7 +31,6 @@ from app.schemas import (
     InviteOut,
     MemberAdminIn,
     MemberOut,
-    MemberSelfOut,
     WorkspaceAuthOut,
     WorkspaceOut,
     WorkspaceSearchOut,
@@ -97,7 +96,7 @@ def found_workspace(
     db.refresh(founder)
     tokens = _issue_token_pair(db, founder)
     return WorkspaceAuthOut(
-        member=MemberSelfOut.model_validate(founder),
+        member=build_member_self_out(db, founder),
         workspace=WorkspaceOut.model_validate(workspace),
         **tokens.model_dump(),
     )

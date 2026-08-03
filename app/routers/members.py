@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.accounts import build_member_self_out
 from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.authorization import authorize_management_action
 from app.database import get_db
@@ -102,7 +103,7 @@ def get_member(
     )
     if member is None:
         raise NotFoundError(f"Member '{member_id}' not found")
-    profile = MemberSelfOut.model_validate(member)
+    profile = build_member_self_out(db, member)
     if member.member_id != current_member.member_id:
         profile.email = None
     return profile
@@ -111,6 +112,7 @@ def get_member(
 @router.get("/members/me", response_model=MemberSelfOut)
 def get_my_profile(
     current_member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
 ) -> MemberSelfOut:
     """The caller's own full profile, including workspace_id and email.
 
@@ -118,7 +120,7 @@ def get_my_profile(
     agents/bot_apps) — this is how an API-key-only client discovers its own
     identity and workspace without already knowing its member_id.
     """
-    return MemberSelfOut.model_validate(current_member)
+    return build_member_self_out(db, current_member)
 
 
 @router.patch("/members/me", response_model=MemberSelfOut)
@@ -153,4 +155,4 @@ def update_my_profile(
     db.add(current_member)
     db.commit()
     db.refresh(current_member)
-    return MemberSelfOut.model_validate(current_member)
+    return build_member_self_out(db, current_member)

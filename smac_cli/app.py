@@ -260,6 +260,13 @@ class SmacApp(App[None]):
     BINDINGS = [
         Binding("pageup", "scroll_body_up", show=False),
         Binding("pagedown", "scroll_body_down", show=False),
+        # Overrides Textual's own default Ctrl+C binding (`App.action_
+        # help_quit`, just a "press ctrl+q instead" notice) -- the spec
+        # says "Ctrl+C = same [as /quit]" (§0.2), an actual clean exit.
+        # `priority=True` matches how `App` itself marks its own `ctrl+q`
+        # binding, so this wins the same way over anything else bound to
+        # the key (confirmed against the installed `textual` package).
+        Binding("ctrl+c", "clean_quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -348,6 +355,19 @@ class SmacApp(App[None]):
     def action_scroll_body_down(self) -> None:
         self.body.scroll_page_down()
 
+    def action_clean_quit(self) -> None:
+        """Ctrl+C: identical to `/quit` (spec §0.2: "Ctrl+C = same").
+
+        Unlike `smac_cli.commands.cmd_quit` (built to run on a command
+        worker thread, hence its own `call_from_thread`), a key binding's
+        action runs on the event loop itself -- `system_line`'s `_call_ui`
+        already tolerates being called from either (see its docstring),
+        and `exit()` needs no thread-hop when we're already on that
+        thread.
+        """
+        self.system_line("goodbye — session saved, see you next time")
+        self.exit()
+
     # -- thread-safety helper ----------------------------------------------
 
     def _call_ui(self, fn: Callable[[], None]) -> None:
@@ -391,6 +411,39 @@ class SmacApp(App[None]):
         self.current_channel_name = channel_name
         self.current_channel_id = None
         self.set_header(f"{workspace_name} — #{channel_name}")
+
+    def reset_to_logged_out(self, message: str) -> None:
+        """`/workspace delete`'s success path (SMAC-72 task 6): the mirror
+        image of `enter_workspace`/`enter_general` -- tear the session
+        down completely and land back on the Frame-1 welcome screen with
+        `message` as the trailing system line.
+
+        Stops both live-room background threads, drops the in-memory and
+        on-disk session, clears every piece of per-workspace state this
+        app instance was holding, and re-renders the welcome screen from
+        a blank body (nothing from the deleted workspace's feed should
+        linger once it's gone). Must be called from a worker thread, same
+        as every other command handler -- `_call_ui`/`system_line`/
+        `set_header` (used by `_show_welcome_screen`) all handle that.
+        """
+        self._stop_channel_feed()
+        if self._event_bell is not None:
+            self._event_bell.stop()
+            self._event_bell = None
+        self.api.session = None
+        session_path().unlink(missing_ok=True)
+        self.workspace_name = None
+        self.current_channel_name = None
+        self.current_channel_id = None
+        self._member_handles = {}
+
+        def _clear_body() -> None:
+            self._log_lines.clear()
+            self.body.clear()
+
+        self._call_ui(_clear_body)
+        self._show_welcome_screen()
+        self.system_line(message)
 
     # -- the live room (SMAC-72 task 5) ------------------------------------
     #
@@ -529,11 +582,38 @@ class SmacApp(App[None]):
             return self.api.ws_channel_url(channel_id)
 
         def deliver(payload: dict[str, Any]) -> None:
-            self.call_from_thread(self._handle_channel_payload, channel_id, payload)
+            self._deliver_from_feed_thread(
+                self._handle_channel_payload, channel_id, payload
+            )
 
         feed = ChannelFeed(provider, deliver)
         self._channel_feed = feed
         feed.start()
+
+    def _deliver_from_feed_thread(self, fn: Callable[..., None], *args: Any) -> None:
+        """`call_from_thread(fn, *args)`, tolerating an already-closed loop.
+
+        `ChannelFeed`/`EventBell`'s own `stop()` (`smac_cli/live.py`)
+        closes the live socket to interrupt an in-flight `recv()`
+        promptly -- which, on a background thread, raises locally and
+        calls this feed's `_on_disconnected` hook (a synthetic
+        `{"event": "disconnected"}` delivery) essentially immediately.
+        `on_unmount` calls `_stop_channel_feed()`/`_event_bell.stop()` as
+        part of Textual's OWN shutdown sequence, so there's a real window
+        where that synthetic delivery lands on this thread just as (or
+        just after) the app's event loop has already closed -- observed
+        in practice via `RuntimeError: Event loop is closed` bubbling up
+        as an unhandled exception on a daemon thread when a live channel
+        feed is torn down (`/quit` or a test's `run_test()` exiting) at
+        the same moment the underlying server connection also drops.
+        There is nothing useful to do with a payload once the app itself
+        is gone, so this is a deliberate, narrow swallow -- not a
+        `SmacError`, not a `SmacApi`/network failure, just "too late."
+        """
+        try:
+            self.call_from_thread(fn, *args)
+        except RuntimeError:
+            pass
 
     def _handle_channel_payload(self, channel_id: str, payload: dict[str, Any]) -> None:
         """Runs on the event loop thread (`call_from_thread`'d by `_start_
@@ -662,7 +742,7 @@ class SmacApp(App[None]):
         bell.start()
 
     def _deliver_mention_event(self, event: dict[str, Any]) -> None:
-        self.call_from_thread(self._handle_mention_event, event)
+        self._deliver_from_feed_thread(self._handle_mention_event, event)
 
     def _handle_mention_event(self, event: dict[str, Any]) -> None:
         """A mention in ANY channel rings the bell -- EXCEPT the currently

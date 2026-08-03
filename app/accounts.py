@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.errors import EmailTakenError
 from app.handles import generate_unique_handle
 from app.models import Member, Workspace
+from app.schemas import MemberSelfOut
 from app.security import hash_password
 from app.unreads import new_channel_membership
 
@@ -72,3 +73,34 @@ def create_member_account(
             new_channel_membership(db, workspace.default_channel_id, member.member_id)
         )
     return member
+
+
+def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
+    """Assemble `MemberSelfOut` for `member`, looking up its workspace's
+    `visibility` (not a `Member` attribute -- see the schema's own
+    docstring for why that lookup lives here rather than on the ORM
+    model). The one place every `/member*` route builds this response,
+    so `is_admin`/`workspace_visibility` can never drift out of sync
+    across the routes that return this shape (`GET /member`, `GET
+    /members/me`, `PATCH /members/me`, `POST /workspaces` and the
+    register-into-workspace routes).
+    """
+    workspace = (
+        db.query(Workspace).filter(Workspace.workspace_id == member.workspace_id).one()
+    )
+    return MemberSelfOut(
+        member_id=member.member_id,
+        member_name=member.member_name,
+        member_type=member.member_type,
+        handle=member.handle,
+        workspace_id=member.workspace_id,
+        created_at=member.created_at,
+        email=member.email,
+        first_name=member.first_name,
+        last_name=member.last_name,
+        company=member.company,
+        occupation=member.occupation,
+        job_role=member.job_role,
+        is_admin=member.is_admin,
+        workspace_visibility=workspace.visibility,
+    )

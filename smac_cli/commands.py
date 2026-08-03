@@ -7,22 +7,31 @@ the pull-up, and runs the handler on a worker thread (`SmacApp._run_command`)
 so the blocking `SmacApi` calls and the blocking `app.ask()`/`app.choose()`
 inline-form helpers never freeze the event loop.
 
-This task (SMAC-72 task 4) registers exactly the four commands the shell
-itself depends on to get a caller logged in: `/register`, `/login`,
-`/help`, `/quit`. Tasks 5-6 add `/whoami`, `/channels`, `/channel`,
-`/unreads`, `/workspace delete` etc. by adding entries to this dict --
-`smac_cli.app` never needs to change for that.
+Task 4 (SMAC-72) registered the four commands the shell itself depends on
+to get a caller logged in: `/register`, `/login`, `/help`, `/quit`. Task 5
+wired the live room (no new commands). This task (6, final) adds
+`/whoami`, `/channels` (+ `/unreads`, the same handler under a second
+name), `/channel create`, and `/workspace delete`, and completes `/help`
+to describe all of them (spec §0.2).
 
 A handler that raises `smac_cli.app.FormCancelled` (via `ask()`/`choose()`
 after Esc) is caught by the caller (`SmacApp._run_command`) -- handlers
 don't need their own `try`/`except` around it. A handler that lets a
-`smac_cli.errors.SmacError` propagate gets it turned into a system line
-by the same caller.
+`smac_cli.errors.SmacError` propagate gets it turned into a message-only
+system line by that same caller -- this is what makes `/workspace
+delete`'s not-an-admin case "just work" with no special-casing here.
+`/channel create`'s 409 is the one exception: spec §0.2's frame for it
+shows the server's `code: message` envelope verbatim (`channel_name_taken:
+A channel named '...' already exists...`), not just the message, so
+`cmd_channel` catches that one itself rather than letting it fall through
+to the generic (message-only) handling every other command relies on.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+from smac_cli.errors import SmacError
 
 if TYPE_CHECKING:
     from smac_cli.app import SmacApp
@@ -143,16 +152,36 @@ def cmd_login(app: "SmacApp", args: str) -> None:
     app.enter_general()
 
 
-@_register("channel", "switch channel")
+@_register("channel", "switch channel, or create <name>")
 def cmd_channel(app: "SmacApp", args: str) -> None:
     """`/channel <name>`: switch the live room to another channel.
+    `/channel create <name>`: create one and switch to it (spec §0.2).
 
     Case-insensitive (SMAC-68 guarantees workspace-wide channel-name
-    uniqueness regardless of case). An unknown name shows a system line
-    and leaves the current channel untouched -- `/channel create <name>`
-    is a later task's job, not this one's.
+    uniqueness regardless of case). An unknown name to switch to shows a
+    system line and leaves the current channel untouched. A duplicate
+    name to create raises `NameTakenError`, caught here specifically
+    (unlike every other command's errors) so the server's full `code:
+    message` envelope renders verbatim, matching spec §0.2's frame --
+    `enter_channel` is never reached in that case.
     """
-    name = args.strip()
+    text = args.strip()
+    parts = text.split(None, 1)
+    if parts and parts[0].lower() == "create":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            app.system_line("usage: /channel create <name>")
+            return
+        try:
+            created = app.api.create_channel(name)
+        except SmacError as exc:
+            app.system_line(f"{exc.code}: {exc.message}")
+            return
+        app.enter_channel(created["channel_id"], created["channel_name"])
+        app.system_line(f"channel #{created['channel_name']} created — you're in it")
+        return
+
+    name = text
     if not name:
         app.system_line("usage: /channel <name>")
         return
@@ -165,12 +194,118 @@ def cmd_channel(app: "SmacApp", args: str) -> None:
     app.enter_channel(match["channel_id"], match["channel_name"])
 
 
+@_register("whoami", "who am I")
+def cmd_whoami(app: "SmacApp", args: str) -> None:
+    """`/whoami`: your identity + this workspace, as system lines (spec §0.2).
+
+    `GET /members/me` carries `is_admin` and `workspace_visibility`
+    (SMAC-72 task 6 addition -- see `app.schemas.MemberSelfOut`'s
+    docstring) precisely so this command has somewhere to get both from;
+    neither was on any response before this task.
+    """
+    profile = app.api.whoami()
+    first_name = profile.get("first_name") or ""
+    last_name = profile.get("last_name") or ""
+    full_name = f"{first_name} {last_name}".strip() or str(
+        profile.get("member_name", "")
+    )
+    handle = profile.get("handle", "")
+    admin_suffix = " · admin" if profile.get("is_admin") else ""
+    app.system_line(f"you: {full_name} (@{handle}){admin_suffix}")
+    workspace_name = app.workspace_name or ""
+    visibility = profile.get("workspace_visibility", "")
+    app.system_line(f"workspace: {workspace_name} ({visibility})")
+
+
+def _channel_row_line(row: dict[str, Any], current_channel_id: str | None) -> str:
+    """One `/channels` table row: `#name  ·  caught up|N unread  [🔔 N
+    mention(s)]  [(here)]` (spec §0.2's `/channels` frame)."""
+    unread_count = int(row.get("unread_count") or 0)
+    status = "caught up" if unread_count == 0 else f"{unread_count} unread"
+    mention_count = int(row.get("mention_count") or 0)
+    if mention_count:
+        noun = "mention" if mention_count == 1 else "mentions"
+        status += f"  🔔 {mention_count} {noun}"
+    line = f"#{row['channel_name']}    ·  {status}"
+    if row.get("channel_id") == current_channel_id:
+        line += "  (here)"
+    return line
+
+
+@_register("channels", "your channels + unread badges")
+@_register("unreads", "your channels + unread badges (same as /channels)")
+def cmd_channels(app: "SmacApp", args: str) -> None:
+    """`/channels` and `/unreads` (spec §0.2: "same table, both names kept
+    for discoverability"): one `GET /unreads` call, `(here)` on the
+    current channel, 🔔 on anything with a pending mention.
+    """
+    data = app.api.unreads()
+    app.system_line("your channels")
+    for row in data.get("unreads", []):
+        app.system_line(_channel_row_line(row, app.current_channel_id))
+    app.system_line("switch: /channel <name>")
+
+
+def _confirm_and_delete_workspace(app: "SmacApp") -> None:
+    """`/workspace delete`'s inline two-step typed confirmation (spec
+    §0.2, "house style"): the workspace NAME, then the literal word
+    `delete` -- a mismatch on either step aborts with a system line and
+    nothing is called. On success, clears the session and returns to the
+    Frame-1 welcome screen (`SmacApp.reset_to_logged_out`).
+    """
+    workspace_name = app.workspace_name or ""
+    app.system_line(
+        f'⚠ this permanently deletes "{workspace_name}": all channels, '
+        "messages, accounts, and agent keys"
+    )
+    app.system_line("type the workspace name to continue")
+    typed_name = app.ask("name")
+    if typed_name != workspace_name:
+        app.system_line("workspace name did not match — cancelled")
+        return
+
+    app.system_line("type delete to confirm")
+    confirmation = app.ask("confirm")
+    if confirmation != "delete":
+        app.system_line("cancelled")
+        return
+
+    app.api.delete_workspace()
+    app.reset_to_logged_out(f'workspace "{workspace_name}" deleted')
+
+
+@_register("workspace", "delete this workspace (admin)")
+def cmd_workspace(app: "SmacApp", args: str) -> None:
+    """`/workspace delete`: the only subcommand today. Anything else is
+    usage help -- the server enforces admin-only regardless of what the
+    client shows, so a non-admin still gets a clear (verbatim) rejection
+    after typing through the confirmation."""
+    if args.strip().lower() != "delete":
+        app.system_line("usage: /workspace delete")
+        return
+    _confirm_and_delete_workspace(app)
+
+
 @_register("help", "command list")
 def cmd_help(app: "SmacApp", args: str) -> None:
-    """`/help`: the same content the pull-up shows, one line per command."""
+    """`/help`: the full command list (spec §0.2's `/help` frame).
+
+    Curated rather than generated straight off `COMMANDS`: `/channel` is
+    one registry entry but earns two lines here (switch vs. create), and
+    `/channels`/`/unreads` -- two registry entries, one handler -- collapse
+    to the frame's single combined line. Every name here still comes
+    straight from a real `COMMANDS` key, so this can never drift into
+    describing a command that doesn't exist.
+    """
     app.system_line("commands")
-    for name, (_, help_text) in COMMANDS.items():
-        app.system_line(f"/{name}  {help_text}")
+    app.system_line(f"/register          {COMMANDS['register'][1]}")
+    app.system_line(f"/login             {COMMANDS['login'][1]}")
+    app.system_line(f"/whoami            {COMMANDS['whoami'][1]}")
+    app.system_line("/channels /unreads your channels + unread badges")
+    app.system_line("/channel <name>    switch channel")
+    app.system_line("/channel create <name>  new channel")
+    app.system_line(f"/workspace delete  {COMMANDS['workspace'][1]}")
+    app.system_line(f"/quit              {COMMANDS['quit'][1]}")
     app.system_line("anything without / is a message to the current channel")
 
 
