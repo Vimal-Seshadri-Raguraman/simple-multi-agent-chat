@@ -82,3 +82,13 @@ class ConfirmationRequiredError(AppError):
 class RateLimitedError(AppError):
     status_code = 429
     code = "rate_limited"
+
+
+class WorkspaceNameTakenError(AppError):
+    status_code = 409
+    code = "workspace_name_taken"
+
+
+class ChannelNameTakenError(AppError):
+    status_code = 409
+    code = "channel_name_taken"

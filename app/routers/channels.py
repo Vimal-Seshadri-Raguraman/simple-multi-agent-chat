@@ -8,7 +8,7 @@ from app.authorization import (
     require_same_workspace,
 )
 from app.database import get_db
-from app.errors import AlreadyAMemberError, NotFoundError
+from app.errors import AlreadyAMemberError, ChannelNameTakenError, NotFoundError
 from app.models import Channel, ChannelMember, Member
 from app.schemas import ChannelCreate, ChannelOut, MemberIdIn, MemberOut
 from app.unreads import new_channel_membership
@@ -38,6 +38,19 @@ def create_channel(
 ) -> Channel:
     authorize_management_action(member)
     require_same_workspace(member, workspace_id)
+
+    duplicate = (
+        db.query(Channel)
+        .filter(
+            Channel.workspace_id == workspace_id,
+            Channel.channel_name_key == body.channel_name.lower(),
+        )
+        .first()
+    )
+    if duplicate is not None:
+        raise ChannelNameTakenError(
+            f"A channel named '{body.channel_name}' already exists in this workspace"
+        )
 
     channel = Channel(workspace_id=workspace_id, channel_name=body.channel_name)
     db.add(channel)

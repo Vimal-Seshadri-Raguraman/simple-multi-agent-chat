@@ -10,6 +10,7 @@ from app.errors import (
     ForbiddenMemberTypeError,
     LastAdminError,
     NotFoundError,
+    WorkspaceNameTakenError,
 )
 from app.models import (
     Channel,
@@ -48,6 +49,15 @@ def found_workspace(
     body: FoundWorkspaceIn, db: Session = Depends(get_db)
 ) -> WorkspaceAuthOut:
     """Found a workspace: workspace + 'general' + admin account + audit record, atomically."""
+    duplicate = (
+        db.query(Workspace)
+        .filter(Workspace.workspace_name_key == body.workspace_name.lower())
+        .first()
+    )
+    if duplicate is not None:
+        raise WorkspaceNameTakenError(
+            f"A workspace named '{body.workspace_name}' already exists"
+        )
     workspace = Workspace(
         workspace_id=new_id(),
         workspace_name=body.workspace_name,
