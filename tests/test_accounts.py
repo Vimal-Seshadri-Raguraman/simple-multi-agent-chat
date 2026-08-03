@@ -7,8 +7,8 @@ from app.errors import EmailTakenError
 from app.models import Channel, ChannelMember, Member, Workspace
 
 
-def _workspace(db_session, with_default_channel=True):
-    ws = Workspace(workspace_name="Acme")
+def _workspace(db_session, with_default_channel=True, name="Acme"):
+    ws = Workspace(workspace_name=name)
     db_session.add(ws)
     db_session.flush()
     if with_default_channel:
@@ -67,7 +67,9 @@ def test_duplicate_email_same_workspace_rejected(db_session):
 
 
 def test_same_email_different_workspaces_ok(db_session):
-    ws1, ws2 = _workspace(db_session), _workspace(db_session)
+    ws1, ws2 = _workspace(db_session, name="Acme"), _workspace(
+        db_session, name="Acme Two"
+    )
     m1 = create_member_account(
         db_session,
         ws1,

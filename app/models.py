@@ -14,7 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.engine import Dialect
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 from sqlalchemy.types import TypeDecorator
 
 
@@ -86,9 +86,19 @@ class Member(Base):
 
 class Workspace(Base):
     __tablename__ = "workspaces"
+    # Not an expression index on lower(workspace_name): attempted and BLOCKED
+    # (SMAC-68 task 1, first attempt) -- SQLAlchemy's SQLite dialect cannot
+    # reflect expression indexes (verified through 2.0.51), which left the
+    # drift guard permanently blind to them. This shadow-column + plain
+    # UniqueConstraint is the controller-approved fallback: it reflects
+    # normally, so the drift guard can actually prove red -> green.
+    __table_args__ = (
+        UniqueConstraint("workspace_name_key", name="uq_workspaces_name_ci"),
+    )
 
     workspace_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     workspace_name: Mapped[str] = mapped_column(String, nullable=False)
+    workspace_name_key: Mapped[str] = mapped_column(String, nullable=False)
     visibility: Mapped[str] = mapped_column(
         String, nullable=False, default="private"
     )  # public | private
@@ -99,18 +109,44 @@ class Workspace(Base):
         UTCDateTime, default=utcnow, nullable=False
     )
 
+    @validates("workspace_name")
+    def _sync_name_key(self, key: str, value: str) -> str:
+        """The shadow key IS the case-insensitivity: every write to
+        workspace_name lowercases into workspace_name_key, so the plain
+        unique constraint enforces case-insensitive uniqueness while the
+        display name keeps its casing."""
+        self.workspace_name_key = value.lower()
+        return value
+
 
 class Channel(Base):
     __tablename__ = "channels"
+    # Not an expression index on lower(channel_name): same rationale as
+    # Workspace._sync_name_key above -- expression indexes leave the drift
+    # guard blind on SQLite, so this uses a shadow column + plain
+    # UniqueConstraint (scoped per workspace) instead.
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "channel_name_key", name="uq_channels_workspace_name_ci"
+        ),
+    )
 
     channel_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
     workspace_id: Mapped[str] = mapped_column(
         String, ForeignKey("workspaces.workspace_id"), nullable=False
     )
     channel_name: Mapped[str] = mapped_column(String, nullable=False)
+    channel_name_key: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
+
+    @validates("channel_name")
+    def _sync_name_key(self, key: str, value: str) -> str:
+        """See Workspace._sync_name_key -- same mechanism, scoped per
+        workspace."""
+        self.channel_name_key = value.lower()
+        return value
 
 
 class ChannelMember(Base):

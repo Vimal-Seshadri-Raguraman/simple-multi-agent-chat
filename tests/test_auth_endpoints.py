@@ -211,7 +211,8 @@ def test_logout_requires_auth(client):
 def test_logout_cannot_kill_another_members_token(client):
     tokens_a = _found(client)
     tokens_b = client.post(
-        "/workspaces", json=dict(FOUND_BODY, email="bob@example.com")
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Underland", email="bob@example.com"),
     ).json()
     # A tries to revoke B's refresh token: 200 (idempotent, no leak) but B's
     # token must still work afterwards.
