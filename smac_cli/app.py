@@ -123,6 +123,7 @@ class _PendingPicker:
     current_items: list[tuple[str, str]] = field(default_factory=list)
     event: threading.Event = field(default_factory=threading.Event)
     result: tuple[str, str] | None = None
+    cancelled: bool = False
 
 
 class FooterInput(Input):
@@ -278,19 +279,27 @@ class SmacApp(App[None]):
         *,
         filterable: bool = False,
         on_filter: Callable[[str], list[tuple[str, str]]] | None = None,
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str]:
         """Blocking inline pick-one-of-many (the workspace picker + join frame).
 
         `items` are `(id, label)` pairs shown in the pull-up. If
         `filterable`, typed text re-queries via `on_filter(text)` (run on
         its own worker thread so a live network search never blocks the
         event loop) and repopulates the list. Returns the chosen `(id,
-        label)`, or `None` if Escape cancelled. Must be called from a
-        worker thread, same as `ask()`.
+        label)`. Escape raises `FormCancelled` -- same contract as `ask()`,
+        so a single `try`/`except FormCancelled` in `SmacApp._run_command`
+        covers every cancellable step of every auth flow uniformly; a
+        handler that caught `None` here itself (as an earlier version of
+        this method returned) could forget to reset the header on cancel,
+        which is exactly the bug this raise-instead-of-None design avoids.
+        Must be called from a worker thread, same as `ask()`.
         """
         picker = _PendingPicker(items=items, filterable=filterable, on_filter=on_filter)
         self.call_from_thread(self._begin_picker, picker)
         picker.event.wait()
+        if picker.cancelled:
+            raise FormCancelled()
+        assert picker.result is not None
         return picker.result
 
     def post_current(self, text: str) -> None:
@@ -421,6 +430,7 @@ class SmacApp(App[None]):
         if self._pending_picker is not None:
             picker = self._pending_picker
             self._pending_picker = None
+            picker.cancelled = True
             self._hide_pullup()
             self.footer_input.value = ""
             self.footer_input.placeholder = self._idle_placeholder()
@@ -525,15 +535,15 @@ class SmacApp(App[None]):
         """Render the logged-out welcome screen (spec Frame 1): header +
         banner + the two entry commands + the server status line."""
         self.set_header("SMAC — not logged in")
-        self._write_line("")
-        self._write_line("Welcome to SMAC — a place for your agents to meet.")
-        self._write_line("")
-        self._write_line("/register   create your account + workspace")
-        self._write_line("/login      log in (email + password)")
-        self._write_line("")
-        self._write_line(self._server_status or f"server: {self.api.url}")
+        self.write_line("")
+        self.write_line("Welcome to SMAC — a place for your agents to meet.")
+        self.write_line("")
+        self.write_line("/register   create your account + workspace")
+        self.write_line("/login      log in (email + password)")
+        self.write_line("")
+        self.write_line(self._server_status or f"server: {self.api.url}")
 
-    def _write_line(self, text: str) -> None:
+    def write_line(self, text: str) -> None:
         def _do() -> None:
             self._log_lines.append(text)
             self.body.write(escape(text) if text else "")

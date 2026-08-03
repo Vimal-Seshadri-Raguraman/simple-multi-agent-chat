@@ -438,6 +438,10 @@ async def test_login_multi_match_shows_picker_with_both_names() -> None:
         labels = {app.pullup.get_option_at_index(i).prompt for i in (0, 1)}
         assert any("AI Finance Co" in str(label) for label in labels)
         assert any("Research Lab" in str(label) for label in labels)
+        # The "your accounts:" caption is a plain line (Frame 3b draws it
+        # un-wrapped), not a dim "── ── " system line.
+        assert "your accounts:" in app._log_lines
+        assert "── your accounts: ──" not in app._log_lines
 
         # Select the second entry and confirm it logs into THAT workspace.
         await pilot.press("down")
@@ -445,6 +449,28 @@ async def test_login_multi_match_shows_picker_with_both_names() -> None:
         await _wait_until(pilot, lambda: app.header_text == "Research Lab — #general")
         assert fake.session is not None
         assert fake.session.workspace_id == "ws-2"
+
+
+@pytest.mark.anyio
+async def test_login_multi_match_escape_cancels_and_resets_header() -> None:
+    fake = FakeApi()
+    fake.discover_result = [
+        {"workspace_id": "ws-1", "workspace_name": "AI Finance Co"},
+        {"workspace_id": "ws-2", "workspace_name": "Research Lab"},
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "vimal@example.com", "pw")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — choose a workspace")
+        await _wait_until(pilot, lambda: app.pullup.option_count == 2)
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        assert app.api.session is None
+        assert not app.pullup.display
 
 
 @pytest.mark.anyio
@@ -474,6 +500,11 @@ async def test_login_zero_match_join_flow_filters_and_registers() -> None:
             pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
         )
         await _wait_until(pilot, lambda: app.pullup.option_count == 2)
+        # The caption and the "/register" hint are plain lines (Frame 3c
+        # draws both un-wrapped), not dim "── ── " system lines.
+        assert "public workspaces (type to search):" in app._log_lines
+        assert "(or /register to create your own)" in app._log_lines
+        assert "── public workspaces (type to search): ──" not in app._log_lines
 
         await pilot.press(*"fin")
         await _wait_until(pilot, lambda: app.pullup.option_count == 1)
@@ -491,6 +522,34 @@ async def test_login_zero_match_join_flow_filters_and_registers() -> None:
         await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
         assert fake.session is not None
         assert fake.session.workspace_id == "ws-pub-1"
+
+
+@pytest.mark.anyio
+async def test_login_zero_match_join_frame_escape_cancels_and_resets_header() -> None:
+    fake = FakeApi()
+    fake.discover_result = []
+    fake.search_result = [
+        {
+            "workspace_id": "ws-pub-1",
+            "workspace_name": "AI Finance Co",
+            "visibility": "public",
+        },
+    ]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _start_login(pilot, app, "new@example.com", "pw")
+        await _wait_until(
+            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
+        )
+        await _wait_until(pilot, lambda: app.pullup.option_count == 1)
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        assert app.api.session is None
+        assert not app.pullup.display
 
 
 # --------------------------------------------------------------------------

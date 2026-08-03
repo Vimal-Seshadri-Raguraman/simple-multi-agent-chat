@@ -108,12 +108,9 @@ def cmd_login(app: "SmacApp", args: str) -> None:
 
     if len(matches) > 1:
         app.set_header("SMAC — choose a workspace")
-        app.system_line("your accounts:")
+        app.write_line("your accounts:")
         items = [(m["workspace_id"], m["workspace_name"]) for m in matches]
-        chosen = app.choose(items)
-        if chosen is None:
-            return
-        workspace_id, workspace_name = chosen
+        workspace_id, workspace_name = app.choose(items)
         app.api.login(workspace_id, email, password)
         cache_workspace_name(workspace_id, workspace_name)
         app.enter_workspace(workspace_name, "general")
@@ -121,7 +118,7 @@ def cmd_login(app: "SmacApp", args: str) -> None:
 
     # Zero matches: the join frame -- live-filtered public directory.
     app.set_header("SMAC — no workspace yet: join one")
-    app.system_line("public workspaces (type to search):")
+    app.write_line("public workspaces (type to search):")
 
     def _search(query: str) -> list[tuple[str, str]]:
         return [
@@ -129,10 +126,10 @@ def cmd_login(app: "SmacApp", args: str) -> None:
             for w in app.api.search_public(query)
         ]
 
-    chosen = app.choose(_search(""), filterable=True, on_filter=_search)
-    if chosen is None:
-        return
-    workspace_id, workspace_name = chosen
+    app.write_line("(or /register to create your own)")
+    workspace_id, workspace_name = app.choose(
+        _search(""), filterable=True, on_filter=_search
+    )
     first_name = app.ask("first name")
     last_name = app.ask("last name")
     session = app.api.register_into(
