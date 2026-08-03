@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session
 
 from app.errors import EmailTakenError
 from app.handles import generate_unique_handle
-from app.models import ChannelMember, Member, Workspace
+from app.models import Member, Workspace
 from app.security import hash_password
+from app.unreads import new_channel_membership
 
 
 def create_member_account(
@@ -68,8 +69,6 @@ def create_member_account(
     db.flush()
     if workspace.default_channel_id is not None:
         db.add(
-            ChannelMember(
-                channel_id=workspace.default_channel_id, member_id=member.member_id
-            )
+            new_channel_membership(db, workspace.default_channel_id, member.member_id)
         )
     return member

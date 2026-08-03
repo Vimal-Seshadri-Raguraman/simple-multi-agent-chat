@@ -122,6 +122,7 @@ class ChannelMember(Base):
     member_id: Mapped[str] = mapped_column(
         String, ForeignKey("members.member_id"), primary_key=True
     )
+    last_read_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class Message(Base):

@@ -11,6 +11,7 @@ from app.database import get_db
 from app.errors import AlreadyAMemberError, NotFoundError
 from app.models import Channel, ChannelMember, Member
 from app.schemas import ChannelCreate, ChannelOut, MemberIdIn, MemberOut
+from app.unreads import new_channel_membership
 
 router = APIRouter()
 
@@ -89,7 +90,7 @@ def add_channel_member(
             f"Member '{body.member_id}' is already in channel '{channel_id}'"
         )
 
-    db.add(ChannelMember(channel_id=channel_id, member_id=body.member_id))
+    db.add(new_channel_membership(db, channel_id, body.member_id))
     db.commit()
     return target
 
