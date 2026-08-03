@@ -1,5 +1,9 @@
 import os
+import socket
+import subprocess
+import sys
 import tempfile
+from pathlib import Path
 
 # Set the test database BEFORE any app imports: the lifespan's init_db() runs at
 # TestClient boot and must never touch a developer's legacy smac.db.
@@ -178,3 +182,58 @@ def db_session():
         yield session
     finally:
         session.close()
+
+
+_SMAC_TUI_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _free_port() -> int:
+    """Grab an ephemeral port from the OS so parallel test runs don't collide."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="module")
+def real_smac_server(tmp_path_factory: pytest.TempPathFactory):
+    """A real `smac-server` (real uvicorn, real migrations) for the TUI
+    client's integration tests, spawned once per test module.
+
+    Reuses Task 2's lifecycle manager (`smac_cli.server`, exercised via
+    `python -m smac_cli.server` in `test_smac_server_lifecycle.py`)
+    rather than reinventing server startup: a sync `httpx`-based client
+    can't talk to the ASGI app in-process (`WSGITransport` doesn't speak
+    ASGI), so hitting a real, separately-running server is the simplest
+    correct way to integration-test `SmacApi`.
+
+    Yields `(url, home_dir)`. `home_dir` is the tmp `$HOME` the server's
+    pidfile/db/log live under -- tests that want `SmacApi`'s session
+    auto-persistence (which resolves `~/.config/smac/session.json` via
+    `smac_cli.paths.session_path()`) should monkeypatch `Path.home` to
+    return it, the same pattern `test_smac_server_lifecycle.py` uses.
+    """
+    home_dir = tmp_path_factory.mktemp("smac-tui-home")
+    port = _free_port()
+    env = {**os.environ, "HOME": str(home_dir)}
+
+    start = subprocess.run(
+        [sys.executable, "-m", "smac_cli.server", "--start", "--port", str(port)],
+        cwd=str(_SMAC_TUI_REPO_ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert start.returncode == 0, start.stdout + start.stderr
+
+    try:
+        yield f"http://127.0.0.1:{port}", home_dir
+    finally:
+        subprocess.run(
+            [sys.executable, "-m", "smac_cli.server", "--stop"],
+            cwd=str(_SMAC_TUI_REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
