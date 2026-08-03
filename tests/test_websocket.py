@@ -8,7 +8,7 @@ def _setup_channel_with_agent(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(

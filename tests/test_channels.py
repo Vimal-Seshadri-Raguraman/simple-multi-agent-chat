@@ -5,11 +5,11 @@ def test_human_can_create_channel(client):
     founder = founder_auth(client, "w1")
     response = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 200
-    assert response.json()["channel_name"] == "general"
+    assert response.json()["channel_name"] == "team-chat"
 
 
 def test_bot_app_cannot_create_channel(client):
@@ -21,7 +21,7 @@ def test_bot_app_cannot_create_channel(client):
     ).json()
     response = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers={"X-API-Key": bot["api_key"]},
     )
     assert response.status_code == 403
@@ -31,7 +31,7 @@ def test_create_channel_in_foreign_workspace_404s(client):
     founder_auth(client, "w1")
     response = client.post(
         "/workspaces/does-not-exist/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     )
     assert response.status_code == 404
@@ -73,7 +73,7 @@ def test_add_channel_member_requires_workspace_membership_first(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     outsider = founder_auth(client, "w2")
@@ -91,7 +91,7 @@ def test_add_channel_member_succeeds_once_in_workspace(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(
@@ -112,7 +112,7 @@ def test_bot_app_cannot_add_channel_member(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     bot = client.post(
@@ -139,7 +139,7 @@ def test_adding_same_channel_member_twice_conflicts(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(
@@ -167,7 +167,7 @@ def test_list_channel_members(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     agent = client.post(
@@ -200,7 +200,7 @@ def test_list_channel_members_requires_auth(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     response = client.get(
@@ -213,7 +213,7 @@ def test_list_channel_members_requires_channel_membership(client):
     founder = founder_auth(client, "w1")
     channel = client.post(
         f"/workspaces/{founder['workspace_id']}/channels",
-        json={"channel_name": "general"},
+        json={"channel_name": "team-chat"},
         headers=founder_headers(client, "w1"),
     ).json()
     # Outsider agent belongs to the same workspace (registered by its founder)

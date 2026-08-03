@@ -1,7 +1,9 @@
 """Migrations are the schema's source of truth for on-disk databases."""
 
+import pytest
 from alembic import command
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.exc import IntegrityError
 
 from app.database import _alembic_config
 from app.models import Base
@@ -127,3 +129,91 @@ def test_read_cursor_backfill_sets_caught_up(tmp_path):
             ).fetchall()
         )
     assert cursors == {"c1": 3, "c2": 0}
+
+
+def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
+    """Pre-existing case-insensitive duplicate names get suffixed in age
+    order (collision-checked against candidates, not just the raw counter),
+    workspace_name_key/channel_name_key are backfilled to lower(name) for
+    every row, and both unique constraints are enforced afterward."""
+    url = f"sqlite:///{tmp_path}/backfill.db"
+    command.upgrade(_alembic_config(url), "d2b0475785e7")  # pre-unique-names schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        for workspace_id, name, created_at in [
+            ("w1", "Finance", "2026-01-01 00:00:00"),  # oldest -> keeps name
+            ("w2", "finance", "2026-01-01 00:00:01"),  # -> finance2
+            ("w3", "FINANCE", "2026-01-01 00:00:02"),  # "finance2" taken -> FINANCE3
+            ("w4", "Ops", "2026-01-01 00:00:03"),  # no collision, untouched
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name, visibility,"
+                f" created_at) VALUES ('{workspace_id}', '{name}', 'private',"
+                f" '{created_at}')"
+            )
+        for channel_id, name, created_at in [
+            ("c1", "reports", "2026-01-01 00:00:00"),  # older -> keeps name
+            ("c2", "Reports", "2026-01-01 00:00:01"),  # -> Reports2
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO channels (channel_id, workspace_id, channel_name,"
+                f" created_at) VALUES ('{channel_id}', 'w4', '{name}',"
+                f" '{created_at}')"
+            )
+
+    command.upgrade(_alembic_config(url), "head")
+
+    with engine.begin() as conn:
+        workspace_names = dict(
+            conn.exec_driver_sql(
+                "SELECT workspace_id, workspace_name FROM workspaces"
+                " ORDER BY workspace_id"
+            ).fetchall()
+        )
+        workspace_keys = dict(
+            conn.exec_driver_sql(
+                "SELECT workspace_id, workspace_name_key FROM workspaces"
+                " ORDER BY workspace_id"
+            ).fetchall()
+        )
+        channel_names = dict(
+            conn.exec_driver_sql(
+                "SELECT channel_id, channel_name FROM channels ORDER BY channel_id"
+            ).fetchall()
+        )
+        channel_keys = dict(
+            conn.exec_driver_sql(
+                "SELECT channel_id, channel_name_key FROM channels"
+                " ORDER BY channel_id"
+            ).fetchall()
+        )
+
+    assert workspace_names == {
+        "w1": "Finance",
+        "w2": "finance2",
+        "w3": "FINANCE3",
+        "w4": "Ops",
+    }
+    assert workspace_keys == {
+        wid: name.lower() for wid, name in workspace_names.items()
+    }
+    assert channel_names == {"c1": "reports", "c2": "Reports2"}
+    assert channel_keys == {cid: name.lower() for cid, name in channel_names.items()}
+
+    inspector = inspect(engine)
+    workspace_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("workspaces")
+    }
+    channel_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("channels")
+    }
+    assert "uq_workspaces_name_ci" in workspace_constraints
+    assert "uq_channels_workspace_name_ci" in channel_constraints
+
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                " ('w5', 'FiNaNcE', 'finance', 'private', '2026-01-01 00:00:04')"
+            )
