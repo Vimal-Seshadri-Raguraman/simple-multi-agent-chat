@@ -108,6 +108,19 @@ def get_member(
     return profile
 
 
+@router.get("/members/me", response_model=MemberSelfOut)
+def get_my_profile(
+    current_member: Member = Depends(get_current_member),
+) -> MemberSelfOut:
+    """The caller's own full profile, including workspace_id and email.
+
+    Works under either credential (Bearer JWT for humans, X-API-Key for
+    agents/bot_apps) — this is how an API-key-only client discovers its own
+    identity and workspace without already knowing its member_id.
+    """
+    return MemberSelfOut.model_validate(current_member)
+
+
 @router.patch("/members/me", response_model=MemberSelfOut)
 def update_my_profile(
     body: MemberProfileUpdate,

@@ -159,6 +159,35 @@ def test_search_never_exposes_emails(client):
     assert all("email" not in row for row in results)
 
 
+def test_get_my_profile_via_bearer(client):
+    founder = founder_auth(client, "w1")
+    response = client.get("/members/me", headers=founder_headers(client, "w1"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["member_id"] == founder["member_id"]
+    assert body["workspace_id"] == founder["workspace_id"]
+    assert body["email"] == "w1@test.example"
+
+
+def test_get_my_profile_via_api_key(client):
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Research-Bot"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    response = client.get("/members/me", headers={"X-API-Key": agent["api_key"]})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["member_id"] == agent["member_id"]
+    assert body["member_type"] == "agent"
+    assert body["workspace_id"] == founder_auth(client, "w1")["workspace_id"]
+
+
+def test_get_my_profile_requires_auth(client):
+    response = client.get("/members/me")
+    assert response.status_code == 401
+
+
 def test_patch_own_profile(client):
     response = client.patch(
         "/members/me",
