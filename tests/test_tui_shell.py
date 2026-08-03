@@ -27,7 +27,7 @@ import pytest
 from smac_cli import CLIENT_VERSION
 from smac_cli.api import Session
 from smac_cli.app import SmacApp, cache_workspace_name
-from smac_cli.errors import SessionExpired, Unreachable
+from smac_cli.errors import RateLimitedError, SessionExpired, Unreachable
 
 
 @pytest.fixture
@@ -67,6 +67,19 @@ class FakeApi:
         self.posts: list[tuple[str, str]] = []
         self.search_calls: list[str] = []
         self._next_workspace_id = 0
+        # Live-room stubs (SMAC-72 task 5): a lone "general" channel, no
+        # history, mark-read a no-op, no other members. `ws_channel_url`/
+        # `ws_events_url` are deliberately NOT implemented -- ChannelFeed/
+        # EventBell's reconnect loop treats the resulting `AttributeError`
+        # like any other connect failure (see `smac_cli/live.py`'s module
+        # docstring), so these shell tests never touch a real socket.
+        self.channels_result: list[dict[str, Any]] = [
+            {"channel_id": "general-id", "channel_name": "general"}
+        ]
+        self.messages_result: list[dict[str, Any]] = []
+        self.members_result: list[dict[str, Any]] = []
+        self.mark_read_calls: list[str] = []
+        self.post_error: Exception | None = None
 
     def meta(self) -> dict[str, Any]:
         if self.meta_error is not None:
@@ -124,7 +137,24 @@ class FakeApi:
 
     def post(self, channel_id: str, text: str) -> dict[str, Any]:
         self.posts.append((channel_id, text))
+        if self.post_error is not None:
+            raise self.post_error
         return {}
+
+    def channels(self) -> list[dict[str, Any]]:
+        return self.channels_result
+
+    def messages(
+        self, channel_id: str, after: str | None = None, limit: int = 15
+    ) -> list[dict[str, Any]]:
+        return self.messages_result
+
+    def mark_read(self, channel_id: str) -> dict[str, Any]:
+        self.mark_read_calls.append(channel_id)
+        return {}
+
+    def members(self) -> list[dict[str, Any]]:
+        return self.members_result
 
 
 async def _wait_until(
@@ -252,7 +282,7 @@ async def test_slash_shows_pullup_filters_and_escape_dismisses() -> None:
 
         await pilot.press("/")
         await _wait_until(pilot, lambda: app.pullup.display)
-        assert app.pullup.option_count == 4  # register, login, help, quit
+        assert app.pullup.option_count == 5  # register, login, channel, help, quit
 
         await pilot.press(*"re")
         await _wait_until(pilot, lambda: app.pullup.option_count == 1)
@@ -587,3 +617,72 @@ async def test_quit_prints_goodbye_and_exits() -> None:
         await _wait_until(
             pilot, lambda: any("goodbye" in line for line in app._log_lines)
         )
+
+
+# --------------------------------------------------------------------------
+# post_current: 429 preserves the draft (SMAC-72 task 5)
+#
+# Exercised against `FakeApi` (deterministic, instant) rather than a real
+# server: `tests/conftest.py` sets `RATE_LIMIT_POSTS=1000` for the whole
+# suite (so the many message-heavy tests elsewhere don't trip it), which
+# makes actually exhausting the real limiter within a real-server test
+# impractically slow -- `post_current`'s error-handling logic itself is
+# what's under test here, not the server's rate limiter.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_rate_limited_send_preserves_draft_and_shows_server_message() -> None:
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    fake = FakeApi(session=session)
+    fake.post_error = RateLimitedError(
+        "rate_limited", "Posting too fast — wait a moment"
+    )
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: any("too fast" in line for line in app._log_lines)
+        )
+        assert fake.posts == [("general-id", "hello there")]
+        # The draft is restored into the input, never silently lost.
+        assert app.footer_input.value == "hello there"
+
+
+@pytest.mark.anyio
+async def test_non_rate_limit_error_does_not_restore_draft() -> None:
+    from smac_cli.errors import NotAMemberError
+
+    session = Session(
+        url="http://fake.example",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        email="vimal@example.com",
+    )
+    fake = FakeApi(session=session)
+    fake.post_error = NotAMemberError(
+        "not_a_member", "You are not a member of this channel"
+    )
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: any("not a member" in line for line in app._log_lines)
+        )
+        # Only a 429 preserves the draft -- any other error just reports.
+        assert app.footer_input.value == ""

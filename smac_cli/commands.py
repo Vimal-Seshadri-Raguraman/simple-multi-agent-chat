@@ -80,6 +80,7 @@ def cmd_register(app: "SmacApp", args: str) -> None:
     app.enter_workspace(workspace_name, "general")
     app.system_line(f"account created: @{handle} (admin)")
     app.system_line(f'workspace "{workspace_name}" founded — you\'re in #general')
+    app.enter_general()
 
 
 @_register("login", "log in (email + password)")
@@ -104,6 +105,7 @@ def cmd_login(app: "SmacApp", args: str) -> None:
         app.api.login(match["workspace_id"], email, password)
         cache_workspace_name(match["workspace_id"], match["workspace_name"])
         app.enter_workspace(match["workspace_name"], "general")
+        app.enter_general()
         return
 
     if len(matches) > 1:
@@ -114,6 +116,7 @@ def cmd_login(app: "SmacApp", args: str) -> None:
         app.api.login(workspace_id, email, password)
         cache_workspace_name(workspace_id, workspace_name)
         app.enter_workspace(workspace_name, "general")
+        app.enter_general()
         return
 
     # Zero matches: the join frame -- live-filtered public directory.
@@ -137,6 +140,29 @@ def cmd_login(app: "SmacApp", args: str) -> None:
     )
     cache_workspace_name(session.workspace_id, workspace_name)
     app.enter_workspace(workspace_name, "general")
+    app.enter_general()
+
+
+@_register("channel", "switch channel")
+def cmd_channel(app: "SmacApp", args: str) -> None:
+    """`/channel <name>`: switch the live room to another channel.
+
+    Case-insensitive (SMAC-68 guarantees workspace-wide channel-name
+    uniqueness regardless of case). An unknown name shows a system line
+    and leaves the current channel untouched -- `/channel create <name>`
+    is a later task's job, not this one's.
+    """
+    name = args.strip()
+    if not name:
+        app.system_line("usage: /channel <name>")
+        return
+    target = name.lower()
+    channels = app.api.channels()
+    match = next((c for c in channels if c["channel_name"].lower() == target), None)
+    if match is None:
+        app.system_line(f"no such channel: #{name}")
+        return
+    app.enter_channel(match["channel_id"], match["channel_name"])
 
 
 @_register("help", "command list")

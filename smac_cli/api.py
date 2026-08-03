@@ -17,6 +17,7 @@ a refresh-on-401 retry also fails.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,19 @@ class SmacApi:
         self._client = httpx.Client(
             base_url=self.url, transport=transport, timeout=10.0
         )
+        # `SmacApp` (smac_cli/app.py) calls the same `SmacApi` instance from
+        # several worker threads at once (command handlers, mark-read,
+        # load-older, and -- SMAC-72 task 5 -- the channel feed's and the
+        # mention bell's own background threads all calling `ws_channel_url`/
+        # `ws_events_url`, both of which refresh unconditionally). The
+        # refresh token is single-use/rotating server-side (`app/routers/
+        # auth.py:refresh` deletes it on redemption), so two threads racing
+        # to redeem the SAME token would have the loser's redeem rejected --
+        # and `_refresh`'s failure path wipes `self.session` entirely,
+        # taking down every other in-flight call sharing this instance.
+        # This lock serializes the redeem; see `_refresh` for how the loser
+        # recognizes a token already rotated out from under it.
+        self._refresh_lock = threading.Lock()
 
     # -- low-level plumbing --------------------------------------------
 
@@ -157,21 +171,36 @@ class SmacApi:
         same session). On failure, the saved session is deleted and
         `SessionExpired` is raised -- there is nothing left to retry but
         `/login`.
+
+        Thread-safe against a concurrent `_refresh()` on the same
+        instance (see `__init__`'s docstring on `_refresh_lock`): the
+        refresh token to redeem is captured *before* acquiring the lock,
+        and re-checked just after -- if it no longer matches
+        `self.session.refresh_token`, another thread already redeemed it
+        (and this thread's own session is already up to date from that),
+        so this call simply returns instead of re-sending a token the
+        server has already rotated out from under it.
         """
         if self.session is None:
             raise SessionExpired("No active session.")
-        response = self._send(
-            "POST",
-            "/auth/refresh",
-            json_body={"refresh_token": self.session.refresh_token},
-        )
-        if response.status_code != 200:
-            self._invalidate_session()
-            raise SessionExpired()
-        data = response.json()
-        self.session.access_token = data["access_token"]
-        self.session.refresh_token = data["refresh_token"]
-        self.session.save(session_path())
+        presented = self.session.refresh_token
+        with self._refresh_lock:
+            if self.session is None:
+                raise SessionExpired("No active session.")
+            if self.session.refresh_token != presented:
+                return  # a concurrent call already refreshed this session
+            response = self._send(
+                "POST",
+                "/auth/refresh",
+                json_body={"refresh_token": presented},
+            )
+            if response.status_code != 200:
+                self._invalidate_session()
+                raise SessionExpired()
+            data = response.json()
+            self.session.access_token = data["access_token"]
+            self.session.refresh_token = data["refresh_token"]
+            self.session.save(session_path())
 
     def _authed_request(
         self,
@@ -341,6 +370,16 @@ class SmacApi:
         """`GET /workspaces/{workspace_id}/unreads`: per-channel unread state."""
         workspace_id = self._require_workspace_id()
         return dict(self._authed_request("GET", f"/workspaces/{workspace_id}/unreads"))
+
+    def members(self) -> list[dict[str, Any]]:
+        """`GET /workspaces/{workspace_id}/members`: every member (handle
+        included) in the workspace -- the TUI's source for resolving a
+        message payload's `Sender.member_id` to a `handle`, since the
+        message wire shape itself (`app/schemas.py:build_message_payload`)
+        only carries `member_name` (see `smac_cli.render`'s module
+        docstring for why that's not the same thing)."""
+        workspace_id = self._require_workspace_id()
+        return list(self._authed_request("GET", f"/workspaces/{workspace_id}/members"))
 
     def create_channel(self, name: str) -> dict[str, Any]:
         """`POST /workspaces/{workspace_id}/channels`: create a new channel."""
