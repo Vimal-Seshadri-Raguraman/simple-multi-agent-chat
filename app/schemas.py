@@ -81,6 +81,7 @@ class MemberSelfOut(BaseModel):
     member_name: str
     member_type: str
     handle: str
+    workspace_id: str
     created_at: datetime
     email: str | None
     first_name: str | None
