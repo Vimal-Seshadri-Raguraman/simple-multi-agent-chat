@@ -191,3 +191,168 @@ def test_unreads_accessible_via_agent_api_key(client):
     )
     assert response.status_code == 200
     assert response.json()["unreads"][0]["channel_name"] == "general"
+
+
+def test_unreads_multi_channel_ordering(client):
+    """Rows come back sorted by channel_name ascending, not insertion/creation
+    order: create channels in an order that would misorder ("zeta" before
+    "alpha") if the query relied on creation order."""
+    ws = founder_auth(client, "w1")["workspace_id"]
+    founder_id = founder_auth(client, "w1")["member_id"]
+    m2_id = member_auth(client, "m2", "w1")["member_id"]
+
+    for name in ("zeta", "alpha"):
+        channel_id = client.post(
+            f"/workspaces/{ws}/channels",
+            json={"channel_name": name},
+            headers=founder_headers(client, "w1"),
+        ).json()["channel_id"]
+        client.post(
+            f"/workspaces/{ws}/channels/{channel_id}/members",
+            json={"member_id": founder_id},
+            headers=founder_headers(client, "w1"),
+        )
+        client.post(
+            f"/workspaces/{ws}/channels/{channel_id}/members",
+            json={"member_id": m2_id},
+            headers=founder_headers(client, "w1"),
+        )
+
+    rows = client.get(
+        f"/workspaces/{ws}/unreads", headers=member_headers(client, "m2", "w1")
+    ).json()["unreads"]
+    assert [r["channel_name"] for r in rows] == ["alpha", "general", "zeta"]
+
+
+def test_mark_read_whole_channel(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    member_auth(client, "m2", "w1")
+    _post(client, ws, general, "w1", "one")
+    _post(client, ws, general, "w1", "two")
+
+    row = client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        headers=member_headers(client, "m2", "w1"),
+    ).json()
+    assert row["unread_count"] == 0
+    assert row["first_unread_message_id"] is None
+
+    _post(client, ws, general, "w1", "three")
+    rows = client.get(
+        f"/workspaces/{ws}/unreads", headers=member_headers(client, "m2", "w1")
+    ).json()["unreads"]
+    assert next(r for r in rows if r["channel_id"] == general)["unread_count"] == 1
+
+
+def test_mark_read_partial_anchor(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    member_auth(client, "m2", "w1")
+    _post(client, ws, general, "w1", "one")
+    second = _post(client, ws, general, "w1", "two")
+    third = _post(client, ws, general, "w1", "three")
+
+    row = client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        json={"last_read_message_id": second["Message"]["message_id"]},
+        headers=member_headers(client, "m2", "w1"),
+    ).json()
+    assert row["unread_count"] == 1
+    assert row["first_unread_message_id"] == third["Message"]["message_id"]
+
+
+def test_mark_read_backwards_is_allowed(client):
+    """The client owns 'seen': re-marking an older message just moves the
+    number back and the channel becomes unread again."""
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    member_auth(client, "m2", "w1")
+    first = _post(client, ws, general, "w1", "one")
+    _post(client, ws, general, "w1", "two")
+    client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        headers=member_headers(client, "m2", "w1"),
+    )
+    row = client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        json={"last_read_message_id": first["Message"]["message_id"]},
+        headers=member_headers(client, "m2", "w1"),
+    ).json()
+    assert row["unread_count"] == 1
+
+
+def test_mark_read_foreign_anchor_uniform_404(client):
+    """An anchor message from another channel (or nonsense) → uniform 404."""
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    other = client.post(
+        f"/workspaces/{ws}/channels",
+        json={"channel_name": "other"},
+        headers=founder_headers(client, "w1"),
+    ).json()["channel_id"]
+    founder_id = founder_auth(client, "w1")["member_id"]
+    client.post(
+        f"/workspaces/{ws}/channels/{other}/members",
+        json={"member_id": founder_id},
+        headers=founder_headers(client, "w1"),
+    )
+    elsewhere = _post(client, ws, other, "w1", "elsewhere")
+
+    response = client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        json={"last_read_message_id": elsewhere["Message"]["message_id"]},
+        headers=founder_headers(client, "w1"),
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_mark_read_requires_channel_membership(client):
+    """authorize_channel_read raises NotAMemberError (app/authorization.py,
+    app/errors.py), which maps to a uniform 403 -- pinned here rather than
+    left as a (403, 404) tuple."""
+    ws = founder_auth(client, "w1")["workspace_id"]
+    channel = client.post(
+        f"/workspaces/{ws}/channels",
+        json={"channel_name": "closed"},
+        headers=founder_headers(client, "w1"),
+    ).json()["channel_id"]
+    member_auth(client, "m2", "w1")
+    response = client.post(
+        f"/workspaces/{ws}/channels/{channel}/read",
+        headers=member_headers(client, "m2", "w1"),
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "not_a_member"
+
+
+def test_mark_read_malformed_body_422(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    response = client.post(
+        f"/workspaces/{ws}/channels/{general}/read",
+        json={"last_read_message_id": 123},  # wrong type
+        headers=founder_headers(client, "w1"),
+    )
+    assert response.status_code == 422
+
+
+def test_posting_advances_own_cursor_only(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    general = general_channel_id(client, "w1")
+    member_auth(client, "m2", "w1")
+    _post(client, ws, general, "w1", "founder history")  # m2 unread: 1
+
+    # m2 posts: m2 becomes caught up (own-post advance), founder gains 1 unread.
+    _post(client, ws, general, "m2", "reply from m2")
+    m2_rows = client.get(
+        f"/workspaces/{ws}/unreads", headers=member_headers(client, "m2", "w1")
+    ).json()["unreads"]
+    assert next(r for r in m2_rows if r["channel_id"] == general)["unread_count"] == 0
+    founder_rows = client.get(
+        f"/workspaces/{ws}/unreads", headers=founder_headers(client, "w1")
+    ).json()["unreads"]
+    assert (
+        next(r for r in founder_rows if r["channel_id"] == general)["unread_count"] == 1
+    )
