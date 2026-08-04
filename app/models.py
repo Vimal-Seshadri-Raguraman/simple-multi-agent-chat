@@ -94,9 +94,22 @@ class Account(Base):
 
 
 class Member(Base):
+    """A per-workspace profile (Identity v2 / SMAC-79 Task 2): identity now
+    lives entirely on the linked `Account` (email/password, if any) --
+    `email`/`password_hash` were dropped from this table by migration B,
+    and every member must link to a real account (`account_id` NOT NULL).
+    `uq_members_workspace_account` is the new per-workspace invariant: one
+    profile per account per workspace (replacing the old per-workspace
+    email uniqueness). `member_type` stays here for query convenience but
+    must always equal the linked account's `account_type` -- spec §1's
+    invariant, covered by a dedicated test rather than a DB constraint.
+    """
+
     __tablename__ = "members"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "email", name="uq_members_workspace_email"),
+        UniqueConstraint(
+            "workspace_id", "account_id", name="uq_members_workspace_account"
+        ),
         UniqueConstraint("workspace_id", "handle", name="uq_members_workspace_handle"),
     )
 
@@ -107,8 +120,6 @@ class Member(Base):
     )  # human | agent | bot_app
     handle: Mapped[str] = mapped_column(String, nullable=False)
     api_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     first_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_name: Mapped[str | None] = mapped_column(String, nullable=True)
     company: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -117,13 +128,8 @@ class Member(Base):
     workspace_id: Mapped[str] = mapped_column(
         String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
     )
-    # Identity v2 (SMAC-79 Task 1): nullable + dual-written alongside the
-    # legacy email/password_hash columns above (both still written by
-    # app.accounts.create_member_account; see its `# TASK2: stop
-    # dual-write` marker). Task 2 makes this NOT NULL and drops the legacy
-    # columns once every write path has migrated.
-    account_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("accounts.account_id"), nullable=True, index=True
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.account_id"), nullable=False, index=True
     )
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -235,15 +241,14 @@ class RefreshToken(Base):
     One row per issued refresh token. Rows are deleted on rotation
     (/auth/refresh), logout, or when found expired.
 
-    Identity v2 (SMAC-79 Task 1) two-tier auth: `scope` is `"workspace"`
-    (default -- legacy rows and workspace-tier tokens minted via
-    `POST /workspaces/{id}/token`, `member_id`/`workspace_id` set,
-    `account_id` optionally set to the member's linked account) or
-    `"account"` (account-tier tokens from `POST /accounts` /
-    `POST /accounts/login`, `account_id` set, `member_id`/`workspace_id`
-    NULL -- a brand-new account has no member yet). `member_id` is
-    therefore nullable now; `/auth/refresh` reads `scope` back off the
-    stored row and echoes it into the reissued pair.
+    Identity v2 (SMAC-79) two-tier auth: `scope` is `"workspace"` (every
+    workspace-birth/join door and `POST /workspaces/{id}/token`,
+    `member_id`/`workspace_id` set, `account_id` set to the member's
+    linked account) or `"account"` (account-tier tokens from
+    `POST /accounts` / `POST /accounts/login`, `account_id` set,
+    `member_id`/`workspace_id` NULL -- a brand-new account has no member
+    yet). `member_id` is therefore nullable; `/auth/refresh` reads
+    `scope` back off the stored row and echoes it into the reissued pair.
     """
 
     __tablename__ = "refresh_tokens"

@@ -135,41 +135,33 @@ def test_refresh_preserves_account_scope(client):
     assert denied.json()["error"]["code"] == "workspace_token_required"
 
 
-def test_legacy_tokens_still_work_on_workspace_endpoints(client):
-    """Task-1 invariant: a token minted by the untouched legacy path
-    (POST /workspaces founding) keeps working on workspace endpoints."""
+def test_legacy_scopeless_token_is_rejected_on_workspace_endpoints(client):
+    """Task-2 cutover invariant: a scope-less (pre-Identity-v2 shape) JWT
+    -- what founding used to mint before the cutover -- is REJECTED, not
+    silently treated as workspace-tier. Forged here (with the real
+    secret) since nothing in the running server mints this shape anymore
+    (migration B also purged every stored session)."""
+    import jwt
+
+    from app.security import ACCESS_TOKEN_TTL_MINUTES, SECRET_KEY
+    from datetime import datetime, timedelta, timezone
+
     founder = founder_auth(client, "legacy-tier")
+    scopeless = jwt.encode(
+        {
+            "sub": founder["member_id"],
+            "exp": datetime.now(timezone.utc)
+            + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
     response = client.get(
         f"/workspaces/{founder['workspace_id']}/members",
-        headers={"Authorization": f"Bearer {founder['access_token']}"},
+        headers={"Authorization": f"Bearer {scopeless}"},
     )
-    assert response.status_code == 200
-
-
-def test_legacy_refresh_still_works(client):
-    """A refresh token minted by the legacy path (row.scope reads back as
-    the column's server default "workspace") still rotates correctly."""
-    response = client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Legacy Refresh Co",
-            "visibility": "private",
-            "email": "legacyrefresh@test.example",
-            "password": _PASSWORD,
-            "first_name": "Leg",
-            "last_name": "Acy",
-        },
-    )
-    tokens = response.json()
-    refreshed = client.post(
-        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
-    )
-    assert refreshed.status_code == 200
-    check = client.get(
-        f"/workspaces/{tokens['workspace']['workspace_id']}/members",
-        headers={"Authorization": f"Bearer {refreshed.json()['access_token']}"},
-    )
-    assert check.status_code == 200
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "workspace_token_required"
 
 
 def test_api_key_auth_unaffected_by_token_tiers(client):

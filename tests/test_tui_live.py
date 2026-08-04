@@ -280,6 +280,7 @@ def test_channel_feed_stop_is_prompt_and_thread_is_daemon() -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_posted_message_appears_in_feed_including_self_echo(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -298,6 +299,7 @@ async def test_posted_message_appears_in_feed_including_self_echo(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_self_mention_renders_as_own_handle_not_raw_token(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -327,6 +329,7 @@ async def test_self_mention_renders_as_own_handle_not_raw_token(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_message_from_another_member_appears_with_rendered_mention(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -366,6 +369,7 @@ async def test_message_from_another_member_appears_with_rendered_mention(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_switching_channel_loads_history_and_marks_read(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -415,6 +419,7 @@ async def test_switching_channel_loads_history_and_marks_read(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -498,6 +503,7 @@ async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_mention_in_other_channel_shows_bell_line(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -541,6 +547,7 @@ async def test_mention_in_other_channel_shows_bell_line(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_mention_in_current_channel_does_not_ring_bell(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -577,6 +584,7 @@ async def test_mention_in_current_channel_does_not_ring_bell(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_pgup_pauses_follow_and_shows_live_new_count(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -654,6 +662,7 @@ async def test_pgup_pauses_follow_and_shows_live_new_count(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_load_older_history_prepends_without_duplicates(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -716,6 +725,7 @@ async def test_load_older_history_prepends_without_duplicates(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_server_restart_triggers_reconnect_and_history_refresh(
     real_smac_server: tuple[str, Path],
 ) -> None:

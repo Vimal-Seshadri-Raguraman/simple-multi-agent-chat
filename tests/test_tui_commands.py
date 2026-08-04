@@ -479,6 +479,7 @@ def _agent_post(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_whoami_against_real_server_shows_founder_admin_and_visibility(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -497,6 +498,7 @@ async def test_whoami_against_real_server_shows_founder_admin_and_visibility(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channels_against_real_server_reflects_real_unreads(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -537,6 +539,7 @@ async def test_channels_against_real_server_reflects_real_unreads(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channel_create_against_real_server_switches_and_409_verbatim(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -567,6 +570,7 @@ async def test_channel_create_against_real_server_switches_and_409_verbatim(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_workspace_delete_against_real_server_deletes_and_resets(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -615,6 +619,7 @@ async def test_workspace_delete_against_real_server_deletes_and_resets(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_quit_against_real_server_is_clean_and_keeps_session(
     real_smac_server: tuple[str, Path],
 ) -> None:

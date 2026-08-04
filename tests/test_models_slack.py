@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Member, Workspace, WorkspaceRecord
+from app.models import Account, Member, Workspace, WorkspaceRecord
 
 
 def _make(db_session, model, **kwargs):
@@ -13,10 +13,34 @@ def _make(db_session, model, **kwargs):
     return obj
 
 
+def _account(db_session) -> Account:
+    account = Account(account_type="human")
+    db_session.add(account)
+    db_session.flush()
+    return account
+
+
 def test_member_workspace_id_is_required(db_session):
     """Post-cutover: Member.workspace_id is NOT NULL -- a workspace-less
     member can no longer be created."""
-    db_session.add(Member(member_name="A", member_type="human"))
+    db_session.add(
+        Member(
+            member_name="A",
+            member_type="human",
+            account_id=_account(db_session).account_id,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_member_account_id_is_required(db_session):
+    """Identity v2 (SMAC-79 Task 2): Member.account_id is NOT NULL -- a
+    profile can no longer be created without a linked account."""
+    ws = _make(db_session, Workspace, workspace_name="Acme")
+    db_session.add(
+        Member(member_name="A", member_type="human", workspace_id=ws.workspace_id)
+    )
     with pytest.raises(IntegrityError):
         db_session.commit()
 
@@ -29,6 +53,7 @@ def test_member_can_belong_to_workspace_with_admin_flag(db_session):
         member_name="Founder",
         member_type="human",
         workspace_id=ws.workspace_id,
+        account_id=_account(db_session).account_id,
         is_admin=True,
         handle="founder",
     )
@@ -45,6 +70,7 @@ def test_member_is_admin_defaults_false(db_session):
         member_name="Regular",
         member_type="human",
         workspace_id=ws.workspace_id,
+        account_id=_account(db_session).account_id,
         handle="regular",
     )
     assert member.is_admin is False
@@ -63,6 +89,7 @@ def test_workspace_record_round_trip(db_session):
         member_name="F",
         member_type="human",
         workspace_id=ws.workspace_id,
+        account_id=_account(db_session).account_id,
         handle="f",
     )
     record = _make(

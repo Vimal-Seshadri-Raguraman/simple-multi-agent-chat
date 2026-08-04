@@ -67,12 +67,19 @@ def test_handle_backfill_for_existing_members(tmp_path):
             ("m2", "Rita", "Mode", "Rita Mode"),  # collides -> rmode2
             ("m3", None, None, "Helper Bot"),
         ]:
+            # Every real human member has an email at the app level (email is
+            # nullable at the DB level only to accommodate agents/bots) --
+            # migration A's backfill (spec §5 step 2) keys off it, so these
+            # synthetic pre-Identity-v2 fixtures need one too, or account_id
+            # never gets backfilled and migration B's NOT NULL fails.
             conn.exec_driver_sql(
                 "INSERT INTO members (member_id, member_name, member_type,"
-                " workspace_id, is_admin, first_name, last_name, created_at)"
+                " workspace_id, is_admin, first_name, last_name, email,"
+                " created_at)"
                 f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
                 f" {'NULL' if first is None else repr(first)},"
-                f" {'NULL' if last is None else repr(last)}, '2026-01-01 00:00:00')"
+                f" {'NULL' if last is None else repr(last)},"
+                f" '{member_id}@test.example', '2026-01-01 00:00:00')"
             )
     command.upgrade(_alembic_config(url), "head")
     with engine.begin() as conn:
@@ -96,11 +103,15 @@ def test_read_cursor_backfill_sets_caught_up(tmp_path):
             " VALUES ('w1', 'Acme', 'private', '2026-01-01 00:00:00')"
         )
         for member_id, name in [("m1", "Rohan Mode"), ("m2", "Rita Mode")]:
+            # See test_handle_backfill_for_existing_members's comment: a real
+            # human member always has an email, which migration A's backfill
+            # (spec §5 step 2) requires to link an account_id.
             conn.exec_driver_sql(
                 "INSERT INTO members (member_id, member_name, member_type,"
-                " workspace_id, is_admin, handle, created_at)"
+                " workspace_id, is_admin, handle, email, created_at)"
                 f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
-                f" '{member_id}', '2026-01-01 00:00:00')"
+                f" '{member_id}', '{member_id}@test.example',"
+                " '2026-01-01 00:00:00')"
             )
         for channel_id, name in [("c1", "general"), ("c2", "empty")]:
             conn.exec_driver_sql(
@@ -400,3 +411,162 @@ def test_drift_guard_catches_missing_migration_a(tmp_path):
         ctx = MigrationContext.configure(conn)
         diffs = compare_metadata(ctx, Base.metadata)
     assert diffs != [], "expected drift against the pre-Identity-v2 schema, found none"
+
+
+def test_drift_guard_catches_missing_migration_b(tmp_path):
+    """Red -> green proof for migration B (the cutover, SMAC-79 Task 2):
+    with the chain stopped at migration A's head (d379652f77fb -- accounts
+    exist, but members.email/password_hash are still there and account_id
+    is still nullable), the comparator MUST report drift, since
+    Base.metadata now has neither legacy column, account_id NOT NULL, and
+    uq_members_workspace_account instead of uq_members_workspace_email.
+    test_no_model_migration_drift (green, against `head`) is the "green"
+    half of this proof."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    url = f"sqlite:///{tmp_path}/pre_cutover.db"
+    command.upgrade(_alembic_config(url), "d379652f77fb")
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        diffs = compare_metadata(ctx, Base.metadata)
+    assert diffs != [], "expected drift against the pre-cutover schema, found none"
+
+
+def _client_for_migrated_db(url: str):
+    """A real TestClient/app wired to an already-upgraded sqlite FILE
+    (not the in-memory `client` fixture's `Base.metadata.create_all`),
+    so a populated-DB migration test can exercise real endpoints
+    ("via the API") against the exact rows the migration produced.
+    Returns `(client, restore)`; caller must call `restore()` when done.
+    """
+    import app.database as database_module
+    from app.database import enable_sqlite_foreign_keys, get_db
+    from app.main import app as fastapi_app
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+    enable_sqlite_foreign_keys(engine)
+    testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    def override_get_db():
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    original_session_local = database_module.SessionLocal
+    database_module.SessionLocal = testing_session_local
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+
+    def restore() -> None:
+        fastapi_app.dependency_overrides.clear()
+        database_module.SessionLocal = original_session_local
+
+    return TestClient(fastapi_app), restore
+
+
+def test_identity_v2_migration_b_populated_db(tmp_path):
+    """Populated-DB test for migration B (spec §5 step 4-5, brief's
+    REQUIRED item): starting from a pre-Identity-v2 DB with a stray
+    refresh token and a same-email-different-password pair (oldest
+    wins, per migration A's already-proven backfill), upgrading through
+    both A and B must: purge every refresh_tokens row, drop
+    members.email/password_hash, add account_id NOT NULL +
+    uq_members_workspace_account -- and, via the real API post-upgrade,
+    let the WINNER (oldest member's) password log in while the loser's
+    password is rejected.
+    """
+    from app.security import hash_password
+
+    url = f"sqlite:///{tmp_path}/popb.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")  # pre-Identity-v2 schema
+    engine = create_engine(url)
+    winner_hash = hash_password("winner-pass-123")
+    loser_hash = hash_password("loser-pass-456")
+    with engine.begin() as conn:
+        for workspace_id, name, key in [("w1", "Acme", "acme"), ("w2", "Beta", "beta")]:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                f" ('{workspace_id}', '{name}', '{key}', 'private',"
+                " '2026-01-01 00:00:00')"
+            )
+        # m1 (oldest) donates its password; m2 (newer, same email, a
+        # DIFFERENT password) does not -- migration A's already-tested
+        # winner-take-all backfill (test_identity_v2_migration_a_backfill).
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, email, password_hash,"
+            " created_at) VALUES"
+            " ('m1', 'Winner User', 'human', 'w1', 0, 'winner',"
+            f" 'winner@example.com', '{winner_hash}', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, email, password_hash,"
+            " created_at) VALUES"
+            " ('m2', 'Loser User', 'human', 'w2', 0, 'loser',"
+            f" 'winner@example.com', '{loser_hash}', '2026-01-01 00:00:05')"
+        )
+        # A stray refresh token, pre-dating scope/account_id/workspace_id
+        # (those columns don't exist at this revision yet) -- proves the
+        # purge reaches sessions that predate migration A too.
+        conn.exec_driver_sql(
+            "INSERT INTO refresh_tokens (token_hash, member_id, expires_at,"
+            " created_at) VALUES ('tok1', 'm1', '2099-01-01 00:00:00',"
+            " '2026-01-01 00:00:00')"
+        )
+
+    command.upgrade(_alembic_config(url), "head")
+
+    inspector = inspect(engine)
+    member_cols = {c["name"] for c in inspector.get_columns("members")}
+    assert "email" not in member_cols
+    assert "password_hash" not in member_cols
+    member_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("members")
+    }
+    assert "uq_members_workspace_account" in member_constraints
+    assert "uq_members_workspace_email" not in member_constraints
+
+    with engine.begin() as conn:
+        assert conn.exec_driver_sql("SELECT COUNT(*) FROM refresh_tokens").scalar() == 0
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM members WHERE account_id IS NULL"
+            ).scalar()
+            == 0
+        )
+
+    client, restore = _client_for_migrated_db(url)
+    try:
+        with client as c:
+            winner_login = c.post(
+                "/accounts/login",
+                json={"email": "winner@example.com", "password": "winner-pass-123"},
+            )
+            assert winner_login.status_code == 200
+
+            loser_login = c.post(
+                "/accounts/login",
+                json={"email": "winner@example.com", "password": "loser-pass-456"},
+            )
+            assert loser_login.status_code == 401
+            assert loser_login.json()["error"]["code"] == "invalid_credentials"
+    finally:
+        restore()
+
+
+def test_migration_b_downgrade_raises(tmp_path):
+    """Migration B is data-destructive both ways (members.email/
+    password_hash dropped, refresh_tokens purged) -- downgrade() must
+    raise rather than pretend a real rollback is possible, per the
+    Global Constraints' first-irreversible-migration callout."""
+    url = f"sqlite:///{tmp_path}/downgrade.db"
+    command.upgrade(_alembic_config(url), "head")
+    with pytest.raises(NotImplementedError, match="restore from backup"):
+        command.downgrade(_alembic_config(url), "d379652f77fb")

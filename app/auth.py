@@ -1,13 +1,14 @@
 """Authentication resolution: the single place all credentials are checked.
 
 Humans authenticate with `Authorization: Bearer <JWT>`; agents and
-bot_apps use `X-API-Key`. Identity v2 (SMAC-79) adds a second JWT tier:
-ACCOUNT tokens (global, no workspace) and WORKSPACE tokens (today's
-member-scoped tokens, plus legacy pre-Identity-v2 tokens which carry no
-`scope` claim at all and are treated as workspace-tier). `get_current_member`
-accepts workspace-tier (incl. legacy) tokens only; `get_current_account`
+bot_apps use `X-API-Key`. Identity v2 (SMAC-79) has two JWT tiers: ACCOUNT
+tokens (global, no workspace) and WORKSPACE tokens (member-scoped).
+`get_current_member` accepts workspace-tier tokens only; `get_current_account`
 accepts account-tier tokens only -- the token-tier boundary from spec §2,
-enforced in both directions.
+enforced in both directions. Legacy pre-Identity-v2 tokens (no `scope`
+claim at all) are REJECTED as of the Task 2 cutover: every session was
+purged by migration B, and every door mints scoped tokens now, so a
+scope-less token can only be a forged or otherwise-invalid credential.
 """
 
 import secrets
@@ -43,21 +44,21 @@ def resolve_member(
 ) -> Member | None:
     """Single auth-resolution point: Bearer JWT (humans) or API key (agents/bots).
 
-    A bearer JWT with no `scope` claim (every token issued before
-    Identity v2) or `scope="workspace"` resolves the member as before.
-    `scope="account"` is a real credential presented at the wrong tier --
-    raises WorkspaceTokenRequiredError rather than treating it as absent,
-    same as any other invalid/expired token raises InvalidTokenError.
-    Returns None only when no credential was presented at all.
+    Only `scope="workspace"` resolves the member. Anything else that is
+    still a well-formed, valid JWT -- `scope="account"` (a real credential
+    at the wrong tier) or no `scope` claim at all (a legacy pre-Identity-v2
+    token, retired as of the Task 2 cutover) -- raises
+    WorkspaceTokenRequiredError rather than being treated as absent, same
+    as any other invalid/expired token raises InvalidTokenError. Returns
+    None only when no credential was presented at all.
     """
     if bearer_token:
         claims = decode_access_token_claims(bearer_token)
         if claims is None:
             raise InvalidTokenError("Access token is invalid or expired")
-        if claims.get("scope") == "account":
+        if claims.get("scope") != "workspace":
             raise WorkspaceTokenRequiredError(
-                "This endpoint requires a workspace token — call "
-                "POST /workspaces/{workspace_id}/token"
+                "workspace token required — call POST /workspaces/{id}/token"
             )
         member_id = claims["sub"]
         assert isinstance(member_id, str)  # decode_access_token_claims guarantees this

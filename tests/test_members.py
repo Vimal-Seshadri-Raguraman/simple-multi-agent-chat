@@ -145,7 +145,10 @@ def test_get_member_requires_auth(client):
     assert response.status_code == 401
 
 
-def test_get_own_profile_includes_email(client):
+def test_get_own_profile_never_includes_email(client):
+    """Identity v2 (SMAC-79 Task 2, spec §7): member payloads never expose
+    email anymore, even for the caller's own profile -- only
+    GET /accounts/me does. `account_id` is included instead."""
     founder = founder_auth(client, "w1")
     response = client.get(
         "/member",
@@ -154,11 +157,12 @@ def test_get_own_profile_includes_email(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["email"] == "w1@test.example"
+    assert "email" not in body
+    assert body["account_id"] == founder["account_id"]
     assert body["first_name"] == "Test"
 
 
-def test_get_other_profile_hides_email(client):
+def test_get_other_profile_hides_admin_and_visibility(client):
     other = member_auth(client, "m2", "w1")
     response = client.get(
         "/member",
@@ -167,11 +171,11 @@ def test_get_other_profile_hides_email(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["email"] is None
+    assert "email" not in body
     assert body["first_name"] == "Test"  # profile fields still visible
-    # is_admin/workspace_visibility (SMAC-72 task 6) are SELF-view-only,
-    # same as email -- looking up ANOTHER member must not leak either,
-    # even though the caller here (the founder) IS an admin themselves.
+    # is_admin/workspace_visibility (SMAC-72 task 6) are SELF-view-only --
+    # looking up ANOTHER member must not leak either, even though the
+    # caller here (the founder) IS an admin themselves.
     assert body["is_admin"] is None
     assert body["workspace_visibility"] is None
 
@@ -202,7 +206,8 @@ def test_get_my_profile_via_bearer(client):
     body = response.json()
     assert body["member_id"] == founder["member_id"]
     assert body["workspace_id"] == founder["workspace_id"]
-    assert body["email"] == "w1@test.example"
+    assert body["account_id"] == founder["account_id"]
+    assert "email" not in body
 
 
 def test_get_my_profile_via_api_key(client):
@@ -239,14 +244,18 @@ def test_patch_own_profile(client):
 
 
 def test_patch_cannot_change_email(client):
+    """Email isn't even a member-profile field anymore (Identity v2, Task
+    2): an "email" key in the PATCH body is simply an unknown field,
+    silently ignored by Pydantic -- there's nothing to change or leak."""
+    founder = founder_auth(client, "w1")
     response = client.patch(
         "/members/me",
         json={"email": "hacker@evil.com"},
         headers=founder_headers(client, "w1"),
     )
-    # Unknown fields are ignored by Pydantic; email must be unchanged.
     assert response.status_code == 200
-    assert response.json()["email"] == "w1@test.example"
+    assert "email" not in response.json()
+    assert response.json()["account_id"] == founder["account_id"]
 
 
 def test_patch_explicit_null_display_name_is_422(client):

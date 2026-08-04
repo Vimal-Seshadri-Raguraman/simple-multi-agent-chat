@@ -1,11 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.accounts import (
-    build_member_self_out,
-    create_member_account,
-    get_or_create_account_for_email,
-)
+from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_account, get_current_member
 from app.authorization import require_same_workspace, require_workspace_admin
 from app.database import get_db
@@ -30,7 +26,7 @@ from app.models import (
     new_id,
     utcnow,
 )
-from app.routers.auth import _issue_token_pair, _issue_workspace_token_pair
+from app.routers.auth import _issue_workspace_token_pair
 from app.schemas import (
     FoundWorkspaceIn,
     InviteOut,
@@ -51,9 +47,19 @@ router = APIRouter()
 
 @router.post("/workspaces", response_model=WorkspaceAuthOut)
 def found_workspace(
-    body: FoundWorkspaceIn, db: Session = Depends(get_db)
+    body: FoundWorkspaceIn,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
 ) -> WorkspaceAuthOut:
-    """Found a workspace: workspace + 'general' + admin account + audit record, atomically."""
+    """Found a workspace: workspace + 'general' + admin profile + audit record, atomically.
+
+    Account-authed (spec §3, SMAC-79 Task 2 cutover): the caller already
+    has a global account (via their account token); founding only ever
+    LINKS that account into a brand-new admin profile here, it never
+    creates a password. The response includes a convenience WORKSPACE
+    token pair (minted below) so the caller needs no second call to start
+    acting inside the workspace they just founded.
+    """
     duplicate = (
         db.query(Workspace)
         .filter(Workspace.workspace_name_key == body.workspace_name.lower())
@@ -78,19 +84,12 @@ def found_workspace(
     db.add(general)
     db.flush()
     workspace.default_channel_id = general.channel_id
-    account = get_or_create_account_for_email(db, body.email, body.password)
     founder = create_member_account(
         db,
         workspace,
-        email=body.email,
-        password=body.password,
-        first_name=body.first_name,
-        last_name=body.last_name,
         account=account,
-        display_name=body.display_name,
-        company=body.company,
-        occupation=body.occupation,
-        job_role=body.job_role,
+        first_name=body.display_first_name,
+        last_name=body.display_last_name,
         is_admin=True,
     )
     db.add(
@@ -102,7 +101,7 @@ def found_workspace(
     )
     db.commit()
     db.refresh(founder)
-    tokens = _issue_token_pair(db, founder)
+    tokens = _issue_workspace_token_pair(db, founder)
     return WorkspaceAuthOut(
         member=build_member_self_out(db, founder),
         workspace=WorkspaceOut.model_validate(workspace),

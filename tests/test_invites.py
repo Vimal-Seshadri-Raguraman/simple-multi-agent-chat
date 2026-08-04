@@ -2,6 +2,16 @@
 
 from tests.conftest import founder_auth, founder_headers, member_auth
 
+_PASSWORD = "test-password-123"  # matches conftest._TEST_PASSWORD
+
+
+def _account_headers(client, email: str) -> dict[str, str]:
+    """Create a fresh account and return account-tier Bearer headers for
+    it -- the join/register doors are account-authed (spec §3)."""
+    response = client.post("/accounts", json={"email": email, "password": _PASSWORD})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['tokens']['access_token']}"}
+
 
 def test_create_email_invite(client):
     founder = founder_auth(client, "w1")
@@ -130,14 +140,8 @@ def _code_invite(client, workspace_id, key="w1"):
     ).json()
 
 
-def _code_register_body(code: str, email: str, first_name: str, last_name: str) -> dict:
-    return {
-        "code": code,
-        "email": email,
-        "password": "s3cret-password",
-        "first_name": first_name,
-        "last_name": last_name,
-    }
+def _code_register_body(code: str, first_name: str, last_name: str) -> dict:
+    return {"code": code, "first_name": first_name, "last_name": last_name}
 
 
 def test_code_is_multi_use(client):
@@ -146,7 +150,8 @@ def test_code_is_multi_use(client):
     for key in ("dev1", "dev2"):
         response = client.post(
             "/workspaces/join",
-            json=_code_register_body(invite["code"], f"{key}@test.example", "Dev", key),
+            json=_code_register_body(invite["code"], "Dev", key),
+            headers=_account_headers(client, f"{key}@test.example"),
         )
         assert response.status_code == 200
         assert response.json()["workspace"]["workspace_id"] == founder["workspace_id"]
@@ -163,7 +168,8 @@ def test_joiner_lands_in_default_channel(client):
     invite = _code_invite(client, founder["workspace_id"])
     joined = client.post(
         "/workspaces/join",
-        json=_code_register_body(invite["code"], "joiner@test.example", "Joi", "Ner"),
+        json=_code_register_body(invite["code"], "Joi", "Ner"),
+        headers=_account_headers(client, "joiner@test.example"),
     ).json()
     joiner_id = joined["member"]["member_id"]
     joiner_headers = {"Authorization": f"Bearer {joined['access_token']}"}
@@ -190,7 +196,8 @@ def test_revoked_code_rejected(client):
     )
     response = client.post(
         "/workspaces/join",
-        json=_code_register_body(invite["code"], "late@test.example", "La", "Te"),
+        json=_code_register_body(invite["code"], "La", "Te"),
+        headers=_account_headers(client, "late@test.example"),
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "invalid_invite"
@@ -212,7 +219,8 @@ def test_expired_code_rejected_and_deleted(client):
 
     response = client.post(
         "/workspaces/join",
-        json=_code_register_body(invite["code"], "late@test.example", "La", "Te"),
+        json=_code_register_body(invite["code"], "La", "Te"),
+        headers=_account_headers(client, "late@test.example"),
     )
     assert response.status_code == 404
     with database_module.SessionLocal() as db:
@@ -222,27 +230,35 @@ def test_expired_code_rejected_and_deleted(client):
 def test_unknown_code_rejected(client):
     response = client.post(
         "/workspaces/join",
-        json=_code_register_body(
-            "not-a-real-code", "nobody@test.example", "No", "Body"
-        ),
+        json=_code_register_body("not-a-real-code", "No", "Body"),
+        headers=_account_headers(client, "nobody@test.example"),
     )
     assert response.status_code == 404
 
 
-def test_reusing_code_with_same_email_conflicts(client):
+def test_reusing_code_with_same_account_conflicts(client):
+    """The old "same email replays a code" leak is now "the same ACCOUNT
+    replays a code" -- since there's only one profile per account per
+    workspace now (uq_members_workspace_account), a second join attempt
+    with the SAME account is already_a_member, not email_taken."""
     founder = founder_auth(client, "w1")
     invite = _code_invite(client, founder["workspace_id"])
-    body = _code_register_body(invite["code"], "dev@test.example", "De", "V")
+    headers = _account_headers(client, "dev@test.example")
+    body = _code_register_body(invite["code"], "De", "V")
 
-    first = client.post("/workspaces/join", json=body)
+    first = client.post("/workspaces/join", json=body, headers=headers)
     assert first.status_code == 200
 
-    replay = client.post("/workspaces/join", json=body)
+    replay = client.post("/workspaces/join", json=body, headers=headers)
     assert replay.status_code == 409
-    assert replay.json()["error"]["code"] == "email_taken"
+    assert replay.json()["error"]["code"] == "already_a_member"
 
-    # Code stays valid for a different email (multi-use).
-    other = client.post("/workspaces/join", json=dict(body, email="other@test.example"))
+    # Code stays valid for a different account (multi-use).
+    other = client.post(
+        "/workspaces/join",
+        json=body,
+        headers=_account_headers(client, "other@test.example"),
+    )
     assert other.status_code == 200
 
 
@@ -258,12 +274,8 @@ def test_private_workspace_registration_with_reserved_seat_succeeds_and_consumes
 
     response = client.post(
         f"/workspaces/{founder['workspace_id']}/register",
-        json={
-            "email": "newbie@test.example",
-            "password": "s3cret-password",
-            "first_name": "New",
-            "last_name": "Bie",
-        },
+        json={"first_name": "New", "last_name": "Bie"},
+        headers=_account_headers(client, "newbie@test.example"),
     )
     assert response.status_code == 200
     assert response.json()["workspace"]["workspace_id"] == founder["workspace_id"]
@@ -280,12 +292,8 @@ def test_private_workspace_registration_without_seat_404s(client):
     founder = founder_auth(client, "w1", visibility="private")
     response = client.post(
         f"/workspaces/{founder['workspace_id']}/register",
-        json={
-            "email": "stranger@test.example",
-            "password": "s3cret-password",
-            "first_name": "Stran",
-            "last_name": "Ger",
-        },
+        json={"first_name": "Stran", "last_name": "Ger"},
+        headers=_account_headers(client, "stranger@test.example"),
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
@@ -293,21 +301,23 @@ def test_private_workspace_registration_without_seat_404s(client):
 
 def test_failed_registration_does_not_consume_seat(client):
     """A registration that fails after the seat is found must not burn it:
-    seat deletion and account creation are one transaction, not two.
+    seat deletion and profile creation are one transaction, not two.
 
-    create_invite already blocks inviting an email that has an account in
-    this workspace, so the only way to reach _register_account with a seat
-    AND a pre-existing account for the same email is to simulate the race
-    directly against the DB (a seat created for an email that -- by the time
-    registration runs -- already belongs to a member).
+    create_invite already blocks inviting an email whose account already
+    has a member in this workspace, so the only way to reach
+    _register_account with a seat AND a pre-existing membership for the
+    same account is to simulate the race directly against the DB (a seat
+    created for an email that -- by the time registration runs -- already
+    belongs to a member).
     """
     import app.database as database_module
     from app.models import WorkspaceInvite
 
     founder = founder_auth(client, "w1", visibility="private")
     headers = founder_headers(client, "w1", visibility="private")
+    racer_headers = _account_headers(client, "racer@test.example")
 
-    # racer@test.example already has an account in this workspace.
+    # racer@test.example already has a member in this workspace.
     client.post(
         f"/workspaces/{founder['workspace_id']}/invites",
         json={"invite_type": "email", "email": "racer@test.example"},
@@ -315,12 +325,8 @@ def test_failed_registration_does_not_consume_seat(client):
     )
     client.post(
         f"/workspaces/{founder['workspace_id']}/register",
-        json={
-            "email": "racer@test.example",
-            "password": "s3cret-password",
-            "first_name": "Ra",
-            "last_name": "Cer",
-        },
+        json={"first_name": "Ra", "last_name": "Cer"},
+        headers=racer_headers,
     )
 
     # Simulate the race: a stray seat for that same, now-taken email exists
@@ -339,15 +345,11 @@ def test_failed_registration_does_not_consume_seat(client):
 
     response = client.post(
         f"/workspaces/{founder['workspace_id']}/register",
-        json={
-            "email": "racer@test.example",
-            "password": "another-password",
-            "first_name": "Ra",
-            "last_name": "Cer",
-        },
+        json={"first_name": "Ra", "last_name": "Cer"},
+        headers=racer_headers,
     )
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "email_taken"
+    assert response.json()["error"]["code"] == "already_a_member"
 
     # The seat must have survived the failed registration.
     with database_module.SessionLocal() as db:
@@ -368,13 +370,8 @@ def test_code_registration_consumes_matching_email_seat(client):
 
     joined = client.post(
         "/workspaces/join",
-        json={
-            "code": code,
-            "email": "DUAL@test.example",
-            "password": "dual-pass-12",
-            "first_name": "Du",
-            "last_name": "Al",
-        },
+        json={"code": code, "first_name": "Du", "last_name": "Al"},
+        headers=_account_headers(client, "DUAL@test.example"),
     )
     assert joined.status_code == 200
     remaining = client.get(f"/workspaces/{ws}/invites", headers=headers).json()
@@ -395,13 +392,8 @@ def test_code_registration_leaves_other_seats_alone(client):
     ).json()["code"]
     client.post(
         "/workspaces/join",
-        json={
-            "code": code,
-            "email": "unrelated@test.example",
-            "password": "unrl-pass-12",
-            "first_name": "Un",
-            "last_name": "Rel",
-        },
+        json={"code": code, "first_name": "Un", "last_name": "Rel"},
+        headers=_account_headers(client, "unrelated@test.example"),
     )
     remaining = client.get(f"/workspaces/{ws}/invites", headers=headers).json()
     assert sorted(i["invite_type"] for i in remaining) == ["code", "email"]

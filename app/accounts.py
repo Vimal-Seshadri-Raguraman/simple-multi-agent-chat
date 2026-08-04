@@ -1,34 +1,27 @@
 """Account creation — the single way any human account is born.
 
-Under the Slack model an account lives inside exactly one workspace, so
-creation always happens against a workspace: founding it (is_admin=True),
-registering into a public one, redeeming an invite/code into a private one.
-All three endpoints delegate here so uniqueness, hashing, naming, and
-default-channel landing can never drift apart.
-
-Identity v2 (SMAC-79 Task 1) layers a global `Account` underneath every
-`Member` profile (dual-write: both the legacy per-workspace columns AND
-the new `accounts` table are written, so old login keeps working
-unmodified while new account-tier auth comes online). Three account-side
-entry points live here too:
+Identity v2 (SMAC-79 Task 2, the cutover): every workspace birth/join door
+is now account-authed (spec §3) — the caller already holds an account (an
+account-tier token), so these doors only ever LINK an existing `Account`
+to a new per-workspace `Member` profile; they never create or hash a
+password. `POST /accounts` (below) is the only door where a human account
+is actually created.
 
 - `create_account` — POST /accounts (signup): raises EmailTakenError on
   an existing account, because signup IS the door where that leak is
   accepted (spec §7).
-- `get_or_create_account_for_email` — the legacy workspace-birth doors
-  (founding, registering, code-join): the SAME real-world email can
-  already have founded/registered into other workspaces (per-workspace
-  email uniqueness, unchanged), so an existing account is LINKED, never
-  rejected and never re-hashed/overwritten — `create_member_account`'s own
-  per-workspace duplicate check is what raises EmailTakenError for THIS
-  workspace.
-- `create_agent_account` — agent/bot dual-write (app/routers/members.py):
-  identity-only, no email/password.
+- `create_agent_account` — a brand-new identity-only agent/bot account
+  (app/routers/members.py): no email/password.
+- `create_member_account` — the shared tail of every workspace birth/join
+  door (found, register, code-join): creates the per-workspace `Member`
+  profile linking to an already-authenticated `account`. Raises
+  AlreadyAMemberError when that account already has a profile in this
+  workspace (`uq_members_workspace_account`).
 """
 
 from sqlalchemy.orm import Session
 
-from app.errors import EmailTakenError
+from app.errors import AlreadyAMemberError, EmailTakenError
 from app.handles import generate_unique_handle
 from app.models import Account, Member, Workspace
 from app.schemas import MemberSelfOut
@@ -40,38 +33,13 @@ def create_account(db: Session, email: str, password: str) -> Account:
     """Create a new global human Account (POST /accounts). Flushes; caller commits.
 
     Raises EmailTakenError when an account with this email (case-
-    insensitively, via `email_key`) already exists — this is the one door
-    where that's a genuine conflict rather than a silent link (see
-    `get_or_create_account_for_email` for the legacy doors' behavior).
+    insensitively, via `email_key`) already exists — signup is the one
+    door where that's a genuine conflict (spec §7).
     """
     normalized = email.lower()
     exists = db.query(Account).filter(Account.email_key == normalized).first()
     if exists is not None:
         raise EmailTakenError(f"An account with email '{normalized}' already exists")
-    account = Account(
-        account_type="human", email=email, password_hash=hash_password(password)
-    )
-    db.add(account)
-    db.flush()
-    return account
-
-
-def get_or_create_account_for_email(db: Session, email: str, password: str) -> Account:
-    """Get-or-create the global Account for a human's email, for the
-    LEGACY workspace-birth flows (founding/registering/code-join) that
-    now dual-write into `accounts` (SMAC-79 Task 1).
-
-    If an account with this email (case-insensitively) already exists, it
-    is LINKED as-is — its password is never overwritten, since the caller
-    might be registering into a second workspace with a password that
-    doesn't match the first (allowed today, see tests/test_discover.py).
-    Only a brand-new email mints a brand-new account. Flushes; caller
-    commits.
-    """
-    normalized = email.lower()
-    existing = db.query(Account).filter(Account.email_key == normalized).first()
-    if existing is not None:
-        return existing
     account = Account(
         account_type="human", email=email, password_hash=hash_password(password)
     )
@@ -95,37 +63,34 @@ def create_member_account(
     db: Session,
     workspace: Workspace,
     *,
-    email: str,
-    password: str,
+    account: Account,
     first_name: str,
     last_name: str,
-    account: Account,
     display_name: str | None = None,
     company: str | None = None,
     occupation: str | None = None,
     job_role: str | None = None,
     is_admin: bool = False,
 ) -> Member:
-    """Create a human account inside a workspace. Flushes; caller commits.
+    """Link `account` into `workspace` as a new per-workspace profile.
+    Flushes; caller commits.
 
-    Raises EmailTakenError when the (lowercased) email already has an
-    account in this workspace. The same email in another workspace is a
-    different Member profile — that's the model — but, since SMAC-79 Task
-    1, the SAME global `Account` (passed in by the caller, typically via
-    `get_or_create_account_for_email`): `member.account_id` links them.
+    Raises AlreadyAMemberError when `account` already has a profile in
+    this workspace (`uq_members_workspace_account`) — the same account in
+    a DIFFERENT workspace is a separate Member profile, that's the model
+    (spec Decision 1).
     """
-    normalized = email.lower()
     exists = (
         db.query(Member)
         .filter(
             Member.workspace_id == workspace.workspace_id,
-            Member.email == normalized,
+            Member.account_id == account.account_id,
         )
         .first()
     )
     if exists is not None:
-        raise EmailTakenError(
-            f"An account with email '{normalized}' already exists in this workspace"
+        raise AlreadyAMemberError(
+            f"Account '{account.account_id}' is already a member of this workspace"
         )
     member = Member(
         workspace_id=workspace.workspace_id,
@@ -134,12 +99,6 @@ def create_member_account(
         handle=generate_unique_handle(
             db, workspace.workspace_id, f"{first_name[0]}{last_name}"
         ),
-        # TASK2: stop dual-write -- account.email/password_hash (already
-        # set on `account`, above) become the source of truth once legacy
-        # /auth/login and these two Member columns are retired; until then
-        # both are written so old login keeps working unmodified.
-        email=normalized,
-        password_hash=hash_password(password),
         account_id=account.account_id,
         first_name=first_name,
         last_name=last_name,
@@ -176,8 +135,8 @@ def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
         member_type=member.member_type,
         handle=member.handle,
         workspace_id=member.workspace_id,
+        account_id=member.account_id,
         created_at=member.created_at,
-        email=member.email,
         first_name=member.first_name,
         last_name=member.last_name,
         company=member.company,

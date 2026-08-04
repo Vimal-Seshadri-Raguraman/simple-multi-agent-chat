@@ -81,11 +81,12 @@ def create_access_token(
 
     `subject_id` is a member id for workspace-tier tokens or an account id
     for account-tier tokens. `scope` is omitted by default, producing the
-    pre-Identity-v2 (SMAC-79) token shape -- bare `sub`+`exp`, no `scope`
-    claim -- required for exact backward compatibility with every existing
-    legacy caller (`app.routers.auth._issue_token_pair` and everything
-    that flows through it). Pass `scope="workspace"` or `scope="account"`
-    for a new two-tier token; workspace-tier tokens additionally carry
+    bare `sub`+`exp` pre-Identity-v2 (SMAC-79) shape -- no live caller
+    mints this anymore (every door mints `scope="workspace"` or
+    `scope="account"` now, and `app.auth.resolve_member`/`resolve_account`
+    reject anything else), but the capability stays for low-level JWT
+    mechanics tests. Pass `scope="workspace"` or `scope="account"` for a
+    real two-tier token; workspace-tier tokens additionally carry
     `account_id` (today's claim shape + account_id, per spec §2).
     """
     expires = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES)

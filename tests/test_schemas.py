@@ -13,6 +13,7 @@ def test_build_message_payload_matches_wire_schema(db_session):
         member_type="human",
         handle="alice",
         workspace_id="w_1",
+        account_id="acc_1",
     )
     message = Message(
         message_id="msg_1",

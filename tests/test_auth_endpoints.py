@@ -1,18 +1,41 @@
-"""Endpoint tests for workspace founding/registration and /auth/login."""
+"""Endpoint tests for workspace founding/registration and the two-tier
+token lifecycle (Identity v2, SMAC-79 Task 2 cutover: `/auth/login` and
+`/auth/discover` are retired -- `POST /accounts/login` is their permanent
+successor, tested in `test_accounts_v2.py`; this file covers founding,
+registration, refresh, and logout under the new account-authed contract).
+"""
 
 from tests.conftest import founder_auth
 
+_PASSWORD = "s3cret-password"
+
+
+def _account(client, email: str) -> dict:
+    response = client.post("/accounts", json={"email": email, "password": _PASSWORD})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _account_headers(client, email: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {_account(client, email)['tokens']['access_token']}"
+    }
+
+
 FOUND_BODY = {
     "workspace_name": "Wonderland",
-    "email": "Alice@Example.com",
-    "password": "s3cret-password",
-    "first_name": "Alice",
-    "last_name": "Liddell",
+    "visibility": "private",
+    "display_first_name": "Alice",
+    "display_last_name": "Liddell",
 }
 
 
 def test_founding_returns_profile_and_tokens(client):
-    response = client.post("/workspaces", json=FOUND_BODY)
+    response = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "alice@example.com"),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["token_type"] == "bearer"
@@ -20,7 +43,6 @@ def test_founding_returns_profile_and_tokens(client):
     assert body["access_token"] and body["refresh_token"]
     member = body["member"]
     assert member["member_type"] == "human"
-    assert member["email"] == "alice@example.com"  # stored lowercased
     assert member["member_name"] == "Alice Liddell"  # display name defaulted
     assert member["first_name"] == "Alice"
     assert member["company"] is None
@@ -29,14 +51,32 @@ def test_founding_returns_profile_and_tokens(client):
 
 
 def test_founding_with_explicit_display_name(client):
-    body = dict(FOUND_BODY, display_name="Wonder Alice", company="Wonderland Inc")
-    member = client.post("/workspaces", json=body).json()["member"]
-    assert member["member_name"] == "Wonder Alice"
-    assert member["company"] == "Wonderland Inc"
+    body = dict(FOUND_BODY, workspace_name="Wonderland Two")
+    account = _account(client, "alice-dn@example.com")
+    account_token = account["tokens"]["access_token"]
+    founded = client.post(
+        "/workspaces",
+        json=body,
+        headers={"Authorization": f"Bearer {account_token}"},
+    ).json()
+    # display_first_name/display_last_name feed the DEFAULT display name;
+    # PATCH /members/me is the only way to set an explicit one afterward.
+    patched = client.patch(
+        "/members/me",
+        json={"display_name": "Wonder Alice", "company": "Wonderland Inc"},
+        headers={"Authorization": f"Bearer {founded['access_token']}"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["member_name"] == "Wonder Alice"
+    assert patched.json()["company"] == "Wonderland Inc"
 
 
 def test_founding_token_works_immediately(client):
-    tokens = client.post("/workspaces", json=FOUND_BODY).json()
+    tokens = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "alice-imm@example.com"),
+    ).json()
     ws_id = tokens["workspace"]["workspace_id"]
     response = client.get(
         f"/workspaces/{ws_id}/members",
@@ -45,94 +85,65 @@ def test_founding_token_works_immediately(client):
     assert response.status_code == 200
 
 
-def test_duplicate_email_in_same_workspace_conflicts(client):
+def test_founding_requires_account_token(client):
+    response = client.post("/workspaces", json=FOUND_BODY)
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_workspace_token_cannot_found_a_workspace(client):
+    """A workspace-tier token (the wrong tier) is rejected the same way
+    an account-scope endpoint always rejects workspace tokens."""
+    founder = founder_auth(client, "found-wrong-tier")
+    response = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wrong Tier Co"),
+        headers={"Authorization": f"Bearer {founder['access_token']}"},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "account_token_required"
+
+
+def test_duplicate_registration_same_account_same_workspace_conflicts(client):
+    """The old "duplicate email in same workspace" leak is now "the same
+    ACCOUNT trying to register into a workspace it's already in" --
+    `uq_members_workspace_account`'s invariant, via AlreadyAMemberError."""
+    account_headers = _account_headers(client, "alice-dup@example.com")
     founded = client.post(
-        "/workspaces", json=dict(FOUND_BODY, visibility="public")
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Dup", visibility="public"),
+        headers=account_headers,
     ).json()
     ws_id = founded["workspace"]["workspace_id"]
     response = client.post(
         f"/workspaces/{ws_id}/register",
-        json={
-            "email": "ALICE@example.com",  # case-insensitive dup of the founder
-            "password": "another-password",
-            "first_name": "Alice",
-            "last_name": "Two",
-        },
+        json={"first_name": "Alice", "last_name": "Two"},
+        headers=account_headers,
     )
     assert response.status_code == 409
-    assert response.json()["error"]["code"] == "email_taken"
+    assert response.json()["error"]["code"] == "already_a_member"
 
 
 def test_short_password_rejected(client):
-    response = client.post("/workspaces", json=dict(FOUND_BODY, password="short"))
+    response = client.post(
+        "/accounts", json={"email": "short-pw@example.com", "password": "short"}
+    )
     assert response.status_code == 422
 
 
 def test_invalid_email_rejected(client):
-    response = client.post("/workspaces", json=dict(FOUND_BODY, email="not-an-email"))
+    response = client.post(
+        "/accounts", json={"email": "not-an-email", "password": _PASSWORD}
+    )
     assert response.status_code == 422
 
 
-def _found(client) -> dict:
-    return client.post("/workspaces", json=FOUND_BODY).json()
-
-
-def test_login_returns_tokens(client):
-    founded = _found(client)
-    response = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": founded["workspace"]["workspace_id"],
-            "email": "alice@example.com",
-            "password": "s3cret-password",
-        },
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["access_token"] and body["refresh_token"]
-    assert body["token_type"] == "bearer"
-
-
-def test_login_wrong_password_unknown_email_and_wrong_workspace_identical(client):
-    """No account-existence leak: all three failure modes return byte-identical bodies."""
-    founded = _found(client)
-    ws_id = founded["workspace"]["workspace_id"]
-    wrong_password = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": ws_id,
-            "email": "alice@example.com",
-            "password": "wrong-pass",
-        },
-    )
-    unknown_email = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": ws_id,
-            "email": "nobody@example.com",
-            "password": "wrong-pass",
-        },
-    )
-    wrong_workspace = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": "does-not-exist",
-            "email": "alice@example.com",
-            "password": "s3cret-password",
-        },
-    )
-    assert (
-        wrong_password.status_code
-        == unknown_email.status_code
-        == wrong_workspace.status_code
-        == 401
-    )
-    assert wrong_password.json() == unknown_email.json() == wrong_workspace.json()
-    assert wrong_password.json()["error"]["code"] == "invalid_credentials"
-
-
 def test_refresh_rotates_tokens(client):
-    tokens = _found(client)
+    tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Refresh"),
+        headers=_account_headers(client, "alice-refresh@example.com"),
+    ).json()
     response = client.post(
         "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
     )
@@ -169,7 +180,11 @@ def test_expired_refresh_token_rejected(client):
     from app.models import utcnow
     from app.security import hash_token
 
-    tokens = _found(client)
+    tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Expired"),
+        headers=_account_headers(client, "alice-expired@example.com"),
+    ).json()
     with database_module.SessionLocal() as db:
         row = db.get(RefreshToken, hash_token(tokens["refresh_token"]))
         row.expires_at = utcnow() - timedelta(seconds=1)
@@ -185,7 +200,11 @@ def test_expired_refresh_token_rejected(client):
 
 
 def test_logout_kills_refresh_token(client):
-    tokens = _found(client)
+    tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Logout"),
+        headers=_account_headers(client, "alice-logout@example.com"),
+    ).json()
     response = client.post(
         "/auth/logout",
         json={"refresh_token": tokens["refresh_token"]},
@@ -201,7 +220,11 @@ def test_logout_kills_refresh_token(client):
 
 
 def test_logout_requires_auth(client):
-    tokens = _found(client)
+    tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Logout Auth"),
+        headers=_account_headers(client, "alice-logout-auth@example.com"),
+    ).json()
     response = client.post(
         "/auth/logout", json={"refresh_token": tokens["refresh_token"]}
     )
@@ -209,10 +232,15 @@ def test_logout_requires_auth(client):
 
 
 def test_logout_cannot_kill_another_members_token(client):
-    tokens_a = _found(client)
+    tokens_a = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Underland A"),
+        headers=_account_headers(client, "alice-a@example.com"),
+    ).json()
     tokens_b = client.post(
         "/workspaces",
-        json=dict(FOUND_BODY, workspace_name="Underland", email="bob@example.com"),
+        json=dict(FOUND_BODY, workspace_name="Underland B"),
+        headers=_account_headers(client, "bob-b@example.com"),
     ).json()
     # A tries to revoke B's refresh token: 200 (idempotent, no leak) but B's
     # token must still work afterwards.
@@ -229,29 +257,25 @@ def test_logout_cannot_kill_another_members_token(client):
 
 
 def test_password_byte_cap_not_char_cap(client):
-    ws = founder_auth(client, "w1")["workspace_id"]
-    base = {"first_name": "By", "last_name": "Tes"}
+    """bcrypt's 72-byte limit is enforced at signup (POST /accounts) now
+    -- the workspace join doors no longer carry a password at all."""
     # 40 two-byte chars = 80 bytes but only 40 characters: must be rejected
     r = client.post(
-        f"/workspaces/{ws}/register",
-        json={**base, "email": "multi@test.example", "password": "é" * 40},
+        "/accounts", json={"email": "multi@test.example", "password": "é" * 40}
     )
     assert r.status_code == 422
     # Exactly 72 bytes (36 two-byte chars): allowed
     r = client.post(
-        f"/workspaces/{ws}/register",
-        json={**base, "email": "edge@test.example", "password": "é" * 36},
+        "/accounts", json={"email": "edge@test.example", "password": "é" * 36}
     )
     assert r.status_code == 200
     # 72 ASCII chars = 72 bytes: allowed
     r = client.post(
-        f"/workspaces/{ws}/register",
-        json={**base, "email": "ascii@test.example", "password": "x" * 72},
+        "/accounts", json={"email": "ascii@test.example", "password": "x" * 72}
     )
     assert r.status_code == 200
     # 73 ASCII chars: rejected
     r = client.post(
-        f"/workspaces/{ws}/register",
-        json={**base, "email": "long@test.example", "password": "x" * 73},
+        "/accounts", json={"email": "long@test.example", "password": "x" * 73}
     )
     assert r.status_code == 422

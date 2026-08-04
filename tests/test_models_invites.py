@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 
-from app.models import Channel, Member, Workspace, WorkspaceInvite, utcnow
+from app.models import Account, Channel, Member, Workspace, WorkspaceInvite, utcnow
 
 
 def _make(db_session, model, **kwargs):
@@ -10,6 +10,13 @@ def _make(db_session, model, **kwargs):
     db_session.add(obj)
     db_session.commit()
     return obj
+
+
+def _account(db_session) -> Account:
+    account = Account(account_type="human")
+    db_session.add(account)
+    db_session.flush()
+    return account
 
 
 def test_email_invite_round_trip(db_session):
@@ -20,6 +27,7 @@ def test_email_invite_round_trip(db_session):
         member_name="Host",
         member_type="human",
         workspace_id=workspace.workspace_id,
+        account_id=_account(db_session).account_id,
         handle="host",
     )
     invite = _make(
@@ -45,6 +53,7 @@ def test_code_invite_round_trip(db_session):
         member_name="Host",
         member_type="human",
         workspace_id=workspace.workspace_id,
+        account_id=_account(db_session).account_id,
         handle="host",
     )
     invite = _make(

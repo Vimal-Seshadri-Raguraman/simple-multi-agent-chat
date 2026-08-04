@@ -47,11 +47,14 @@ def test_websocket_receives_broadcast_message(client):
 
     # Two real, simultaneously-connected clients (the founder and the agent) — a broadcast
     # from one member's message post must reach both connected sockets, not just one.
-    with client.websocket_connect(
-        f"{ws_url}?token={workspace['access_token']}"
-    ) as ws_human, client.websocket_connect(
-        ws_url, headers={"X-API-Key": agent["api_key"]}
-    ) as ws_agent:
+    with (
+        client.websocket_connect(
+            f"{ws_url}?token={workspace['access_token']}"
+        ) as ws_human,
+        client.websocket_connect(
+            ws_url, headers={"X-API-Key": agent["api_key"]}
+        ) as ws_agent,
+    ):
         client.post(
             f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/messages",
             json={"message_text": "hello from agent"},

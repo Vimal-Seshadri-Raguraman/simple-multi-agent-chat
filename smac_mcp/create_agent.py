@@ -1,10 +1,19 @@
 """`create-agent`: the setup helper that turns a founder/admin's own login
 into a fresh agent member and its one-time API key.
 
-Plain httpx calls against the real SMAC API (login, then register) --
-this is a bootstrapping tool, not a tool the running bridge uses, so it
-does not go through `SmacApi`. It does reuse `SmacApiError` and
-`_envelope_message` so failures read the same way in both places.
+Plain httpx calls against the real SMAC API -- this is a bootstrapping
+tool, not a tool the running bridge uses, so it does not go through
+`SmacApi`. It does reuse `SmacApiError` and `_envelope_message` so
+failures read the same way in both places.
+
+Identity v2 (SMAC-79 Task 2 cutover): the workspace-scoped `/auth/login`
+this used to call is retired. Logging in is now two calls -- global
+`POST /accounts/login` (email+password, no workspace_id) for an ACCOUNT
+token, then `POST /workspaces/{id}/token` (account-token-authed) to
+exchange it for the WORKSPACE token `POST /members/agents` needs -- but
+`create_agent`'s own signature (`workspace_id`, `email`, `password`,
+`agent_name`) is unchanged, so every existing caller of this function
+keeps working without modification.
 """
 
 import asyncio
@@ -33,11 +42,13 @@ async def create_agent(
     again.
 
     Raises SmacApiError, carrying the server's own message, when the
-    server is unreachable, when login fails (wrong workspace_id/email/
-    password all surface the login endpoint's identical uniform message,
-    by design, so this can't be used to probe which of the three was
-    wrong), or when agent creation fails (e.g. the logged-in member isn't
-    human and so can't manage membership).
+    server is unreachable, when the global login fails (wrong email/
+    password surface the login endpoint's identical uniform message, by
+    design, so this can't be used to probe which of the two was wrong),
+    when the workspace_id doesn't name a real membership of this account
+    (uniform 404 -- "the wall", spec §2), or when agent creation fails
+    (e.g. the logged-in member isn't human and so can't manage
+    membership).
     """
     kwargs: dict[str, Any] = {"base_url": base_url.rstrip("/"), "timeout": 10.0}
     if transport is not None:
@@ -46,12 +57,8 @@ async def create_agent(
     async with httpx.AsyncClient(**kwargs) as client:
         try:
             login_response = await client.post(
-                "/auth/login",
-                json={
-                    "workspace_id": workspace_id,
-                    "email": email,
-                    "password": password,
-                },
+                "/accounts/login",
+                json={"email": email, "password": password},
             )
         except httpx.HTTPError:
             raise SmacApiError(
@@ -59,7 +66,20 @@ async def create_agent(
             )
         if not login_response.is_success:
             raise SmacApiError(_envelope_message(login_response))
-        access_token = login_response.json()["access_token"]
+        account_token = login_response.json()["tokens"]["access_token"]
+
+        try:
+            token_response = await client.post(
+                f"/workspaces/{workspace_id}/token",
+                headers={"Authorization": f"Bearer {account_token}"},
+            )
+        except httpx.HTTPError:
+            raise SmacApiError(
+                f"SMAC server is not reachable at {base_url} — is it running?"
+            )
+        if not token_response.is_success:
+            raise SmacApiError(_envelope_message(token_response))
+        access_token = token_response.json()["access_token"]
 
         try:
             create_response = await client.post(

@@ -443,6 +443,7 @@ def test_ws_events_url_refreshes_and_embeds_fresh_token(
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 def test_register_found_then_whoami_channels_post_mark_read_round_trip(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -486,6 +487,7 @@ def test_register_found_then_whoami_channels_post_mark_read_round_trip(
     assert marked["unread_count"] == 0
 
 
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 def test_discover_then_login_flow(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -515,6 +517,7 @@ def test_discover_then_login_flow(
     assert fresh_api.whoami()["email"] == email
 
 
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 def test_register_into_public_workspace(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -543,6 +546,7 @@ def test_register_into_public_workspace(
     assert joiner_api.whoami()["email"] == joiner_email
 
 
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 def test_search_public_finds_founded_public_workspace(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

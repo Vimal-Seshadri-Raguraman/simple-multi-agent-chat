@@ -1,10 +1,12 @@
-"""Account-tier endpoints (SMAC-79 Task 1, spec §2): POST /accounts,
+"""Account-tier endpoints (SMAC-79 spec §2): POST /accounts,
 POST /accounts/login, GET /accounts/me.
 
 Binding security invariants under test (spec §7): global login/signup
 uniform failures, byte-identical bodies, timing parity (dummy verify) --
-same discipline as the retiring POST /auth/discover.
-"""
+the discipline `POST /auth/discover` established before it retired in
+Task 2 (this file's `test_discover_*`-descended tests port its
+workspace-ordering and private-workspace-visibility coverage onto
+`POST /accounts/login`'s `workspaces` list, its permanent successor)."""
 
 from tests.conftest import founder_auth, founder_headers
 
@@ -90,37 +92,31 @@ def test_login_success_returns_tokens_and_workspaces(client):
     assert body["workspaces"] == []
 
 
-def test_login_lists_workspaces_found_via_legacy_flow(client):
-    """The same email founds two workspaces via the OLD (legacy) flow --
-    dual-write must have linked both to one global account, so global
-    login lists both."""
-    client.post(
+def _found(client, account_token, workspace_name, visibility="private"):
+    return client.post(
         "/workspaces",
         json={
-            "workspace_name": "Alpha Co V2",
-            "visibility": "private",
-            "email": "greta@example.com",
-            "password": "legacy-password-1",
-            "first_name": "Greta",
-            "last_name": "One",
+            "workspace_name": workspace_name,
+            "visibility": visibility,
+            "display_first_name": "Test",
+            "display_last_name": "Founder",
         },
+        headers={"Authorization": f"Bearer {account_token}"},
     )
-    client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Beta Co V2",
-            "visibility": "private",
-            "email": "greta@example.com",
-            "password": "legacy-password-2",
-            "first_name": "Greta",
-            "last_name": "Two",
-        },
-    )
-    # The FIRST (oldest) workspace's password is the account's real
-    # password -- get_or_create_account_for_email never overwrites it.
+
+
+def test_login_lists_every_workspace_the_account_has_founded(client):
+    """One account founds two workspaces (spec Decision 1's per-workspace
+    profile model, from the founding side): both memberships link back to
+    the SAME global account, so global login lists both."""
+    account_token = _create_account(client, "greta@example.com").json()["tokens"][
+        "access_token"
+    ]
+    _found(client, account_token, "Alpha Co V2")
+    _found(client, account_token, "Beta Co V2")
     response = client.post(
         "/accounts/login",
-        json={"email": "greta@example.com", "password": "legacy-password-1"},
+        json={"email": "greta@example.com", "password": _PASSWORD},
     )
     assert response.status_code == 200
     names = sorted(w["workspace_name"] for w in response.json()["workspaces"])
@@ -134,71 +130,94 @@ def test_login_lists_workspaces_found_via_legacy_flow(client):
         }
 
 
-def test_login_second_workspaces_password_no_longer_works_for_account(client):
-    """The second workspace's password was never copied onto the shared
-    account (get_or_create links, never overwrites) -- global login with
-    it fails, even though the member row itself still has it for legacy
-    /auth/login."""
-    client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Gamma Co V2",
-            "visibility": "private",
-            "email": "harold@example.com",
-            "password": "first-password-here",
-            "first_name": "Harold",
-            "last_name": "One",
-        },
-    )
-    client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Delta Co V2",
-            "visibility": "private",
-            "email": "harold@example.com",
-            "password": "second-password-here",
-            "first_name": "Harold",
-            "last_name": "Two",
-        },
-    )
+def test_login_orders_workspaces_by_name_not_creation_order(client):
+    """Ported from the retired POST /auth/discover's coverage: create Zeta
+    before Alpha, login must still list them alphabetically."""
+    account_token = _create_account(client, "order@example.com").json()["tokens"][
+        "access_token"
+    ]
+    _found(client, account_token, "Zeta Co")
+    _found(client, account_token, "Alpha Co")
     response = client.post(
         "/accounts/login",
-        json={"email": "harold@example.com", "password": "second-password-here"},
+        json={"email": "order@example.com", "password": _PASSWORD},
     )
-    assert response.status_code == 401
+    names = [w["workspace_name"] for w in response.json()["workspaces"]]
+    assert names == ["Alpha Co", "Zeta Co"]
 
 
-def test_legacy_founding_still_works_unmodified(client):
-    """Baseline invariant: founding a workspace through the legacy door
-    still returns exactly the old shape and still logs the founder in."""
-    founder = founder_auth(client, "legacy-check")
+def test_login_lists_private_workspaces_too(client):
+    """Ported from the retired POST /auth/discover: private workspaces
+    are the caller's own memberships -- they must appear."""
+    account_token = _create_account(client, "priv@example.com").json()["tokens"][
+        "access_token"
+    ]
+    found = _found(client, account_token, "Private Co V2", visibility="private").json()
+    response = client.post(
+        "/accounts/login",
+        json={"email": "priv@example.com", "password": _PASSWORD},
+    )
+    workspaces = response.json()["workspaces"]
+    assert len(workspaces) == 1
+    assert workspaces[0]["workspace_id"] == found["workspace"]["workspace_id"]
+    assert workspaces[0]["workspace_name"] == "Private Co V2"
+
+
+def test_founder_auth_helper_returns_account_id_and_token(client):
+    """The conftest contract (SMAC-79 Task 2): founder_auth/member_auth
+    return the same dict shape as before, PLUS `account_id`/`account_token`
+    -- both real and usable (account_token works on an account-tier
+    endpoint, account_id matches the founder's linked account)."""
+    import app.database as database_module
+    from app.models import Member
+
+    founder = founder_auth(client, "helper-contract")
     assert founder["access_token"]
     assert founder["member_id"]
     assert founder["workspace_id"]
+    assert founder["account_id"]
+    assert founder["account_token"]
+
+    with database_module.SessionLocal() as db:
+        member = db.query(Member).filter(Member.member_id == founder["member_id"]).one()
+        assert member.account_id == founder["account_id"]
+
+    me = client.get(
+        "/accounts/me",
+        headers={"Authorization": f"Bearer {founder['account_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["account_id"] == founder["account_id"]
 
 
-def test_human_founding_dual_writes_linked_account(client):
-    """Founding a workspace (legacy door) must dual-write: the legacy
-    Member.email/password_hash columns stay populated (old login keeps
-    working) AND a global Account is created and linked."""
+def test_human_founding_links_the_caller_account(client):
+    """Founding a workspace links the CALLER's own account (from their
+    account token) into the new admin profile -- no password is created
+    or stored on the Member profile anymore (Identity v2, SMAC-79 Task 2:
+    email/password live only on the account)."""
     import app.database as database_module
     from app.models import Account, Member
 
-    founder = founder_auth(client, "human-dual")
+    account_body = _create_account(client, "human-link@test.example").json()
+    account_token = account_body["tokens"]["access_token"]
+    founded = _found(client, account_token, "Human Link Co").json()
+
     with database_module.SessionLocal() as db:
-        member = db.query(Member).filter(Member.member_id == founder["member_id"]).one()
-        assert member.account_id is not None
-        assert member.email == "human-dual@test.example"
-        assert member.password_hash is not None
+        member = (
+            db.query(Member)
+            .filter(Member.member_id == founded["member"]["member_id"])
+            .one()
+        )
+        assert member.account_id == account_body["account"]["account_id"]
         account = db.get(Account, member.account_id)
         assert account is not None
         assert account.account_type == "human"
-        assert account.email_key == "human-dual@test.example"
+        assert account.email_key == "human-link@test.example"
         assert account.password_hash is not None
 
 
-def test_agent_creation_dual_writes_identity_only_account(client):
-    """Agent creation dual-writes an identity-only Account: no
+def test_agent_creation_creates_identity_only_account(client):
+    """Agent creation creates an identity-only Account: no
     email/password, account_type matches the member_type."""
     import app.database as database_module
     from app.models import Account, Member
@@ -218,36 +237,27 @@ def test_agent_creation_dual_writes_identity_only_account(client):
         assert account.password_hash is None
 
 
-def test_two_workspaces_same_email_link_to_one_account(client):
-    """The get-or-create-by-email helper must LINK, not duplicate: two
-    workspaces founded with the same email end up with two Member rows
-    sharing one Account."""
+def test_same_account_two_workspaces_share_one_account_id(client):
+    """One account founding two workspaces produces two Member rows
+    sharing one account_id (spec Decision 1's per-workspace-profile
+    model, DB-level view)."""
     import app.database as database_module
     from app.models import Member
 
-    client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Linked Co One",
-            "visibility": "private",
-            "email": "ivy@example.com",
-            "password": "password-one-here",
-            "first_name": "Ivy",
-            "last_name": "One",
-        },
-    )
-    client.post(
-        "/workspaces",
-        json={
-            "workspace_name": "Linked Co Two",
-            "visibility": "private",
-            "email": "ivy@example.com",
-            "password": "password-two-here",
-            "first_name": "Ivy",
-            "last_name": "Two",
-        },
-    )
+    account_token = _create_account(client, "ivy@example.com").json()["tokens"][
+        "access_token"
+    ]
+    _found(client, account_token, "Linked Co One")
+    _found(client, account_token, "Linked Co Two")
+
     with database_module.SessionLocal() as db:
-        members = db.query(Member).filter(Member.email == "ivy@example.com").all()
+        from app.models import Account as AccountModel
+
+        members = (
+            db.query(Member)
+            .join(AccountModel, AccountModel.account_id == Member.account_id)
+            .filter(AccountModel.email_key == "ivy@example.com")
+            .all()
+        )
         assert len(members) == 2
         assert members[0].account_id == members[1].account_id

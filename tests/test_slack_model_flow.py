@@ -1,4 +1,6 @@
-"""End-to-end journeys through the Slack model."""
+"""End-to-end journeys through the workspace model (Identity v2, SMAC-79
+Task 2 cutover: birth/join doors are account-authed, no more email/
+password bodies)."""
 
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -9,6 +11,14 @@ from tests.conftest import (
     member_token,
 )
 
+_PASSWORD = "test-password-123"  # matches conftest._TEST_PASSWORD
+
+
+def _account_headers(client, email: str) -> dict[str, str]:
+    response = client.post("/accounts", json={"email": email, "password": _PASSWORD})
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['tokens']['access_token']}"}
+
 
 def test_public_journey_search_register_post(client):
     founder_auth(client, "acme")  # public
@@ -16,12 +26,8 @@ def test_public_journey_search_register_post(client):
     ws = found[0]["workspace_id"]
     joined = client.post(
         f"/workspaces/{ws}/register",
-        json={
-            "email": "newbie@test.example",
-            "password": "newbie-pass-1",
-            "first_name": "New",
-            "last_name": "Bie",
-        },
+        json={"first_name": "New", "last_name": "Bie"},
+        headers=_account_headers(client, "newbie@test.example"),
     )
     assert joined.status_code == 200
     body = joined.json()
@@ -47,23 +53,15 @@ def test_private_journey_reserved_seat(client):
     # Uninvited email: uniform 404 (workspace never confirms existence)
     r = client.post(
         f"/workspaces/{ws}/register",
-        json={
-            "email": "rando@test.example",
-            "password": "rando-pass-1",
-            "first_name": "Ran",
-            "last_name": "Do",
-        },
+        json={"first_name": "Ran", "last_name": "Do"},
+        headers=_account_headers(client, "rando@test.example"),
     )
     assert r.status_code == 404
     # Invited email: in, and the seat is consumed
     r = client.post(
         f"/workspaces/{ws}/register",
-        json={
-            "email": "VIP@test.example",
-            "password": "vip-pass-12",
-            "first_name": "Vi",
-            "last_name": "P",
-        },
+        json={"first_name": "Vi", "last_name": "P"},
+        headers=_account_headers(client, "VIP@test.example"),
     )
     assert r.status_code == 200
     invites = client.get(
@@ -73,25 +71,21 @@ def test_private_journey_reserved_seat(client):
     assert invites == []
 
 
-def test_same_email_two_workspaces_distinct_accounts(client):
+def test_same_account_two_workspaces_distinct_profiles(client):
     a = founder_auth(client, "wa")["workspace_id"]
     b = founder_auth(client, "wb")["workspace_id"]
-    acc = {
-        "email": "dual@test.example",
-        "password": "dual-pass-12",
-        "first_name": "Du",
-        "last_name": "Al",
-    }
-    ra = client.post(f"/workspaces/{a}/register", json=acc)
-    rb = client.post(f"/workspaces/{b}/register", json=acc)
+    headers = _account_headers(client, "dual@test.example")
+    body = {"first_name": "Du", "last_name": "Al"}
+    ra = client.post(f"/workspaces/{a}/register", json=body, headers=headers)
+    rb = client.post(f"/workspaces/{b}/register", json=body, headers=headers)
     assert ra.status_code == rb.status_code == 200
     assert ra.json()["member"]["member_id"] != rb.json()["member"]["member_id"]
-    # login is workspace-scoped
-    la = client.post(
-        "/auth/login",
-        json={"workspace_id": a, **{k: acc[k] for k in ("email", "password")}},
+    # global login lists both memberships (one account, two workspaces)
+    login = client.post(
+        "/accounts/login", json={"email": "dual@test.example", "password": _PASSWORD}
     )
-    assert la.status_code == 200
+    assert login.status_code == 200
+    assert {w["workspace_id"] for w in login.json()["workspaces"]} == {a, b}
 
 
 def test_the_wall(client):
@@ -104,38 +98,10 @@ def test_the_wall(client):
     assert channels.status_code == members.status_code == invites.status_code == 404
 
 
-def test_login_failures_byte_identical(client):
-    ws = founder_auth(client, "w1")["workspace_id"]
-    wrong_pw = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": ws,
-            "email": "w1@test.example",
-            "password": "wrong-pass-1",
-        },
-    )
-    wrong_ws = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": "nope",
-            "email": "w1@test.example",
-            "password": "wrong-pass-1",
-        },
-    )
-    unknown = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": ws,
-            "email": "ghost@test.example",
-            "password": "wrong-pass-1",
-        },
-    )
-    assert wrong_pw.status_code == wrong_ws.status_code == unknown.status_code == 401
-    assert wrong_pw.json() == wrong_ws.json() == unknown.json()
-
-
 def test_retired_endpoints_are_gone(client):
     assert client.post("/auth/register", json={}).status_code in (404, 405)
+    assert client.post("/auth/login", json={}).status_code in (404, 405)
+    assert client.post("/auth/discover", json={}).status_code in (404, 405)
     headers = founder_headers(client, "w1")
     assert client.get("/invites", headers=headers).status_code in (404, 405)
     assert client.post("/invites/x/accept", headers=headers).status_code in (404, 405)

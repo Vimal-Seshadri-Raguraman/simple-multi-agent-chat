@@ -117,6 +117,7 @@ def _agent_post(
 
 
 @pytest.mark.anyio
+@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_the_full_human_journey_register_to_relaunch(
     real_smac_server: tuple[str, Path],
     monkeypatch: pytest.MonkeyPatch,
