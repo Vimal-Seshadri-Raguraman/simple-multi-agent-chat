@@ -443,6 +443,26 @@ class SmacApp(App[None]):
         self.current_channel_id = None
         self.set_header(f"{workspace_name} — #{channel_name}")
 
+    def show_no_workspace_state(self) -> None:
+        """The "signed in, no workspace yet" body (spec §6): a fresh
+        `/register` lands here directly (account-only signup, no
+        workspace involved at all), and a restored session with account
+        tokens but no workspace token (e.g. the previous run quit right
+        after `/register`) lands here too (`_restore_session`). Doesn't
+        clear the body -- appends below whatever's already shown (e.g.
+        `/register`'s own "account created" banner), same convention as
+        `_show_welcome_screen`.
+        """
+        self.set_header("SMAC — no workspace yet")
+        self.write_line("")
+        self.write_line("You're signed in — no workspace yet. Next:")
+        self.write_line("")
+        self.write_line("/workspace create <name>   found a new workspace")
+        self.write_line("/join <code>               join with an invite code")
+        self.write_line("/login                     browse public workspaces")
+        self.write_line("")
+        self.write_line(self._server_status or f"server: {self.api.url}")
+
     def reset_to_logged_out(self, message: str) -> None:
         """`/workspace delete`'s success path (SMAC-72 task 6): the mirror
         image of `enter_workspace`/`enter_general` -- tear the session
@@ -1195,6 +1215,11 @@ class SmacApp(App[None]):
         footer.value = ""
         if self.api.session is None:
             self.system_line("not logged in — /register or /login")
+        elif self.api.session.workspace_id is None:
+            self.system_line(
+                "no workspace yet — /workspace create <name>, /join <code>, "
+                "or /login to browse"
+            )
         else:
             self.post_current(value)
 
@@ -1226,8 +1251,18 @@ class SmacApp(App[None]):
             try:
                 handler(self, args)
             except FormCancelled:
+                # Restore whatever screen matches the session's ACTUAL
+                # state (which a cancelled form may have already changed --
+                # e.g. `/login` establishes the account session before its
+                # memberships picker ever runs, so a cancel there leaves a
+                # real, live account session behind, not a logged-out one).
+                # A form cancelled with the session already fully in a
+                # workspace needs no reset at all: nothing about that
+                # workspace's header changed during the (abandoned) flow.
                 if self.api.session is None:
                     self.set_header("SMAC — not logged in")
+                elif self.api.session.workspace_id is None:
+                    self.show_no_workspace_state()
             except SmacError as exc:
                 self.system_line(exc.message)
 
@@ -1236,14 +1271,16 @@ class SmacApp(App[None]):
     # -- startup: welcome screen / session restore / version handshake ----
 
     def _show_welcome_screen(self) -> None:
-        """Render the logged-out welcome screen (spec Frame 1): header +
-        banner + the two entry commands + the server status line."""
+        """Render the logged-out welcome screen (spec Frame 1, updated for
+        Identity v2 spec §6): header + banner + the three entry commands +
+        the server status line."""
         self.set_header("SMAC — not logged in")
         self.write_line("")
         self.write_line("Welcome to SMAC — a place for your agents to meet.")
         self.write_line("")
-        self.write_line("/register   create your account + workspace")
-        self.write_line("/login      log in (email + password)")
+        self.write_line("/register     create your account")
+        self.write_line("/login        log in (email + password)")
+        self.write_line("/join <code>  have an invite code? register, then join")
         self.write_line("")
         self.write_line(self._server_status or f"server: {self.api.url}")
 
@@ -1290,8 +1327,37 @@ class SmacApp(App[None]):
         return None
 
     def _restore_session(self) -> None:
+        """Runs on the startup worker thread: bring a saved session back
+        to life, or fall back to a logged-out/no-workspace screen.
+
+        Three shapes a saved session can be in (spec §6 + this task's
+        backward-compat requirement):
+
+        1. **Pre-Identity-v2 file** -- no `account_access_token` at all
+           (`Session.load`'s docstring). Every server-side refresh token
+           was purged by the Identity v2 migration, so this session is
+           unconditionally dead; treated as expired WITHOUT even
+           attempting a network call (there's nothing a request could
+           succeed with) -- "session expired — /login" per the brief.
+        2. **Account-only** (`workspace_id is None`) -- a `/register` from
+           a previous run that never entered a workspace. Lands straight
+           on `show_no_workspace_state()`; `whoami()` (workspace-tier)
+           isn't even callable yet, so it's never attempted.
+        3. **Full session** -- the pre-existing behavior: `whoami()`
+           proves the workspace token still resolves, then land in
+           `#general`.
+        """
         session = self.api.session
         assert session is not None
+        if session.account_access_token is None:
+            self.api.session = None
+            session_path().unlink(missing_ok=True)
+            self._show_welcome_screen()
+            self.system_line("session expired — /login")
+            return
+        if session.workspace_id is None:
+            self.show_no_workspace_state()
+            return
         try:
             self.api.whoami()
         except SessionExpired:

@@ -87,6 +87,29 @@ class SessionExpired(SmacError):
         super().__init__("session_expired", message)
 
 
+class NoWorkspaceError(SmacError):
+    """Identity v2 (SMAC-79 Task 3): the caller has a live ACCOUNT session
+    but hasn't entered a workspace yet (spec §6 -- `/register`'s landing
+    state: account created, no workspace).
+
+    Deliberately distinct from `SessionExpired`: the account itself is
+    perfectly valid here, nothing needs deleting or re-logging-in -- the
+    caller just needs `/workspace create <name>`, `/join <code>`, or
+    `/login` to browse. Raised purely client-side by `SmacApi` (never
+    mapped from a server envelope) whenever a workspace-tier call is
+    attempted with no workspace token in the session yet.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "no workspace yet — /workspace create <name>, /join <code>, "
+            "or /login to browse"
+        ),
+    ) -> None:
+        super().__init__("no_workspace", message)
+
+
 class Unreachable(SmacError):
     """The server at `url` could not be reached at all (no HTTP response).
 
@@ -105,10 +128,23 @@ class Unreachable(SmacError):
 #: here (e.g. `forbidden_member_type`, `already_a_member`,
 #: `not_workspace_admin`, `last_admin`, `conflict`, `http_error`,
 #: `internal_error`) fall through to the `SmacError` base class.
+#:
+#: Identity v2 (SMAC-79 Task 3) adds `workspace_token_required`/
+#: `account_token_required` (`app/errors.py`'s new wrong-tier 401s,
+#: spec §2) to `AuthError` -- both mean a real, valid credential was
+#: presented at the wrong tier, the same family of failure as
+#: `invalid_token`. In normal operation `SmacApi` never presents a token
+#: at the wrong tier itself (workspace-tier calls always use `access_
+#: token`, account-tier calls always use `account_access_token`), so
+#: seeing either here would indicate a genuine client bug rather than an
+#: expected condition -- still worth a typed class rather than falling
+#: through to the base `SmacError`.
 _CODE_TO_CLASS: dict[str, type[SmacError]] = {
     "unauthorized": AuthError,
     "invalid_credentials": AuthError,
     "invalid_token": AuthError,
+    "workspace_token_required": AuthError,
+    "account_token_required": AuthError,
     "not_found": NotFoundError,
     "invalid_invite": NotFoundError,
     "not_a_member": NotAMemberError,

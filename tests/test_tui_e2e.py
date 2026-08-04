@@ -1,17 +1,19 @@
-"""The end-to-end human journey (SMAC-72 task 6, final): spec §0.1's
-storyline, start to finish, against a REAL spawned `smac-server` and the
-real `SmacApp` driven through Textual's own `App.run_test()`/`Pilot` --
-no `FakeApi` anywhere in this module.
+"""The end-to-end human journey (SMAC-72 task 6, final; adapted for
+Identity v2 in SMAC-79 Task 3): spec §0.1's storyline, start to finish,
+against a REAL spawned `smac-server` and the real `SmacApp` driven
+through Textual's own `App.run_test()`/`Pilot` -- no `FakeApi` anywhere
+in this module.
 
-register -> lands in #general (Frame 4) -> bare-text send (Frame 5) ->
-a second identity (an agent, minted via `POST /members/agents` -- the
-TUI itself has no agent-auth) replies mentioning the human, live ->
-a mention in ANOTHER channel rings the bell (Frame 6) -> `/channel
-<name>` switches (Frame 7) -> `/channels` shows everything caught up ->
-`/quit` (session kept) -> a BRAND NEW `SmacApp`/`SmacApi` pair, same
-`$HOME`, lands straight into #general with no login screen at all
-(Frame 8) -- "every day after starts at Frame 8" (spec §0.1's closing
-line).
+/register (account-only) -> lands in "no workspace yet" -> /workspace
+create founds the workspace, lands in #general (Frame 4) -> bare-text
+send (Frame 5) -> a second identity (an agent, minted via `POST
+/members/agents` -- the TUI itself has no agent-auth) replies mentioning
+the human, live -> a mention in ANOTHER channel rings the bell (Frame 6)
+-> `/channel <name>` switches (Frame 7) -> `/channels` shows everything
+caught up -> `/quit` (session kept) -> a BRAND NEW `SmacApp`/`SmacApi`
+pair, same `$HOME`, lands straight into #general with no login screen at
+all (Frame 8) -- "every day after starts at Frame 8" (spec §0.1's
+closing line).
 
 Deliberately one long test rather than many small ones: the whole point
 of an e2e test is that each step's state (the session, the channel
@@ -117,7 +119,6 @@ def _agent_post(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_the_full_human_journey_register_to_relaunch(
     real_smac_server: tuple[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -142,7 +143,7 @@ async def test_the_full_human_journey_register_to_relaunch(
         )
         assert "Welcome to SMAC" in _body_text(app)
 
-        # -- Frame 3: /register, the two-step form ----------------------
+        # -- Frame 3: /register, account-only (Identity v2, spec §6) -----
         await pilot.press(*"/register")
         await pilot.press("enter")
         await _wait_until(pilot, lambda: app.footer_input.placeholder == "email")
@@ -151,16 +152,20 @@ async def test_the_full_human_journey_register_to_relaunch(
         await _wait_until(pilot, lambda: app.footer_input.placeholder == "password")
         await pilot.press(*_TEST_PASSWORD)
         await pilot.press("enter")
+
+        # -- account created, no workspace yet ---------------------------
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+        assert "account created" in _body_text(app)
+        assert "/workspace create <name>" in _body_text(app)
+
+        # -- /workspace create: found the workspace ----------------------
+        await pilot.press(*f"/workspace create {workspace_name}")
+        await pilot.press("enter")
         await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
         await pilot.press(*"Vimal")
         await pilot.press("enter")
         await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
         await pilot.press(*"Raguraman")
-        await pilot.press("enter")
-        await _wait_until(
-            pilot, lambda: app.footer_input.placeholder == "workspace name"
-        )
-        await pilot.press(*workspace_name)
         await pilot.press("enter")
         await _wait_until(pilot, lambda: "visibility" in app.footer_input.placeholder)
         await pilot.press("enter")  # default: private
@@ -169,7 +174,6 @@ async def test_the_full_human_journey_register_to_relaunch(
         await _wait_until(
             pilot, lambda: app.header_text == f"{workspace_name} — #general"
         )
-        assert "account created" in _body_text(app)
         assert f'workspace "{workspace_name}" founded' in _body_text(app)
         assert api.session is not None
         workspace_id = api.session.workspace_id

@@ -98,31 +98,21 @@ def _body_text(app: SmacApp) -> str:
 
 
 def _found_workspace(url: str) -> SmacApi:
-    """Found a brand-new private workspace + admin human account."""
+    """Found a brand-new private workspace + admin human account (Identity
+    v2, spec §3: `signup` then `create_workspace` -- two calls now, where
+    the retired `register_found` used to be one)."""
     api = SmacApi(url)
-    api.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=_unique("wksp"),
-        visibility="private",
-    )
+    api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    api.create_workspace(_unique("wksp"), "private", "Ada", "Lovelace")
     return api
 
 
 def _found_public_workspace(url: str) -> SmacApi:
     """Same as `_found_workspace`, but public -- so a second human can
-    `register_into` it directly (no invite flow needed for this test)."""
+    `join_public` it directly (no invite flow needed for this test)."""
     api = SmacApi(url)
-    api.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=_unique("wksp"),
-        visibility="public",
-    )
+    api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    api.create_workspace(_unique("wksp"), "public", "Ada", "Lovelace")
     return api
 
 
@@ -280,7 +270,6 @@ def test_channel_feed_stop_is_prompt_and_thread_is_daemon() -> None:
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_posted_message_appears_in_feed_including_self_echo(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -299,7 +288,6 @@ async def test_posted_message_appears_in_feed_including_self_echo(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_self_mention_renders_as_own_handle_not_raw_token(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -329,7 +317,6 @@ async def test_self_mention_renders_as_own_handle_not_raw_token(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_message_from_another_member_appears_with_rendered_mention(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -369,7 +356,6 @@ async def test_message_from_another_member_appears_with_rendered_mention(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_switching_channel_loads_history_and_marks_read(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -419,7 +405,6 @@ async def test_switching_channel_loads_history_and_marks_read(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -448,13 +433,8 @@ async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
     # member of this channel.
 
     joiner_api = SmacApi(url)
-    joiner_api.register_into(
-        workspace_id,
-        f"{_unique('joiner')}@test.example",
-        _TEST_PASSWORD,
-        "Alan",
-        "Turing",
-    )
+    joiner_api.signup(f"{_unique('joiner')}@test.example", _TEST_PASSWORD)
+    joiner_api.join_public(workspace_id, "Alan", "Turing")
     assert joiner_api.session is not None
     initial_refresh_token = joiner_api.session.refresh_token
 
@@ -503,7 +483,6 @@ async def test_channel_not_a_member_shows_system_line_and_never_attaches_feed(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_mention_in_other_channel_shows_bell_line(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -547,7 +526,6 @@ async def test_mention_in_other_channel_shows_bell_line(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_mention_in_current_channel_does_not_ring_bell(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -584,7 +562,6 @@ async def test_mention_in_current_channel_does_not_ring_bell(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_pgup_pauses_follow_and_shows_live_new_count(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -662,7 +639,6 @@ async def test_pgup_pauses_follow_and_shows_live_new_count(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_load_older_history_prepends_without_duplicates(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -725,7 +701,6 @@ async def test_load_older_history_prepends_without_duplicates(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_server_restart_triggers_reconnect_and_history_refresh(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -746,6 +721,21 @@ async def test_server_restart_triggers_reconnect_and_history_refresh(
     app = SmacApp(_app_api_for(founder))
     async with app.run_test() as pilot:
         await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        # `current_channel_id` is set synchronously at the very top of
+        # `enter_channel`, well before `_start_channel_feed` actually
+        # constructs and starts a `ChannelFeed` (history load + mark-read
+        # both run first, on the same worker thread). Stopping the server
+        # before that feed has genuinely completed its first connect would
+        # mean `_ever_connected` is still `False` when the stop is
+        # noticed, and a feed that was never connected in the first place
+        # never fires the synthetic "disconnected" payload (there's
+        # nothing to have lost) -- it just retries quietly forever. Wait
+        # for the real thing: a feed object that exists AND has completed
+        # its first successful connect.
+        await _wait_until(
+            pilot,
+            lambda: app._channel_feed is not None and app._channel_feed._ever_connected,
+        )
 
         repo_root = Path(__file__).resolve().parents[1]
         env = {**os.environ, "HOME": str(home_dir)}

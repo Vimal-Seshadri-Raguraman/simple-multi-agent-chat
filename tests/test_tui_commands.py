@@ -78,10 +78,12 @@ async def _run_command(pilot: Any, text: str) -> None:
 def _logged_in_fake() -> FakeApi:
     session = Session(
         url="http://fake.example",
+        email="vimal@example.com",
+        account_access_token="aat",
+        account_refresh_token="art",
         workspace_id="ws-1",
         access_token="at",
         refresh_token="rt",
-        email="vimal@example.com",
     )
     fake = FakeApi(session=session)
     return fake
@@ -376,6 +378,81 @@ async def test_workspace_delete_success_clears_session_and_shows_welcome() -> No
 
 
 # --------------------------------------------------------------------------
+# /invite: mint a shareable code, print the exact line to tell an invitee
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_invite_prints_code_and_join_hint() -> None:
+    fake = _logged_in_fake()
+    fake.mint_invite_result = {
+        "invite_id": "inv-1",
+        "invite_type": "code",
+        "code": "abc123",
+    }
+    app = _app_with(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        await _run_command(pilot, "/invite")
+        await _wait_until(pilot, lambda: "invite code:" in _body_text(app))
+        text = _body_text(app)
+        assert "invite code: abc123" in text
+        assert "smac → /register → /join abc123" in text
+
+
+@pytest.mark.anyio
+async def test_invite_not_admin_shows_server_message() -> None:
+    """The client mints no code of its own; a non-admin's mint attempt
+    fails server-side and the message-only rejection surfaces same as
+    every other command's generic `SmacError` handling."""
+    from smac_cli.errors import SmacError as GenericSmacError
+
+    fake = _logged_in_fake()
+    fake.mint_invite_error = GenericSmacError(
+        "not_workspace_admin", "Only a workspace admin may do this"
+    )
+    app = _app_with(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        await _run_command(pilot, "/invite")
+        await _wait_until(
+            pilot, lambda: "Only a workspace admin may do this" in _body_text(app)
+        )
+
+
+# --------------------------------------------------------------------------
+# /join <code>: redeem a code from inside an already-active session
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_join_code_from_within_a_workspace_enters_the_new_one() -> None:
+    """An account can belong to several workspaces -- `/join <code>` works
+    the same whether typed from the no-workspace state or from inside an
+    already-active workspace."""
+    fake = _logged_in_fake()
+    fake.join_code_target = ("ws-2", "Second Workspace")
+    app = _app_with(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+
+        await pilot.press(*"/join xyz789")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
+        await pilot.press(*"New")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
+        await pilot.press(*"Member")
+        await pilot.press("enter")
+
+        await _wait_until(
+            pilot, lambda: app.header_text == "Second Workspace — #general"
+        )
+        assert fake.session is not None
+        assert fake.session.workspace_id == "ws-2"
+
+
+# --------------------------------------------------------------------------
 # /help, Ctrl+C
 # --------------------------------------------------------------------------
 
@@ -394,7 +471,10 @@ async def test_help_describes_every_command_per_the_frame() -> None:
         text = _body_text(app)
         for expected in (
             "/register",
+            "/workspace create <name>",
+            "/join <code>",
             "/login",
+            "/invite",
             "/whoami",
             "/channels /unreads",
             "/channel <name>",
@@ -426,15 +506,13 @@ async def test_ctrl_c_is_the_same_as_quit() -> None:
 
 
 def _found_workspace(url: str, *, visibility: str = "private") -> SmacApi:
+    """Signup + `/workspace create`'s API-level equivalent: a fresh
+    account, founding a brand-new workspace as its admin (Identity v2,
+    spec §3 -- two calls now, `signup` then `create_workspace`, where the
+    retired `register_found` used to be one)."""
     api = SmacApi(url)
-    api.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=_unique("wksp"),
-        visibility=visibility,
-    )
+    api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    api.create_workspace(_unique("wksp"), visibility, "Ada", "Lovelace")
     return api
 
 
@@ -479,7 +557,6 @@ def _agent_post(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_whoami_against_real_server_shows_founder_admin_and_visibility(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -498,7 +575,6 @@ async def test_whoami_against_real_server_shows_founder_admin_and_visibility(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channels_against_real_server_reflects_real_unreads(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -539,7 +615,6 @@ async def test_channels_against_real_server_reflects_real_unreads(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_channel_create_against_real_server_switches_and_409_verbatim(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -570,7 +645,6 @@ async def test_channel_create_against_real_server_switches_and_409_verbatim(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_workspace_delete_against_real_server_deletes_and_resets(
     real_smac_server: tuple[str, Path],
 ) -> None:
@@ -581,14 +655,8 @@ async def test_workspace_delete_against_real_server_deletes_and_resets(
     url, _home_dir = real_smac_server
     workspace_name = _unique("wksp-real")
     founder = SmacApi(url)
-    founder.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=workspace_name,
-        visibility="private",
-    )
+    founder.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    founder.create_workspace(workspace_name, "private", "Ada", "Lovelace")
     assert founder.session is not None
 
     from smac_cli.app import cache_workspace_name
@@ -619,7 +687,6 @@ async def test_workspace_delete_against_real_server_deletes_and_resets(
 
 
 @pytest.mark.anyio
-@pytest.mark.skip(reason="identity-v2: reworked in Task 3")
 async def test_quit_against_real_server_is_clean_and_keeps_session(
     real_smac_server: tuple[str, Path],
 ) -> None:

@@ -1,17 +1,24 @@
 """Sync HTTP client for the SMAC server: `Session` persistence + `SmacApi`.
 
 `SmacApi` is the one place in `smac_cli` that speaks HTTP to `app/`'s
-REST surface -- everything else in the TUI (a later task on this
-branch) goes through it rather than touching `httpx` directly. Every
-method is synchronous (Textual's worker threads call these off the
-event loop) and raises a `smac_cli.errors.SmacError` subclass instead of
-letting an `httpx` exception or a raw error envelope escape.
+REST surface -- everything else in the TUI goes through it rather than
+touching `httpx` directly. Every method is synchronous (Textual's worker
+threads call these off the event loop) and raises a `smac_cli.errors.
+SmacError` subclass instead of letting an `httpx` exception or a raw
+error envelope escape.
+
+Identity v2 (SMAC-79 Task 3): the server now has two auth tiers (spec
+§2) -- ACCOUNT tokens (global, no workspace) and WORKSPACE tokens
+(member-scoped). `Session` carries both pairs; the account pair is
+minted once by `signup`/`login` and generally outlives many workspace
+pairs (`enter_workspace` mints a fresh workspace pair into the SAME
+session whenever the caller moves between workspaces they belong to).
 
 Session semantics (spec "Session" paragraph, `docs/superpowers/specs/
 2026-08-03-smac-tui-design.md`): one session at a time, saved to
 `~/.config/smac/session.json` (chmod 600) on every successful
-login/register/refresh, restored on the next launch, deleted the moment
-a refresh-on-401 retry also fails.
+signup/login/enter_workspace/refresh, restored on the next launch,
+deleted the moment a refresh-on-401 retry also fails.
 """
 
 from __future__ import annotations
@@ -25,7 +32,7 @@ from typing import Any
 
 import httpx
 
-from smac_cli.errors import SessionExpired, Unreachable, from_envelope
+from smac_cli.errors import NoWorkspaceError, SessionExpired, Unreachable, from_envelope
 from smac_cli.paths import session_path
 
 #: Default page size for `messages()` -- mirrors the server's `MAX_LIMIT`
@@ -38,17 +45,34 @@ _DELETE_CONFIRMATION = "delete"
 
 @dataclass
 class Session:
-    """A saved login: everything needed to resume talking to one workspace.
+    """A saved login: everything needed to resume talking to one server.
 
-    Mirrors the on-disk shape pinned by the spec:
-    `{url, workspace_id, access_token, refresh_token, email}`.
+    Identity v2 (SMAC-79 Task 3): `account_access_token`/
+    `account_refresh_token` are new -- every session created by this
+    client always sets both. The workspace-tier fields (`workspace_id`,
+    `access_token`, `refresh_token`) keep their pre-v2 names but are now
+    optional: an account fresh off `/register` with no workspace yet has
+    a session with account tokens and `None` for all three.
+
+    Backward compatibility: a session.json written by a pre-Identity-v2
+    build of this client has `workspace_id`/`access_token`/
+    `refresh_token` but no `account_access_token`/`account_refresh_token`
+    keys at all. Because those two fields default to `None`, `Session.
+    load` still parses such a file successfully (never crashes) rather
+    than raising -- `SmacApp._restore_session` is the one place that
+    checks `account_access_token is None` and treats that shape as an
+    expired session (spec: "session expired — /login"), since every
+    server-side refresh token was purged by the Identity v2 migration
+    anyway (a live server would reject it exactly the same way).
     """
 
     url: str
-    workspace_id: str
-    access_token: str
-    refresh_token: str
     email: str
+    account_access_token: str | None = None
+    account_refresh_token: str | None = None
+    workspace_id: str | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
 
     def save(self, path: Path) -> None:
         """Write this session to `path` as JSON, chmod 600 (contains secrets).
@@ -76,10 +100,14 @@ class Session:
     def load(cls, path: Path) -> "Session | None":
         """Read a session back from `path`, or `None` if absent/unreadable.
 
-        A missing file, unreadable file, corrupt JSON, or JSON missing an
-        expected field are all treated the same way -- "no usable saved
-        session" -- rather than raising, since every caller's fallback is
-        identical (fall through to the logged-out welcome screen).
+        A missing file, unreadable file, corrupt JSON, or JSON missing a
+        required field (`url`/`email`) are all treated the same way --
+        "no usable saved session" -- rather than raising, since every
+        caller's fallback is identical (fall through to the logged-out
+        welcome screen). A pre-Identity-v2 file, which HAS `url`/`email`
+        but lacks the newer account-token fields, parses fine (those
+        fields default to `None`) -- see the class docstring for how that
+        shape is handled by its one caller, `SmacApp._restore_session`.
         """
         if not path.exists():
             return None
@@ -117,17 +145,14 @@ class SmacApi:
             base_url=self.url, transport=transport, timeout=10.0
         )
         # `SmacApp` (smac_cli/app.py) calls the same `SmacApi` instance from
-        # several worker threads at once (command handlers, mark-read,
-        # load-older, and -- SMAC-72 task 5 -- the channel feed's and the
-        # mention bell's own background threads all calling `ws_channel_url`/
-        # `ws_events_url`, both of which refresh unconditionally). The
-        # refresh token is single-use/rotating server-side (`app/routers/
-        # auth.py:refresh` deletes it on redemption), so two threads racing
-        # to redeem the SAME token would have the loser's redeem rejected --
-        # and `_refresh`'s failure path wipes `self.session` entirely,
-        # taking down every other in-flight call sharing this instance.
-        # This lock serializes the redeem; see `_refresh` for how the loser
-        # recognizes a token already rotated out from under it.
+        # several worker threads at once. Both refresh tokens (account and
+        # workspace) are single-use/rotating server-side (`app/routers/
+        # auth.py:refresh` deletes the row on redemption), so two threads
+        # racing to redeem the SAME token would have the loser's redeem
+        # rejected -- this lock serializes every refresh attempt (account
+        # or workspace) through this instance; see `_try_refresh_workspace`/
+        # `_try_refresh_account` for how a loser recognizes a token already
+        # rotated out from under it.
         self._refresh_lock = threading.Lock()
 
     # -- low-level plumbing --------------------------------------------
@@ -182,43 +207,106 @@ class SmacApi:
         session_path().unlink(missing_ok=True)
         self.session = None
 
-    def _refresh(self) -> None:
-        """Rotate the current session's tokens via `/auth/refresh`.
+    # -- refresh chain ------------------------------------------------------
+    #
+    # Two independent token pairs can each be rotated: `_try_refresh_
+    # workspace`/`_try_refresh_account`. Neither invalidates the session on
+    # failure by itself -- they just report success/failure -- so the
+    # workspace-tier recovery chain (`_recover_workspace_session`) can fall
+    # through from a failed workspace refresh to an account-refresh-and-
+    # re-mint attempt before giving up. Only the top-level callers
+    # (`_authed_request`, `_account_authed_request`, `_recover_workspace_
+    # session`) ever actually invalidate.
 
-        On success, the new tokens are saved immediately (same file,
-        same session). On failure, the saved session is deleted and
-        `SessionExpired` is raised -- there is nothing left to retry but
-        `/login`.
+    def _try_refresh_workspace(self) -> bool:
+        """Attempt to rotate the WORKSPACE token pair via `/auth/refresh`.
 
-        Thread-safe against a concurrent `_refresh()` on the same
-        instance (see `__init__`'s docstring on `_refresh_lock`): the
-        refresh token to redeem is captured *before* acquiring the lock,
-        and re-checked just after -- if it no longer matches
-        `self.session.refresh_token`, another thread already redeemed it
-        (and this thread's own session is already up to date from that),
-        so this call simply returns instead of re-sending a token the
-        server has already rotated out from under it.
+        Returns `True` on success (the session's workspace fields are
+        updated and saved), `False` on failure -- the session is left
+        untouched either way; the caller decides what happens next.
+        Thread-safe: the refresh token to redeem is captured before
+        acquiring `_refresh_lock` and re-checked just after, so a
+        concurrent call that already rotated this same token is reported
+        as a (no-op) success rather than re-presenting an already-spent
+        token to the server.
         """
-        if self.session is None:
-            raise SessionExpired("No active session.")
+        if self.session is None or self.session.refresh_token is None:
+            return False
         presented = self.session.refresh_token
         with self._refresh_lock:
             if self.session is None:
-                raise SessionExpired("No active session.")
+                return False
             if self.session.refresh_token != presented:
-                return  # a concurrent call already refreshed this session
+                return True  # a concurrent call already refreshed this
             response = self._send(
-                "POST",
-                "/auth/refresh",
-                json_body={"refresh_token": presented},
+                "POST", "/auth/refresh", json_body={"refresh_token": presented}
             )
             if response.status_code != 200:
-                self._invalidate_session()
-                raise SessionExpired()
+                return False
             data = response.json()
             self.session.access_token = data["access_token"]
             self.session.refresh_token = data["refresh_token"]
             self.session.save(session_path())
+            return True
+
+    def _try_refresh_account(self) -> bool:
+        """The account-tier twin of `_try_refresh_workspace` -- same
+        contract, rotates `account_access_token`/`account_refresh_token`
+        instead."""
+        if self.session is None or self.session.account_refresh_token is None:
+            return False
+        presented = self.session.account_refresh_token
+        with self._refresh_lock:
+            if self.session is None:
+                return False
+            if self.session.account_refresh_token != presented:
+                return True  # a concurrent call already refreshed this
+            response = self._send(
+                "POST", "/auth/refresh", json_body={"refresh_token": presented}
+            )
+            if response.status_code != 200:
+                return False
+            data = response.json()
+            self.session.account_access_token = data["access_token"]
+            self.session.account_refresh_token = data["refresh_token"]
+            self.session.save(session_path())
+            return True
+
+    def _recover_workspace_session(self) -> None:
+        """A workspace-tier request 401'd: try to make the session usable
+        again, or raise `SessionExpired` (and wipe the session) once every
+        option is exhausted.
+
+        The chain (brief, binding): workspace refresh -> account-refresh
+        fallback (rotate the account pair, then re-mint a fresh workspace
+        pair via `POST /workspaces/{id}/token`) -> `SessionExpired`. The
+        fallback exists because the workspace and account refresh tokens
+        can go stale independently (e.g. a long-idle client whose
+        workspace refresh token was already redeemed/expired while the
+        account token is still good) -- falling back keeps the caller
+        logged in without forcing a full `/login` whenever the account
+        session itself is still perfectly valid.
+        """
+        if self._try_refresh_workspace():
+            return
+        if self.session is not None and self.session.workspace_id is not None:
+            workspace_id = self.session.workspace_id
+            if self._try_refresh_account():
+                assert self.session is not None
+                response = self._send(
+                    "POST",
+                    f"/workspaces/{workspace_id}/token",
+                    bearer=self.session.account_access_token,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    self.session.workspace_id = workspace_id
+                    self.session.access_token = data["access_token"]
+                    self.session.refresh_token = data["refresh_token"]
+                    self.session.save(session_path())
+                    return
+        self._invalidate_session()
+        raise SessionExpired()
 
     def _authed_request(
         self,
@@ -228,15 +316,22 @@ class SmacApi:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        """Issue an authenticated request, refreshing-and-retrying once on a 401.
+        """Issue a WORKSPACE-tier authenticated request, recovering-and-
+        retrying once on a 401.
 
-        A 401 on the first attempt triggers exactly one `/auth/refresh` +
-        retry; a 401 on the retry (or a failed refresh) raises
-        `SessionExpired` and deletes the saved session -- refresh is never
-        attempted more than once per call.
+        Raises `NoWorkspaceError` immediately (no request sent) if the
+        session has no workspace token yet -- distinct from
+        `SessionExpired`: the account itself is fine, there's just no
+        workspace entered (spec: `/register`'s no-workspace landing
+        state). A 401 on the first attempt triggers exactly one
+        `_recover_workspace_session()` + retry; a 401 on the retry (or a
+        failed recovery) raises `SessionExpired` and deletes the saved
+        session -- recovery is never attempted more than once per call.
         """
         if self.session is None:
             raise SessionExpired("No active session.")
+        if self.session.access_token is None:
+            raise NoWorkspaceError()
         response = self._send(
             method,
             path,
@@ -245,16 +340,13 @@ class SmacApi:
             bearer=self.session.access_token,
         )
         if response.status_code == 401:
-            self._refresh()
-            if self.session is None:
-                # Finding J: a concurrent force-expiry -- another thread's
-                # own failed refresh redeeming this same token first, then
-                # invalidating the shared session -- can null `self.session`
-                # in the narrow window between `_refresh()` returning
-                # successfully here and this retry reading `self.session.
-                # access_token` below. Surface the same `SessionExpired` a
-                # normal failed refresh would, rather than an
-                # `AttributeError` crashing whatever worker called this.
+            self._recover_workspace_session()  # raises SessionExpired on failure
+            if self.session is None or self.session.access_token is None:
+                # Finding J: a concurrent force-expiry (another thread's own
+                # failed refresh invalidating this shared session) can null
+                # `self.session` in the narrow window right after recovery
+                # returns here. Surface the same `SessionExpired` a normal
+                # failed recovery would, rather than an `AttributeError`.
                 raise SessionExpired()
             response = self._send(
                 method,
@@ -268,24 +360,72 @@ class SmacApi:
                 raise SessionExpired()
         return self._parse(response)
 
+    def _account_authed_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        """The ACCOUNT-tier twin of `_authed_request`: one refresh-and-
+        retry on a 401, via `_try_refresh_account` only -- there is no
+        further fallback tier above "account", so a failed refresh here
+        goes straight to `SessionExpired`."""
+        if self.session is None or self.session.account_access_token is None:
+            raise SessionExpired("No active session.")
+        response = self._send(
+            method,
+            path,
+            json_body=json_body,
+            params=params,
+            bearer=self.session.account_access_token,
+        )
+        if response.status_code == 401:
+            if not self._try_refresh_account():
+                self._invalidate_session()
+                raise SessionExpired()
+            if self.session is None or self.session.account_access_token is None:
+                raise SessionExpired()
+            response = self._send(
+                method,
+                path,
+                json_body=json_body,
+                params=params,
+                bearer=self.session.account_access_token,
+            )
+            if response.status_code == 401:
+                self._invalidate_session()
+                raise SessionExpired()
+        return self._parse(response)
+
     def _require_workspace_id(self) -> str:
-        """The active session's workspace_id, or `SessionExpired` if logged out."""
+        """The active session's workspace_id, `SessionExpired` if logged
+        out entirely, or `NoWorkspaceError` if logged in but no workspace
+        has been entered yet."""
         if self.session is None:
             raise SessionExpired("No active session.")
+        if self.session.workspace_id is None:
+            raise NoWorkspaceError()
         return self.session.workspace_id
 
-    def _session_from_auth_out(self, email: str, data: dict[str, Any]) -> Session:
-        """Build+save a `Session` from a `WorkspaceAuthOut`-shaped response."""
-        session = Session(
-            url=self.url,
-            workspace_id=data["workspace"]["workspace_id"],
-            access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
-            email=email,
-        )
-        session.save(session_path())
-        self.session = session
-        return session
+    def _apply_workspace_auth_out(self, data: dict[str, Any]) -> tuple[Session, str]:
+        """Fold a `WorkspaceAuthOut`-shaped response (every workspace-birth
+        door: `POST /workspaces`, `.../register`, `/workspaces/join`) into
+        the CURRENT session -- account fields/email untouched, workspace
+        fields overwritten -- save it, and return `(session, workspace_
+        name)`. `workspace_name` is handed back explicitly because `Session`
+        itself never carries it (spec-pinned shape) and the caller doesn't
+        always already know it (e.g. `/join <code>` -- the code is the
+        only thing the caller had going in)."""
+        if self.session is None:
+            raise SessionExpired("No active session.")
+        workspace = data["workspace"]
+        self.session.workspace_id = workspace["workspace_id"]
+        self.session.access_token = data["access_token"]
+        self.session.refresh_token = data["refresh_token"]
+        self.session.save(session_path())
+        return self.session, str(workspace["workspace_name"])
 
     # -- unauthenticated endpoints ---------------------------------------
 
@@ -293,97 +433,133 @@ class SmacApi:
         """`GET /meta`: the server/API version handshake."""
         return self._parse(self._send("GET", "/meta"))
 
-    def discover(self, email: str, password: str) -> list[dict[str, Any]]:
-        """`POST /auth/discover`: every workspace these credentials open."""
+    def signup(self, email: str, password: str) -> Session:
+        """`POST /accounts`: create a global account (spec §2). Account-
+        tier tokens only -- no workspace yet, so `workspace_id`/
+        `access_token`/`refresh_token` are all `None` on the returned
+        session until `create_workspace`/`join_public`/`join_code`/
+        `enter_workspace` mints a workspace pair into it."""
         data = self._parse(
             self._send(
-                "POST",
-                "/auth/discover",
-                json_body={"email": email, "password": password},
-            )
-        )
-        return list(data["workspaces"])
-
-    def login(self, workspace_id: str, email: str, password: str) -> Session:
-        """`POST /auth/login`: exchange credentials for a token pair, save the session."""
-        data = self._parse(
-            self._send(
-                "POST",
-                "/auth/login",
-                json_body={
-                    "workspace_id": workspace_id,
-                    "email": email,
-                    "password": password,
-                },
+                "POST", "/accounts", json_body={"email": email, "password": password}
             )
         )
         session = Session(
             url=self.url,
-            workspace_id=workspace_id,
-            access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
             email=email,
+            account_access_token=data["tokens"]["access_token"],
+            account_refresh_token=data["tokens"]["refresh_token"],
         )
         session.save(session_path())
         self.session = session
         return session
 
-    def register_found(
-        self,
-        email: str,
-        password: str,
-        first_name: str,
-        last_name: str,
-        workspace_name: str,
-        visibility: str,
-    ) -> Session:
-        """`POST /workspaces`: found a brand-new workspace + admin account."""
+    def login(self, email: str, password: str) -> tuple[Session, list[dict[str, Any]]]:
+        """`POST /accounts/login`: global login (spec §2) -- no
+        `workspace_id` needed, unlike the retired workspace-scoped
+        `/auth/login`. Returns the saved account-only session plus every
+        workspace this account already has a profile in (`{workspace_id,
+        workspace_name, member_id, handle}` each), real data the retired
+        `/auth/discover` only ever simulated."""
         data = self._parse(
             self._send(
                 "POST",
-                "/workspaces",
-                json_body={
-                    "email": email,
-                    "password": password,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "workspace_name": workspace_name,
-                    "visibility": visibility,
-                },
+                "/accounts/login",
+                json_body={"email": email, "password": password},
             )
         )
-        return self._session_from_auth_out(email, data)
-
-    def register_into(
-        self,
-        workspace_id: str,
-        email: str,
-        password: str,
-        first_name: str,
-        last_name: str,
-    ) -> Session:
-        """`POST /workspaces/{id}/register`: join an existing (public, or
-        invited-into) workspace with a brand-new account."""
-        data = self._parse(
-            self._send(
-                "POST",
-                f"/workspaces/{workspace_id}/register",
-                json_body={
-                    "email": email,
-                    "password": password,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                },
-            )
+        session = Session(
+            url=self.url,
+            email=email,
+            account_access_token=data["tokens"]["access_token"],
+            account_refresh_token=data["tokens"]["refresh_token"],
         )
-        return self._session_from_auth_out(email, data)
+        session.save(session_path())
+        self.session = session
+        return session, list(data["workspaces"])
 
     def search_public(self, q: str = "") -> list[dict[str, Any]]:
         """`GET /workspaces/search`: public workspaces matching `q` (or all, if blank)."""
         params = {"name": q} if q else None
         return list(self._parse(self._send("GET", "/workspaces/search", params=params)))
 
-    # -- authenticated endpoints ------------------------------------------
+    # -- account-tier endpoints -------------------------------------------
+
+    def enter_workspace(self, workspace_id: str) -> None:
+        """`POST /workspaces/{id}/token` (account bearer): exchange the
+        account token for a fresh WORKSPACE token pair for a workspace
+        this account already belongs to, and mint it into the current
+        session (saved immediately). Used by `/login`'s memberships
+        picker/auto-login branches -- registering into a BRAND NEW
+        workspace instead goes through `create_workspace`/`join_public`/
+        `join_code`, which mint their own convenience workspace pair
+        directly in their response."""
+        data = self._account_authed_request("POST", f"/workspaces/{workspace_id}/token")
+        if self.session is None:
+            raise SessionExpired()
+        self.session.workspace_id = workspace_id
+        self.session.access_token = data["access_token"]
+        self.session.refresh_token = data["refresh_token"]
+        self.session.save(session_path())
+
+    def create_workspace(
+        self, name: str, visibility: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        """`POST /workspaces` (account bearer): found a brand-new
+        workspace, linking the caller's EXISTING account as its admin
+        (spec §3) -- no email/password here anymore, that's `signup`'s job."""
+        data = self._account_authed_request(
+            "POST",
+            "/workspaces",
+            json_body={
+                "workspace_name": name,
+                "visibility": visibility,
+                "display_first_name": first_name,
+                "display_last_name": last_name,
+            },
+        )
+        return self._apply_workspace_auth_out(data)
+
+    def join_public(
+        self, workspace_id: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        """`POST /workspaces/{id}/register` (account bearer): join a
+        workspace directly by id (public: open door; private: only with a
+        reserved seat matching the caller's account email)."""
+        data = self._account_authed_request(
+            "POST",
+            f"/workspaces/{workspace_id}/register",
+            json_body={"first_name": first_name, "last_name": last_name},
+        )
+        return self._apply_workspace_auth_out(data)
+
+    def join_code(
+        self, code: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        """`POST /workspaces/join` (account bearer): join the workspace a
+        shareable invite code belongs to."""
+        data = self._account_authed_request(
+            "POST",
+            "/workspaces/join",
+            json_body={"code": code, "first_name": first_name, "last_name": last_name},
+        )
+        return self._apply_workspace_auth_out(data)
+
+    def mint_invite_code(self) -> dict[str, Any]:
+        """`POST /workspaces/{workspace_id}/invites` (workspace bearer,
+        admin): mint a fresh shareable multi-use join code. The full
+        `InviteOut` dict is returned (its `"code"` key is what `/invite`
+        prints)."""
+        workspace_id = self._require_workspace_id()
+        return dict(
+            self._authed_request(
+                "POST",
+                f"/workspaces/{workspace_id}/invites",
+                json_body={"invite_type": "code"},
+            )
+        )
+
+    # -- workspace-tier endpoints ------------------------------------------
 
     def whoami(self) -> dict[str, Any]:
         """`GET /members/me`: the logged-in member's own full profile."""
@@ -493,9 +669,19 @@ class SmacApi:
         request happened to 401) is what makes that guarantee hold even
         right after a session was restored from disk on a fresh launch,
         when the access token may already be stale from a previous run.
+        Uses the same workspace-refresh-then-account-fallback chain as an
+        ordinary 401 recovery (`_recover_workspace_session`), since a
+        WebSocket connect has no response to react to if the plain
+        refresh alone would have failed.
         """
-        self._refresh()
-        assert self.session is not None  # _refresh() raises SessionExpired otherwise
+        self._require_workspace_id()  # NoWorkspaceError if nothing to refresh
+        # `_recover_workspace_session` itself starts with a plain workspace
+        # refresh attempt (falling back through the account tier only if
+        # that fails), so calling it unconditionally here -- rather than
+        # trying `_try_refresh_workspace` first and only falling back on
+        # failure -- gets the same "always refresh" guarantee in one call.
+        self._recover_workspace_session()  # raises SessionExpired on total failure
+        assert self.session is not None  # the above raises SessionExpired otherwise
         scheme = "wss" if self.url.startswith("https://") else "ws"
         host_and_port = self.url.split("://", 1)[1]
         return f"{scheme}://{host_and_port}{path}?token={self.session.access_token}"
