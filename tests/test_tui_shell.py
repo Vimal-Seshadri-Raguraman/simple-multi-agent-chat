@@ -730,6 +730,28 @@ async def test_join_no_code_shows_usage() -> None:
         await _wait_until(pilot, lambda: "usage: /join <code>" in _body_text(app))
 
 
+@pytest.mark.anyio
+async def test_join_logged_out_fails_before_prompting() -> None:
+    """Final-review MINOR-4: logged out, `/join <code>` used to ask for
+    first name then last name and only THEN die with "No active
+    session." -- two wasted answers before an unhelpful message. The
+    session check now runs before any prompting, so the actionable
+    system line appears immediately and the name prompts never show."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/join abc123")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot,
+            lambda: "create an account first: /register (then /join <code>)"
+            in _body_text(app),
+        )
+        assert app.footer_input.placeholder != "first name"
+
+
 # --------------------------------------------------------------------------
 # /login: one-match, multi-match picker, zero-match join frame
 # --------------------------------------------------------------------------
@@ -874,7 +896,10 @@ async def test_login_zero_memberships_join_flow_filters_and_registers() -> None:
         )
         await _wait_until(pilot, lambda: app.pullup.option_count == 2)
         assert "public workspaces (type to search):" in app._log_lines
-        assert "(or /workspace create <name>, or /join <code>)" in app._log_lines
+        assert (
+            "(or /workspace create <name>, or /join <code>, or Esc to go back)"
+            in app._log_lines
+        )
         assert "── public workspaces (type to search): ──" not in app._log_lines
 
         await pilot.press(*"fin")

@@ -7,6 +7,8 @@ Also covers the spec §1 invariant required by Task 1's review: every
 member's `member_type` equals its linked account's `account_type`.
 """
 
+from datetime import datetime, timezone
+
 import app.database as database_module
 from app.models import Account, Member
 from tests.conftest import founder_auth, founder_headers, member_auth
@@ -92,6 +94,50 @@ def test_attach_dedupes_handle_locally(client):
     assert attached.status_code == 200
     assert attached.json()["handle"] == "analyst2"
     assert attached.json()["member_name"] == "Analyst"
+
+
+def test_attach_name_source_is_deterministic_oldest_membership(client):
+    """Final-review MINOR-3: `_attach`'s source membership must be the
+    account's OLDEST (by created_at, then member_id) -- not an arbitrary,
+    unordered row. Back-dates the SECOND-inserted membership to be older
+    (by `created_at`) than the first-inserted one and gives it a
+    distinguishable name: a third attach must copy the back-dated row's
+    name, proving the source is picked by `created_at`/`member_id`
+    ordering and not by insertion (rowid) order, which an unordered
+    `.first()` would have returned instead.
+    """
+    founder_auth(client, "wa")
+    founder_auth(client, "wb")
+    founder_auth(client, "wc")
+
+    first = client.post(
+        "/members/agents",
+        json={"member_name": "First Created"},
+        headers=founder_headers(client, "wa"),
+    ).json()
+    with database_module.SessionLocal() as db:
+        member = db.query(Member).filter(Member.member_id == first["member_id"]).one()
+        account_id = member.account_id
+
+    second = client.post(
+        "/members/agents",
+        json={"account_id": account_id},
+        headers=founder_headers(client, "wb"),
+    ).json()
+
+    with database_module.SessionLocal() as db:
+        row = db.query(Member).filter(Member.member_id == second["member_id"]).one()
+        row.member_name = "Actually Oldest"
+        row.created_at = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        db.add(row)
+        db.commit()
+
+    third = client.post(
+        "/members/agents",
+        json={"account_id": account_id},
+        headers=founder_headers(client, "wc"),
+    ).json()
+    assert third["member_name"] == "Actually Oldest"
 
 
 def test_attach_already_a_member_is_409(client):

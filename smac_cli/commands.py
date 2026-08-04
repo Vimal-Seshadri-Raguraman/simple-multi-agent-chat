@@ -132,12 +132,21 @@ def cmd_join(app: "SmacApp", args: str) -> None:
     account may already exist, but this is always a brand-new membership,
     so a name is always needed) then lands in `#general` of whichever
     workspace the code belongs to.
+
+    Logged out, this used to prompt for both names and only THEN fail
+    deep inside `api.join_code` with a bare "No active session." --
+    final-review MINOR-4. The session check now runs BEFORE any
+    prompting, so a logged-out `/join <code>` fails immediately with an
+    actionable next step instead of wasting two answers first.
     """
     from smac_cli.app import cache_workspace_name
 
     code = args.strip()
     if not code:
         app.system_line("usage: /join <code>")
+        return
+    if app.api.session is None or app.api.session.account_access_token is None:
+        app.system_line("create an account first: /register (then /join <code>)")
         return
     first_name, last_name = _ask_display_name(app)
     session, workspace_name = app.api.join_code(code, first_name, last_name)
@@ -223,7 +232,7 @@ def cmd_login(app: "SmacApp", args: str) -> None:
             for w in app.api.search_public(query)
         ]
 
-    app.write_line("(or /workspace create <name>, or /join <code>)")
+    app.write_line("(or /workspace create <name>, or /join <code>, or Esc to go back)")
     workspace_id, workspace_name = app.choose(
         _search(""), filterable=True, on_filter=_search
     )

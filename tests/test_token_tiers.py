@@ -1,7 +1,11 @@
-"""Two-tier auth (SMAC-79 Task 1, spec §2): account-scope vs
-workspace-scope tokens are enforced in BOTH directions, refresh echoes
-the stored scope, and every legacy (pre-Identity-v2) token keeps working
-exactly as before -- the Task-1 invariant (nothing legacy changes).
+"""Two-tier auth (SMAC-79, spec §2): account-scope vs workspace-scope
+tokens are enforced in BOTH directions, and refresh echoes the stored
+scope. As of the Task 2 cutover, legacy (pre-Identity-v2, scope-less)
+tokens are REJECTED rather than treated as workspace-tier -- every
+session was purged by migration B and every door mints a scoped token
+now, so a scope-less token can only be a forged or otherwise-invalid
+credential (`test_legacy_scopeless_token_is_rejected_on_workspace_endpoints`
+below).
 """
 
 from tests.conftest import founder_auth, founder_headers

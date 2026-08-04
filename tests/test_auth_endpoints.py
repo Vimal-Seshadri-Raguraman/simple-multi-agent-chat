@@ -256,6 +256,105 @@ def test_logout_cannot_kill_another_members_token(client):
     assert response.status_code == 200
 
 
+def test_logout_revokes_account_tier_refresh_token(client):
+    """Final-review IMPORTANT-2: `/auth/logout` used to require a
+    workspace token (`get_current_member`), so an account that has never
+    entered a workspace had no way to log out at all. An account-tier
+    caller presenting its OWN account-tier refresh token must now
+    actually revoke it -- proven by the subsequent refresh failing, not
+    just a 200 status (a 200-but-nothing-deleted response is exactly the
+    bug this replaces)."""
+    account = client.post(
+        "/accounts",
+        json={"email": "bare-account@example.com", "password": "s3cret-password"},
+    ).json()
+    tokens = account["tokens"]
+    response = client.post(
+        "/auth/logout",
+        json={"refresh_token": tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "logged_out"}
+
+    replay = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+
+
+def test_logout_workspace_tier_still_works_unchanged(client):
+    """Workspace-tier logout (the pre-existing, already-tested contract)
+    must be unaffected by widening `/auth/logout` to accept account
+    tokens too."""
+    tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Logout Unchanged"),
+        headers=_account_headers(client, "alice-logout-unchanged@example.com"),
+    ).json()
+    response = client.post(
+        "/auth/logout",
+        json={"refresh_token": tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "logged_out"}
+
+    replay = client.post(
+        "/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert replay.status_code == 401
+
+
+def test_logout_cross_scope_presentation_cannot_delete_wrong_row(client):
+    """Final-review IMPORTANT-2, second half: holding a WORKSPACE token
+    and presenting the caller's own ACCOUNT-tier refresh token (or vice
+    versa) must not delete it -- the row match is scope-correct, not just
+    "any refresh token the request can name". Idempotent 200 either way
+    (anti-probing, unchanged), but the presented token must still be
+    live afterwards.
+    """
+    account = client.post(
+        "/accounts",
+        json={
+            "email": "alice-cross-scope@example.com",
+            "password": "s3cret-password",
+        },
+    ).json()
+    account_tokens = account["tokens"]
+    workspace_tokens = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, workspace_name="Wonderland Cross Scope"),
+        headers={"Authorization": f"Bearer {account_tokens['access_token']}"},
+    ).json()
+
+    # Workspace-tier access token presenting the ACCOUNT-tier refresh
+    # token: 200 (idempotent), but nothing is actually revoked.
+    cross_response = client.post(
+        "/auth/logout",
+        json={"refresh_token": account_tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {workspace_tokens['access_token']}"},
+    )
+    assert cross_response.status_code == 200
+    still_live = client.post(
+        "/auth/refresh", json={"refresh_token": account_tokens["refresh_token"]}
+    )
+    assert still_live.status_code == 200
+
+    # Account-tier access token presenting the WORKSPACE-tier refresh
+    # token: same story, reversed.
+    cross_response_2 = client.post(
+        "/auth/logout",
+        json={"refresh_token": workspace_tokens["refresh_token"]},
+        headers={"Authorization": f"Bearer {account_tokens['access_token']}"},
+    )
+    assert cross_response_2.status_code == 200
+    workspace_refresh_still_live = client.post(
+        "/auth/refresh", json={"refresh_token": workspace_tokens["refresh_token"]}
+    )
+    assert workspace_refresh_still_live.status_code == 200
+
+
 def test_password_byte_cap_not_char_cap(client):
     """bcrypt's 72-byte limit is enforced at signup (POST /accounts) now
     -- the workspace join doors no longer carry a password at all."""

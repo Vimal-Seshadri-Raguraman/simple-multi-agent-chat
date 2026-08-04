@@ -13,7 +13,7 @@ from datetime import timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.auth import get_current_member
+from app.auth import get_current_member_or_account
 from app.database import get_db
 from app.errors import InvalidTokenError
 from app.models import Account, Member, RefreshToken, utcnow
@@ -122,17 +122,47 @@ def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPairOut:
 @router.post("/auth/logout")
 def logout(
     body: LogoutIn,
-    current_member: Member = Depends(get_current_member),
+    current: tuple[Member | None, Account | None] = Depends(
+        get_current_member_or_account
+    ),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    """Revoke one refresh token belonging to the caller.
+    """Revoke one refresh token belonging to the caller, at EITHER tier
+    (spec §2 lists `/auth/logout` in the account-scope surface -- an
+    account that has signed up but never entered a workspace still needs
+    a way to kill its refresh token, not just workspace members).
 
-    Idempotent: unknown or already-revoked tokens still return 200 so the
-    response can't be used to probe token validity. The access token remains
+    The match is scope-correct: a workspace-tier caller can only delete a
+    `scope="workspace"` row keyed by their own `member_id`; an
+    account-tier caller can only delete a `scope="account"` row keyed by
+    their own `account_id`. A row's `member_id` is NULL for account-scope
+    rows (and vice versa), so comparing across tiers is never even
+    attempted -- presenting the *other* tier's refresh token while
+    authenticated at the wrong tier can't delete it, same as presenting
+    someone else's token entirely.
+
+    Idempotent: unknown, already-revoked, or wrong-tier/wrong-owner tokens
+    still return 200 so the response can't be used to probe token
+    validity -- but when the presented token DOES belong to the caller at
+    the caller's own tier, the row actually gets deleted now (the bug
+    this replaces: comparing an account-scope row's always-NULL
+    `member_id` against `current_member.member_id` silently deleted
+    nothing while still reporting success). The access token remains
     valid until its natural expiry (accepted JWT tradeoff, see spec).
     """
+    current_member, current_account = current
     row = db.get(RefreshToken, hash_token(body.refresh_token))
-    if row is not None and row.member_id == current_member.member_id:
-        db.delete(row)
-        db.commit()
+    if row is not None:
+        owns_row = (
+            current_member is not None
+            and row.scope == "workspace"
+            and row.member_id == current_member.member_id
+        ) or (
+            current_account is not None
+            and row.scope == "account"
+            and row.account_id == current_account.account_id
+        )
+        if owns_row:
+            db.delete(row)
+            db.commit()
     return {"status": "logged_out"}

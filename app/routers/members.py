@@ -72,7 +72,18 @@ def _attach(
         raise AlreadyAMemberError(
             f"Account '{account_id}' is already a member of this workspace"
         )
-    prior = db.query(Member).filter(Member.account_id == account_id).first()
+    # Deterministic source (final-review MINOR-3): the account's OLDEST
+    # membership, not an arbitrary/unordered row across every workspace it
+    # has ever joined. `created_at` then `member_id` (a real tie-break,
+    # not just "whatever SQLite happened to hand back") matches every
+    # other oldest-wins convention in this codebase (e.g. migration A's
+    # backfill).
+    prior = (
+        db.query(Member)
+        .filter(Member.account_id == account_id)
+        .order_by(Member.created_at, Member.member_id)
+        .first()
+    )
     member_name = prior.member_name if prior is not None else account_id
     raw_key = generate_api_key()
     member = Member(

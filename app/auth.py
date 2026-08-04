@@ -24,7 +24,7 @@ from app.errors import (
     WorkspaceTokenRequiredError,
 )
 from app.models import Account, Member
-from app.security import decode_access_token, decode_access_token_claims, hash_token
+from app.security import decode_access_token_claims, hash_token
 
 
 def generate_api_key() -> str:
@@ -131,11 +131,83 @@ def get_current_account(
     return account
 
 
+def resolve_member_or_account(
+    db: Session, bearer_token: str | None
+) -> tuple[Member | None, Account | None]:
+    """Resolve a bearer token at EITHER tier -- unlike `resolve_member`/
+    `resolve_account`, which each lock to one tier and reject the other as
+    wrong-tier, this accepts a workspace-tier token as `(member, None)` or
+    an account-tier token as `(None, account)`. For `/auth/logout` only
+    (spec §2 lists it in the account-scope surface, but it must also stay
+    reachable with a workspace token -- a bare account with no workspace
+    yet still needs a way to revoke its refresh token). A scope-less
+    (pre-Identity-v2) token has no tier to resolve at either door, so it's
+    treated the same as any other invalid/expired token. Returns `(None,
+    None)` only when no credential was presented at all.
+    """
+    if not bearer_token:
+        return None, None
+    claims = decode_access_token_claims(bearer_token)
+    if claims is None:
+        raise InvalidTokenError("Access token is invalid or expired")
+    scope = claims.get("scope")
+    if scope == "account":
+        account_id = claims["sub"]
+        assert isinstance(account_id, str)  # decode_access_token_claims guarantees this
+        account = db.get(Account, account_id)
+        if account is None:
+            raise InvalidTokenError("Access token references an unknown account")
+        return None, account
+    if scope == "workspace":
+        member_id = claims["sub"]
+        assert isinstance(member_id, str)  # decode_access_token_claims guarantees this
+        member = db.get(Member, member_id)
+        if member is None:
+            raise InvalidTokenError("Access token references an unknown member")
+        return member, None
+    raise InvalidTokenError("Access token is invalid or expired")
+
+
+def get_current_member_or_account(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> tuple[Member | None, Account | None]:
+    """FastAPI dependency: the authenticated member OR account, or 401.
+
+    Exactly one element of the returned pair is non-None on success.
+    """
+    bearer_token: str | None = None
+    if authorization is not None and authorization.lower().startswith("bearer "):
+        bearer_token = authorization[7:]
+    member, account = resolve_member_or_account(db, bearer_token)
+    if member is None and account is None:
+        raise UnauthorizedError("Missing or invalid Authorization bearer token")
+    return member, account
+
+
 def resolve_ws_credential(db: Session, raw: str | None) -> Member | None:
-    """Resolve a WebSocket credential: JWT first, then API-key lookup."""
+    """Resolve a WebSocket credential: JWT first, then API-key lookup.
+
+    Mirrors `resolve_member`'s HTTP-side tier gate (spec §2): only a JWT
+    with `scope == "workspace"` resolves. A well-formed JWT with no
+    `scope` claim at all (legacy pre-Identity-v2 shape) or `scope ==
+    "account"` (right tier of credential, wrong door) is a real,
+    valid-looking token that must still be REJECTED here -- returning
+    None, same as any other bad credential, which both socket routes
+    already turn into `close(code=4401)`. Without this gate, a
+    scope-less token that `get_current_member` rejects on every HTTP
+    route would still open a live channel/events feed (the WS path sat
+    outside the two-tier boundary the rest of the app enforces). The
+    fallback to API-key lookup only runs when `raw` isn't a decodable
+    JWT at all (a real API key never is one).
+    """
     if not raw:
         return None
-    member_id = decode_access_token(raw)
-    if member_id is not None:
+    claims = decode_access_token_claims(raw)
+    if claims is not None:
+        if claims.get("scope") != "workspace":
+            return None
+        member_id = claims["sub"]
+        assert isinstance(member_id, str)  # decode_access_token_claims guarantees this
         return db.get(Member, member_id)
     return db.query(Member).filter(Member.api_key_hash == hash_token(raw)).first()

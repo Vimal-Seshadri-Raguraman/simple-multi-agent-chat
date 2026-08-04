@@ -479,6 +479,15 @@ def test_identity_v2_migration_b_populated_db(tmp_path):
     uq_members_workspace_account -- and, via the real API post-upgrade,
     let the WINNER (oldest member's) password log in while the loser's
     password is rejected.
+
+    Final-review MINOR-7: also proves the batch rebuild's riskiest
+    property -- FK CHILDREN of a FK-referenced, populated `members` table
+    (channel_members/messages/mentions/workspace_invites, all keyed by
+    member_id) survive the copy/drop/rename intact, that SQLite's own FK
+    checker confirms every remaining foreign key resolves, and that the
+    migrated DB works beyond just login: minting a workspace token and
+    POSTing a brand-new message through the real API under FK
+    enforcement.
     """
     from app.security import hash_password
 
@@ -520,6 +529,34 @@ def test_identity_v2_migration_b_populated_db(tmp_path):
             " created_at) VALUES ('tok1', 'm1', '2099-01-01 00:00:00',"
             " '2026-01-01 00:00:00')"
         )
+        # FK children of `members`, populated pre-upgrade (MINOR-7): a
+        # channel, a channel membership, a message, a mention, and a
+        # pending email invite, all referencing m1 -- the batch rebuild
+        # that adds account_id NOT NULL to `members` must carry every one
+        # of these through, not just the `members` table itself.
+        conn.exec_driver_sql(
+            "INSERT INTO channels (channel_id, workspace_id, channel_name,"
+            " channel_name_key, created_at) VALUES ('c1', 'w1', 'general',"
+            " 'general', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO channel_members (channel_id, member_id, last_read_seq)"
+            " VALUES ('c1', 'm1', 0)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO messages (message_id, seq, channel_id, sender_member_id,"
+            " message_text, created_at) VALUES ('msg1', 1, 'c1', 'm1',"
+            " 'hello from before the cutover', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO mentions (mention_id, message_id, mentioned_member_id,"
+            " created_at) VALUES ('men1', 'msg1', 'm1', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO workspace_invites (invite_id, workspace_id, invite_type,"
+            " email, created_by, created_at) VALUES ('inv1', 'w1', 'email',"
+            " 'invitee@example.com', 'm1', '2026-01-01 00:00:00')"
+        )
 
     command.upgrade(_alembic_config(url), "head")
 
@@ -541,6 +578,35 @@ def test_identity_v2_migration_b_populated_db(tmp_path):
             ).scalar()
             == 0
         )
+        # FK children of `members` survived the batch rebuild intact --
+        # every row inserted above is still there, still pointing at m1.
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM channel_members WHERE member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM messages WHERE sender_member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM mentions WHERE mentioned_member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM workspace_invites WHERE created_by = 'm1'"
+            ).scalar()
+            == 1
+        )
+        # SQLite's own FK checker, not just row counts: every remaining
+        # foreign key in the migrated DB resolves to a real parent row.
+        assert conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall() == []
 
     client, restore = _client_for_migrated_db(url)
     try:
@@ -557,6 +623,29 @@ def test_identity_v2_migration_b_populated_db(tmp_path):
             )
             assert loser_login.status_code == 401
             assert loser_login.json()["error"]["code"] == "invalid_credentials"
+
+            # Non-login API exercise (MINOR-7): mint a workspace token for
+            # the winner and post a brand-new message with it -- the
+            # migrated DB must work beyond just login, through the exact
+            # FK-children path (channel_members/messages) proven intact
+            # above, with FK enforcement ON (`_client_for_migrated_db`
+            # calls `enable_sqlite_foreign_keys`).
+            workspace_token = c.post(
+                "/workspaces/w1/token",
+                headers={
+                    "Authorization": "Bearer "
+                    + winner_login.json()["tokens"]["access_token"]
+                },
+            )
+            assert workspace_token.status_code == 200
+            posted = c.post(
+                "/workspaces/w1/channels/c1/messages",
+                json={"message_text": "post-migration message"},
+                headers={
+                    "Authorization": "Bearer " + workspace_token.json()["access_token"]
+                },
+            )
+            assert posted.status_code == 200
     finally:
         restore()
 

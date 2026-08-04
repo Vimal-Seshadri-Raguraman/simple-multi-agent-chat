@@ -107,3 +107,60 @@ def test_websocket_rejects_garbage_token(client):
         with client.websocket_connect(f"{ws_url}?token=garbage.not.a.jwt"):
             pass
     assert exc_info.value.code == 4401
+
+
+def test_websocket_rejects_scopeless_and_account_tier_tokens(client):
+    """Tier enforcement (final-review IMPORTANT-1): a scope-less
+    (pre-Identity-v2 shape) JWT and an account-tier JWT must each be
+    rejected on BOTH sockets -- the same tier boundary
+    `app.auth.get_current_member` enforces on every HTTP route. Before
+    the fix, `resolve_ws_credential` never inspected `scope` at all, so a
+    scope-less token that HTTP rejects with 401 opened a live socket.
+    """
+    import jwt
+
+    from datetime import datetime, timedelta, timezone
+
+    from app.security import ACCESS_TOKEN_TTL_MINUTES, SECRET_KEY
+
+    workspace, channel, _ = _setup_channel_with_agent(client)
+    # The founder isn't a channel member yet (see
+    # test_websocket_receives_broadcast_message) -- add them so a
+    # workspace-tier token's *success* case below isn't confused with a
+    # 4403 channel-membership rejection.
+    client.post(
+        f"/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}/members",
+        json={"member_id": workspace["member_id"]},
+        headers=founder_headers(client, "w1"),
+    )
+    channel_url = (
+        f"/ws/workspaces/{workspace['workspace_id']}/channels/{channel['channel_id']}"
+    )
+    events_url = f"/ws/workspaces/{workspace['workspace_id']}/members/me/events"
+
+    scopeless = jwt.encode(
+        {
+            "sub": workspace["member_id"],
+            "exp": datetime.now(timezone.utc)
+            + timedelta(minutes=ACCESS_TOKEN_TTL_MINUTES),
+        },
+        SECRET_KEY,
+        algorithm="HS256",
+    )
+
+    for url in (channel_url, events_url):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(f"{url}?token={scopeless}"):
+                pass
+        assert exc_info.value.code == 4401
+
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(f"{url}?token={workspace['account_token']}"):
+                pass
+        assert exc_info.value.code == 4401
+
+    # Workspace-tier still works on both sockets.
+    with client.websocket_connect(f"{channel_url}?token={workspace['access_token']}"):
+        pass
+    with client.websocket_connect(f"{events_url}?token={workspace['access_token']}"):
+        pass
