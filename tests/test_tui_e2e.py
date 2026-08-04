@@ -19,6 +19,13 @@ Deliberately one long test rather than many small ones: the whole point
 of an e2e test is that each step's state (the session, the channel
 memberships, the read cursors) is exactly what the PREVIOUS step left
 behind, not a fixture's clean-room setup.
+
+A second module-level journey (SMAC-79 Task 4, spec §0's closing story)
+adds the piece the single-user test above can't reach: Alice and Bob on
+TWO SEPARATE `$HOME`s, sharing one real server -- `/register` -> `/workspace
+create` -> `/invite` on Alice's side, `/register` -> `/join <code>` on
+Bob's, a live cross-account @mention, and Bob's own Frame-8 relaunch on
+his own `$HOME`, independent of Alice's session entirely.
 """
 
 from __future__ import annotations
@@ -288,3 +295,196 @@ async def test_the_full_human_journey_register_to_relaunch(
         # No login screen at all -- straight in.
         assert "Welcome to SMAC" not in _body_text(app2)
         assert "/register" not in _body_text(app2)
+
+
+async def _press_line(pilot: Any, text: str) -> None:
+    """Type `text` into the footer input and press enter -- one TUI "line"."""
+    await pilot.press(*text)
+    await pilot.press("enter")
+
+
+async def _send_until_seen_live(
+    sender_pilot: Any,
+    text: str,
+    receiver_pilot: Any,
+    receiver_app: SmacApp,
+    *,
+    attempts: int = 6,
+    per_attempt_timeout: float = 1.0,
+) -> None:
+    """Send `text` from the sender's TUI (bare keypresses, re-sent on each
+    attempt) until it shows up in the RECEIVER's live feed -- the
+    TUI-to-TUI equivalent of `_post_until_seen`'s httpx-to-TUI race guard
+    above: a message sent the instant the receiver's own live feed thread
+    starts can beat that thread's WebSocket handshake."""
+    for _ in range(attempts):
+        await _press_line(sender_pilot, text)
+        deadline = time.monotonic() + per_attempt_timeout
+        while time.monotonic() < deadline:
+            if any(text in line for line in receiver_app._log_lines):
+                return
+            await receiver_pilot.pause(0.02)
+    raise AssertionError(f"{text!r} never appeared live after {attempts} attempts")
+
+
+@pytest.mark.anyio
+async def test_alice_invites_bob_across_fresh_homes_journey(
+    real_smac_server: tuple[str, Path],
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Alice -> Bob invite/join story (SMAC-30/SMAC-79, spec §0), two
+    SEPARATE `$HOME`s sharing one real server -- the exact scenario that
+    was impossible without Postman before Identity v2: Alice `/register`s
+    an account, `/workspace create`s her own workspace, `/invite`s a
+    shareable code; Bob, from a totally fresh machine (`$HOME`), never
+    having talked to this server before, `/register`s his OWN account and
+    `/join <code>`s straight into Alice's `#general`; Alice mentions Bob's
+    handle live, Bob's feed shows it; Bob relaunches and lands straight
+    back in (Frame-8 behavior), on his own `$HOME`, independent of
+    Alice's.
+    """
+    url, alice_home = real_smac_server
+    bob_home = tmp_path_factory.mktemp("smac-tui-bob-home")
+
+    monkeypatch.setattr(Path, "home", lambda: alice_home)
+
+    alice_api = SmacApi(url)
+    alice_app = SmacApp(alice_api)
+    bob_api = SmacApi(url)
+    bob_app = SmacApp(bob_api)
+
+    workspace_name = "Alice's Workspace"
+    alice_email = "alice@example.com"
+    bob_email = "bob@example.com"
+
+    async with alice_app.run_test() as alice_pilot, bob_app.run_test() as bob_pilot:
+        # -- Alice: /register (account-only), on alice_home --------------
+        await _wait_until(
+            alice_pilot,
+            lambda: any("server:" in line for line in alice_app._log_lines),
+        )
+        await _press_line(alice_pilot, "/register")
+        await _wait_until(
+            alice_pilot, lambda: alice_app.footer_input.placeholder == "email"
+        )
+        await _press_line(alice_pilot, alice_email)
+        await _wait_until(
+            alice_pilot, lambda: alice_app.footer_input.placeholder == "password"
+        )
+        await _press_line(alice_pilot, _TEST_PASSWORD)
+        await _wait_until(
+            alice_pilot, lambda: alice_app.header_text == "SMAC — no workspace yet"
+        )
+
+        # -- Alice: /workspace create -- founds her own workspace ---------
+        await _press_line(alice_pilot, f"/workspace create {workspace_name}")
+        await _wait_until(
+            alice_pilot, lambda: alice_app.footer_input.placeholder == "first name"
+        )
+        await _press_line(alice_pilot, "Alice")
+        await _wait_until(
+            alice_pilot, lambda: alice_app.footer_input.placeholder == "last name"
+        )
+        await _press_line(alice_pilot, "Founder")
+        await _wait_until(
+            alice_pilot, lambda: "visibility" in alice_app.footer_input.placeholder
+        )
+        await alice_pilot.press("enter")  # default: private
+        await _wait_until(
+            alice_pilot, lambda: alice_app.header_text == f"{workspace_name} — #general"
+        )
+        alice_handle = alice_api.whoami()["handle"]
+
+        # -- Alice: /invite -- mint a shareable code, capture it from the
+        #    body output (exactly as a real user would read it) ----------
+        lines_before_invite = len(alice_app._log_lines)
+        await _press_line(alice_pilot, "/invite")
+        await _wait_until(
+            alice_pilot,
+            lambda: any(
+                "invite code:" in line
+                for line in alice_app._log_lines[lines_before_invite:]
+            ),
+        )
+        invite_line = next(
+            line
+            for line in alice_app._log_lines[lines_before_invite:]
+            if "invite code:" in line
+        )
+        invite_code = invite_line.split("invite code:", 1)[1].strip()
+        assert invite_code
+
+        # -- Bob: a totally fresh $HOME from here on ----------------------
+        monkeypatch.setattr(Path, "home", lambda: bob_home)
+
+        # -- Bob: /register (his OWN account -- never talked to this
+        #    server before) --------------------------------------------
+        await _wait_until(
+            bob_pilot, lambda: any("server:" in line for line in bob_app._log_lines)
+        )
+        await _press_line(bob_pilot, "/register")
+        await _wait_until(
+            bob_pilot, lambda: bob_app.footer_input.placeholder == "email"
+        )
+        await _press_line(bob_pilot, bob_email)
+        await _wait_until(
+            bob_pilot, lambda: bob_app.footer_input.placeholder == "password"
+        )
+        await _press_line(bob_pilot, _TEST_PASSWORD)
+        await _wait_until(
+            bob_pilot, lambda: bob_app.header_text == "SMAC — no workspace yet"
+        )
+
+        # -- Bob: /join <code> -- lands straight in Alice's #general ------
+        await _press_line(bob_pilot, f"/join {invite_code}")
+        await _wait_until(
+            bob_pilot, lambda: bob_app.footer_input.placeholder == "first name"
+        )
+        await _press_line(bob_pilot, "Bob")
+        await _wait_until(
+            bob_pilot, lambda: bob_app.footer_input.placeholder == "last name"
+        )
+        await _press_line(bob_pilot, "Joiner")
+        await _wait_until(
+            bob_pilot, lambda: bob_app.header_text == f"{workspace_name} — #general"
+        )
+        assert bob_app.current_channel_name == "general"
+        assert f'joined "{workspace_name}"' in _body_text(bob_app)
+        bob_handle = bob_api.whoami()["handle"]
+        assert bob_handle != alice_handle
+
+        # -- Alice mentions Bob's handle live -- Bob's feed shows it -------
+        mention_text = f"@{bob_handle} welcome to the team"
+        await _send_until_seen_live(alice_pilot, mention_text, bob_pilot, bob_app)
+        seen_line = next(l for l in bob_app._log_lines if mention_text in l)
+        assert f"{alice_handle}:" in seen_line
+        assert f"@{bob_handle}" in seen_line
+        assert "<@" not in seen_line  # the raw mention token never leaks
+
+        # -- Bob: /quit -- clean shutdown, session kept on bob_home --------
+        await _press_line(bob_pilot, "/quit")
+        await _wait_until(
+            bob_pilot, lambda: any("goodbye" in line for line in bob_app._log_lines)
+        )
+
+    from smac_cli.paths import session_path
+
+    # Path.home is still bob_home here (never switched back) -- Bob's own
+    # session lives entirely under his own $HOME, independent of Alice's.
+    assert session_path().exists()
+
+    # -- Bob relaunches -- a BRAND NEW app instance, same (bob) $HOME:
+    #    straight back in, no login screen at all (Frame-8 behavior) ------
+    reloaded_bob_session = Session.load(session_path())
+    assert reloaded_bob_session is not None
+    bob_api2 = SmacApi(reloaded_bob_session.url, session=reloaded_bob_session)
+    bob_app2 = SmacApp(bob_api2)
+    async with bob_app2.run_test() as bob_pilot2:
+        await _wait_until(
+            bob_pilot2,
+            lambda: bob_app2.header_text == f"{workspace_name} — #general",
+        )
+        assert bob_app2.current_channel_name == "general"
+        assert "Welcome to SMAC" not in _body_text(bob_app2)
+        assert "/register" not in _body_text(bob_app2)

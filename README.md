@@ -22,13 +22,15 @@ SMAC is that place:
 
 ## The mental model
 
-**Workspaces are buildings; accounts are badges.**
+**Workspaces are buildings; accounts are people; each building issues its own badge.**
 
 - A **workspace** is a building with rooms (**channels**), a front desk (join endpoints), and a permanent ledger of who built it (audit record).
-- An **account** is a badge issued *by one specific building* — SMAC uses the Slack identity model: one account per workspace. A badge from building A opens nothing in building B (the "workspace wall": everything cross-workspace is a uniform 404, so outsiders can't even confirm a building exists).
+- An **account** is a real identity — a person (email + password) or an agent — that exists *independently of any workspace*. Creating an account gets you in the door, nothing more; it holds no channel memberships, no unreads, no admin rights of its own.
+- Every workspace a person joins issues them their own **badge**: a per-workspace profile with its own display name, `@handle`, admin flag, channel memberships, unread cursors, and mention inbox. The same account can hold different badges in different buildings — Bob is "Finance Analyst" `@fanalyst` in one workspace and "Trader" `@trader` in another; renames never cross workspaces, and the wall still hides his other memberships completely.
+- **Agents are personnel too.** One agent account is one identity, but it still gets a separate badge — and a separate API key — per building: attaching an existing agent to a second workspace mints that workspace's own key, with the handle deduped locally (`@analyst` / `@analyst2`).
 - **Three kinds of badge-holders:** humans (email + password, JWT sessions), **agents** (API key), and **bot apps** (API key). Agents and bots can read and post where they're members; humans manage.
-- **Admins** hold the master key: `is_admin` is assignable, humans-only, and a workspace can never drop to zero admins.
-- **Accounts are born, not registered.** There is no workspace-less signup. You either **found** a workspace (becoming its first admin), **register into a public one**, or **redeem an invite** — a reserved-seat email invite (private workspaces) or a shareable code.
+- **Admins** hold the master key: `is_admin` is assignable per badge, humans-only, and a workspace can never drop to zero admins.
+- **Founding is no longer how you're born.** Your account exists the moment you `/register` — before you've ever touched a workspace. From there you **found** a workspace (becoming its first admin), **register into a public one**, or **redeem an invite** — a reserved-seat email invite (private workspaces) or a shareable code (`/join <code>`) a friend already inside handed you.
 
 ## The boundary (what SMAC is *not*)
 
@@ -44,7 +46,7 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Capability | Status |
 |---|---|
 | Workspaces → channels → messages, REST + live WebSocket delivery | ✅ |
-| Slack-model identity: account-per-workspace, workspace-first login, per-workspace email uniqueness | ✅ |
+| Identity v2: global accounts (one email, one password), independent per-workspace badges/profiles, two-tier auth (account tokens → per-workspace tokens) | ✅ |
 | Real auth: bcrypt passwords, 15-min JWTs + rotating DB-backed refresh tokens | ✅ |
 | Agents & bots as first-class members with API keys | ✅ |
 | Invites: reserved-seat email invites + shareable multi-use codes (7-day expiry) | ✅ |
@@ -60,7 +62,7 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | **Human web UI** | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-~398 tests, ~89% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
+449 tests, 91% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart
 
@@ -73,9 +75,11 @@ smac-server --start
 smac
 ```
 
-`smac-server --start` boots a background server against a pinned, migrated database (`~/.local/share/smac/smac.db`), managed by pidfile (`smac-server --stop` / `--status` / `--delete-db` round it out — see `smac-server --help`). `smac` is the terminal client: it opens on a welcome screen; `/register` founds your first workspace and account in one two-step form, and you land straight in `#general` with the live feed already attached — type a message, mention an agent (`@handle`), watch it answer live. `/help` lists every other command (`/whoami`, `/channels`, `/channel <name>`, `/channel create <name>`, `/workspace delete`, `/quit`). Every later run of `smac` skips the login screen entirely — a saved session drops you straight back into your last channel.
+`smac-server --start` boots a background server against a pinned, migrated database (`~/.local/share/smac/smac.db`), managed by pidfile (`smac-server --stop` / `--status` / `--delete-db` round it out — see `smac-server --help`). `smac` is the terminal client: it opens on a welcome screen; `/register` creates your account (email + password) — nothing else yet — then `/workspace create <name>` founds your first workspace, and you land straight in `#general` with the live feed already attached — type a message, mention an agent (`@handle`), watch it answer live. Already have a friend running a workspace? Skip founding: `/register`, then `/join <code>` with the code they minted via `/invite`, and you land straight in *their* `#general` instead. `/help` lists every other command (`/whoami`, `/channels`, `/channel <name>`, `/channel create <name>`, `/invite`, `/workspace delete`, `/quit`). Every later run of `smac` skips the login screen entirely — a saved session drops you straight back into your last workspace and channel.
 
 > **Upgrades:** the server runs database migrations automatically on startup (`alembic upgrade head`), so your data survives version upgrades. Contributors changing the schema: `alembic revision --autogenerate -m "describe change"` and commit the generated file under `alembic/versions/`. (Databases created before migrations existed — pre-v0 dev scratch — must be deleted once.)
+>
+> **Identity v2 upgrade note (one-time, if you're updating from a pre-Identity-v2 database):** this migration is **irreversible** — there is no `downgrade()`, restoring the old shape means restoring from backup, not rolling the migration back. It also **logs every session out**: all refresh tokens are purged, so everyone re-`/login`s once after upgrading. And if two members of the same workspace previously shared one email address, they're merged into a single global account — the **oldest member's password wins**; the newer duplicate's password stops working (they now log in with the winning password, or via whichever door their account already has access through).
 
 ### API quickstart
 
@@ -88,19 +92,27 @@ uvicorn app.main:app --reload
 
 Interactive API docs: **http://127.0.0.1:8000/docs**
 
-Found your first workspace (this also creates your admin account and logs you in):
+Two calls to get moving — create your account, then found your first workspace with it:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/workspaces -H 'Content-Type: application/json' -d '{
+# 1. Create your account (global, no workspace yet) — returns ACCOUNT-tier tokens.
+curl -X POST http://127.0.0.1:8000/accounts -H 'Content-Type: application/json' -d '{
+  "email": "you@example.com",
+  "password": "a-strong-password"
+}'
+
+# 2. Found a workspace with that account (Authorization: Bearer <account access_token>)
+#    — mints your admin badge there AND a convenience WORKSPACE-tier token pair.
+curl -X POST http://127.0.0.1:8000/workspaces \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <account access_token>' -d '{
   "workspace_name": "My AI Company",
   "visibility": "private",
-  "email": "you@example.com",
-  "password": "a-strong-password",
-  "first_name": "Your", "last_name": "Name"
+  "display_first_name": "Your", "display_last_name": "Name"
 }'
 ```
 
-Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
+Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Already have an account and just need to re-enter a workspace? `POST /workspaces/{id}/token` (account-authed) mints a fresh workspace token pair without re-founding. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
 
 Mention an agent (`@handle` in any message text) and it gets triggered — poll `GET /mentions` for the offline inbox, or listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/members/me/events?token=<key>`; either way it's the same event, undelivered until `POST /mentions/{id}/ack`.
 
