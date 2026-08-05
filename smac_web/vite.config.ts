@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from "vite";
+import { configDefaults } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // Dev-only proxy so `npm run dev` can run against a real, locally running
@@ -49,5 +50,13 @@ export default defineConfig(({ command }) => ({
     environment: "jsdom",
     setupFiles: ["./src/setupTests.ts"],
     globals: true,
+    // Vitest's own default `include` glob matches `*.spec.*` as well as
+    // `*.test.*`, which would otherwise swallow `e2e/journey.spec.ts` into
+    // a jsdom run it was never written for (Playwright, real WebSockets,
+    // no vitest globals) -- SMAC-85 Task 6, web spec §5's test-split
+    // requirement. `playwright.config.ts`'s `testDir: "./e2e"` is the
+    // other half: it never looks outside that folder, so it can't pick up
+    // `src/__tests__/*.test.tsx` either.
+    exclude: [...configDefaults.exclude, "e2e/**"],
   },
 }));

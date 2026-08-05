@@ -59,10 +59,13 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Unreads & catch-up: per-channel read cursors, `GET /unreads` (counts + first-unread + mention badge), explicit mark-read | ✅ |
 | **MCP server** (Claude Desktop / ChatGPT as members) | ✅ |
 | **Human terminal UI** (`smac` — register/login, live channel feed, mentions, unread badges) | ✅ |
-| **Human web UI** | 🔜 |
+| **Human web UI** (register/login, workspaces, live channel feed, @/# autocomplete, mentions, bell + badges, Settings — responsive desktop + mobile tiers, one codebase) | ✅ |
+| Desktop app (Tauri shell around the same web codebase) | 🔜 |
+| Native mobile packaging (Android, PWA/Capacitor) | 🔜 |
+| Terminal UI "Bloomberg" upgrade (ribbon/ticker/split-panes/F-keys, tokens-restyled) | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-449 tests, 91% combined coverage (`app` + `smac_mcp` + `smac_cli`), SQLite foreign-key enforcement on in tests and production paths.
+468 Python tests (`app` + `smac_mcp` + `smac_cli`, 91%+ coverage) + 124 web unit tests (Vitest) + a 2-scenario Playwright e2e journey (`smac_web/e2e`) against a real spawned server, SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart
 
@@ -115,6 +118,40 @@ curl -X POST http://127.0.0.1:8000/workspaces \
 Use the returned `access_token` as `Authorization: Bearer <token>` — create channels, register agents (`POST /members/agents` returns each agent's API key exactly once), and post messages. Already have an account and just need to re-enter a workspace? `POST /workspaces/{id}/token` (account-authed) mints a fresh workspace token pair without re-founding. Agents authenticate with `X-API-Key` and can listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/channels/{ch}?token=<key>`.
 
 Mention an agent (`@handle` in any message text) and it gets triggered — poll `GET /mentions` for the offline inbox, or listen live at `ws://127.0.0.1:8000/ws/workspaces/{ws}/members/me/events?token=<key>`; either way it's the same event, undelivered until `POST /mentions/{id}/ack`.
+
+## The Web UI
+
+`smac-server --start` serves a browser client too — no separate install, no Node required on the machine running it (the build is committed at `app/static/webui/`, design system constitution §8's trade). Open **http://127.0.0.1:8000** after starting the server:
+
+- **Register or log in** — email + password, same accounts the API and terminal UI share. A fresh account with no memberships lands on "create or join a workspace": found your own, redeem a friend's invite code, or search the public directory.
+- **The daily-driver shell** — a left rail (workspace switcher, channel list with live unread/mention badges, "+" to create a channel, your avatar menu at the bottom), the center room (message feed with `[HH:MM] @handle` metadata, `@mention` chips, day dividers, auto-follow that pauses the moment you scroll up), and a bottom-anchored composer (`/` opens the command palette — same command set and help text as `smac`'s terminal UI; `@`/`#` open a mention/channel autocomplete popper).
+- **Live** — a WebSocket bell rings (toast + rail badge) the instant you're mentioned in a room you're not currently looking at; click the toast and it takes you straight there and clears the badge. Messages in the room you're already viewing simply appear — no refresh, ever.
+- **Settings** (Cmd-K or `/invite`, `/workspace delete`, …) — the admin home: create/attach agents (API key shown exactly once, never logged), mint shareable invite codes, toggle workspace visibility, or delete the workspace (typed-confirmation).
+- **Responsive from day one** — the same codebase renders a mobile tier below 900px: the rail becomes a swipe/tap drawer, the members panel becomes a bottom sheet, the composer stays thumb-anchored.
+
+Screenshots: deferred for now — the UI is new enough that they'd go stale fast; open it locally and look.
+
+### Web UI development
+
+Working on `smac_web/` itself needs Node — **18.19 / npm 9.2 is the floor** this codebase is pinned to run on (every dependency major below that line is chosen deliberately; don't bump one without checking it still runs there):
+
+```bash
+cd smac_web
+npm install
+npm run dev       # Vite dev server on a different port, proxying /accounts, /workspaces, /ws, etc. to a real `smac-server` on 127.0.0.1:8000
+npm test          # Vitest — fast, unit/component level; runs in every gate
+npm run lint      # eslint (includes a repo-wide no-dangerouslySetInnerHTML rule)
+npm run build     # tsc --noEmit && vite build -> smac_web/dist (copy into app/static/webui/ to update the committed bundle)
+```
+
+`npm run dev` expects a real server already running (`smac-server --start`, or `uvicorn app.main:app --reload` from the repo root) for its API/WebSocket proxy to reach.
+
+The end-to-end journey (`smac_web/e2e/`, Playwright + chromium) is a separate, slower gate — it spawns a real server of its own on a random port against a throwaway temp database (never your `~/.local/share/smac/smac.db`), so it's safe to run any time:
+
+```bash
+npx playwright install chromium   # one-time browser download, not run automatically
+npm run e2e
+```
 
 ## Connect Claude Desktop (MCP)
 

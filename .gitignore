@@ -235,6 +235,13 @@ rough*
 smac_web/node_modules/
 smac_web/dist/
 
+# Playwright's own run artifacts (SMAC-85 Task 6): downloaded browsers live
+# outside the repo (~/.cache/ms-playwright), but a local `npm run e2e` run
+# still writes a report/trace directory here on failure.
+smac_web/test-results/
+smac_web/playwright-report/
+smac_web/blob-report/
+
 # The generic `lib/` rule above (Python packaging boilerplate) also
 # matches smac_web/src/lib/ -- the TS API client module task-2's brief
 # pins that exact path for (api.ts/errors.ts/session.ts/types.ts). Un-

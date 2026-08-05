@@ -86,6 +86,7 @@ type Action =
   | { type: "UNREADS"; unreads: UnreadsRowOut[] }
   | { type: "UNREAD_ROW"; row: UnreadsRowOut }
   | { type: "MEMBERS"; members: MemberOut[] }
+  | { type: "CHANNELS"; channels: ChannelOut[] }
   | { type: "SELECT_CHANNEL"; channelId: string }
   | { type: "HISTORY_START" }
   | { type: "HISTORY_DONE"; channelId: string; messages: MessagePayload[]; hasMoreOlder: boolean }
@@ -129,6 +130,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "MEMBERS":
       return { ...state, members: action.members };
+    case "CHANNELS":
+      return { ...state, channels: action.channels };
     case "SELECT_CHANNEL":
       if (state.currentChannelId === action.channelId) {
         return state;
@@ -232,6 +235,14 @@ export type WorkspaceContextValue = WorkspaceState & {
   findChannelByName: (name: string) => ChannelOut | undefined;
   /** Re-fetch the unread/mention badge overview for every channel. */
   refreshUnreads: () => Promise<void>;
+  /** Re-fetch the workspace's channel list. A channel someone else creates
+   * is otherwise invisible to this client forever -- there is no "channel
+   * created" broadcast on the live layer, only messages and mentions --
+   * so a mention arriving for a channel this client doesn't know about
+   * yet is exactly the signal to call this (`AuthedShell.tsx`'s bell
+   * handler does, alongside `refreshUnreads`): otherwise the rail could
+   * never show that channel at all, let alone its mention badge. */
+  refreshChannels: () => Promise<void>;
   /** Re-fetch the member directory. */
   refreshMembers: () => Promise<void>;
   /** Re-load the CURRENT channel's most recent message window from
@@ -291,6 +302,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "UNREADS", unreads: out.unreads });
   }, []);
 
+  const refreshChannels = useCallback(async () => {
+    const fetchedChannels = await api.channels();
+    dispatch({ type: "CHANNELS", channels: fetchedChannels });
+  }, []);
+
   const refreshMembers = useCallback(async () => {
     const members = await api.members();
     dispatch({ type: "MEMBERS", members });
@@ -343,8 +359,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     async (text: string) => {
       const channelId = state.currentChannelId;
       if (channelId === null) return;
-      const message = await api.post(channelId, text);
-      dispatch({ type: "APPEND_MESSAGE", channelId, message });
+      // Deliberately NO local append here -- mirrors `smac_cli/app.py`'s
+      // `post_current` (see its own docstring: "the message itself
+      // arrives back through the channel feed's own self-echo, never
+      // appended directly here"). The server's broadcast
+      // (`app/routers/messages.py::post_message` -> `manager.broadcast`)
+      // goes to every connection subscribed to this room's socket,
+      // including the SENDER's own -- `AuthedShell.tsx`'s `connectRoom`
+      // effect is exactly that connection whenever this room is the one
+      // on screen. Appending here too (as an earlier version of this
+      // file did) double-posted every message the instant its own socket
+      // echo landed a moment later, since neither side deduped by
+      // `message_id` (found via SMAC-85 Task 6's e2e journey: a real
+      // "hi" typed and sent showed up twice in the sender's own feed).
+      await api.post(channelId, text);
     },
     [state.currentChannelId]
   );
@@ -385,6 +413,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectChannel,
       findChannelByName,
       refreshUnreads,
+      refreshChannels,
       refreshMembers,
       refreshHistory,
       loadOlderMessages,
@@ -398,6 +427,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectChannel,
       findChannelByName,
       refreshUnreads,
+      refreshChannels,
       refreshMembers,
       refreshHistory,
       loadOlderMessages,

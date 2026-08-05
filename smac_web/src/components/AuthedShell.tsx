@@ -121,6 +121,11 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         return;
       }
       void workspace.refreshUnreads(); // bumps the rail's mention badge
+      // A mention in a channel this client has never fetched (created by
+      // someone else after this client's own channel list was loaded --
+      // there is no "channel created" broadcast, only messages/mentions)
+      // would otherwise never appear in the rail at all, badge or not.
+      void workspace.refreshChannels();
       toastQueue.push(`🔔 New mention in #${event.message.Channel.channel_name}`, {
         onClick: () => {
           setSettingsSection(null);
