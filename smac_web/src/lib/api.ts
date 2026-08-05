@@ -634,6 +634,49 @@ export async function deleteWorkspace(): Promise<{ status: string }> {
 }
 
 /**
+ * `PATCH /workspaces/{workspace_id}` (admin, `app/routers/workspaces.py`'s
+ * `update_workspace_visibility`): flip the current workspace's public/
+ * private visibility. Settings' Workspace panel is the only caller.
+ */
+export async function updateWorkspaceVisibility(
+  visibility: "public" | "private"
+): Promise<WorkspaceOut> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<WorkspaceOut>("PATCH", `/workspaces/${workspaceId}`, {
+    jsonBody: { visibility },
+  });
+}
+
+/**
+ * Strip the workspace tier from the current session right after the
+ * workspace itself was destroyed (`deleteWorkspace()`) -- the account
+ * tier (email, account access/refresh) is untouched; only the now-
+ * dangling workspace id/access/refresh are dropped, so the next
+ * `accountMe()`/create-or-join flow starts from a clean account-only
+ * session rather than one still pointing at a workspace that no longer
+ * exists. Deliberately NOT `logout()`: this isn't a sign-out (the
+ * account stays live), and the deleted workspace's refresh token is
+ * already dead server-side via the cascade delete -- there's nothing
+ * left to revoke. Returns the updated session, or `null` if there was no
+ * session to begin with (shouldn't happen for an authed caller, but the
+ * one caller -- `WorkspacePanel`'s delete flow -- handles it rather than
+ * assuming).
+ */
+export function clearWorkspaceTier(): Session | null {
+  if (currentSession === null) {
+    return null;
+  }
+  currentSession = {
+    url: currentSession.url,
+    email: currentSession.email,
+    accountAccess: currentSession.accountAccess,
+    accountRefresh: currentSession.accountRefresh,
+  };
+  saveSession(currentSession);
+  return currentSession;
+}
+
+/**
  * Best-effort revoke of every refresh token the current session holds
  * (`POST /auth/logout` at whichever tier(s) are present), then an
  * unconditional local clear -- a failed/unreachable revoke must never

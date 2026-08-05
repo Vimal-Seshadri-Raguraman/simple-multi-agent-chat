@@ -12,13 +12,16 @@
  * promise internally, but the palette doesn't await it) -- commands are
  * fire-and-forget UI actions, not something the caller blocks on.
  *
- * A few entries name a flow this branch hasn't built a dedicated screen
- * for yet (workspace create/delete, invite, join-by-code -- all need a
- * multi-field form, not a single args string, and Settings is where
- * workspace/invite administration lives per web spec §2). Task-3 brief:
- * these are allowed to `run` by navigating to the Settings stub screen
- * (Settings itself, and the real flows, are Task 5's job) -- noted in the
- * task-3 report rather than silently left half-built.
+ * `/invite` and `/workspace delete` land on Settings (web spec §2: that's
+ * where invite/workspace administration for the CURRENT workspace lives)
+ * via `goToSettings(section)`, landing directly on the right panel rather
+ * than Settings' default. `/workspace create` and `/join` do NOT go to
+ * Settings -- founding or joining a workspace isn't "administering the
+ * one you're in", it's the same account-scoped flow the Rail's "Create or
+ * join a workspace…" switcher entry already uses (`navigateAuthScreen`),
+ * so both commands reuse that existing screen instead of duplicating it
+ * inside Settings (task-5 brief: "wire them to land on the right panel" --
+ * for these two, the right panel is the one that already exists).
  */
 
 export type CommandContext = {
@@ -44,9 +47,10 @@ export type CommandContext = {
   /** Show the caller's identity card (web spec §2: reached from the Rail
    * avatar menu; the palette's `/whoami` triggers the same card). */
   showWhoami: () => void;
-  /** Navigate to the (Task-5) Settings screen -- the stub target for
-   * flows this branch doesn't build a dedicated UI for yet. */
-  goToSettings: () => void;
+  /** Navigate to the Settings screen, optionally landing directly on one
+   * of its panels (default: Agents, Settings' own first tab) -- the
+   * administration home for the CURRENT workspace (web spec §2). */
+  goToSettings: (section?: "agents" | "invites" | "workspace") => void;
 };
 
 export type Command = {
@@ -86,25 +90,29 @@ export const COMMANDS: Command[] = [
     name: "/workspace create",
     args: "<name>",
     help: "Found a new workspace",
-    run: (ctx) => ctx.goToSettings(),
+    // Same screen the Rail switcher's "Create or join a workspace…" entry
+    // opens -- founding a workspace isn't a Settings action.
+    run: (ctx) => ctx.navigateAuthScreen("create-or-join"),
   },
   {
     name: "/workspace delete",
     args: "(none)",
     help: "Delete the current workspace (typed confirmation)",
-    run: (ctx) => ctx.goToSettings(),
+    run: (ctx) => ctx.goToSettings("workspace"),
   },
   {
     name: "/join",
     args: "<code>",
     help: "Redeem an invite code to join a workspace",
-    run: (ctx) => ctx.goToSettings(),
+    // `JoinScreen` already exists as the code-entry + public-directory
+    // screen -- reuse it rather than a second entry point inside Settings.
+    run: (ctx) => ctx.navigateAuthScreen("join"),
   },
   {
     name: "/invite",
     args: "(none)",
     help: "Mint and copy an invite code",
-    run: (ctx) => ctx.goToSettings(),
+    run: (ctx) => ctx.goToSettings("invites"),
   },
   {
     name: "/channel",

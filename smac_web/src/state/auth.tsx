@@ -48,6 +48,7 @@ type Action =
   | { type: "ACCOUNT_READY"; session: Session }
   | { type: "LOGIN_SUCCESS"; session: Session; workspaces: Membership[] }
   | { type: "WORKSPACE_ENTERED"; session: Session }
+  | { type: "WORKSPACE_LEFT"; session: Session }
   | { type: "LOGGED_OUT" };
 
 function initialState(): AuthState {
@@ -134,6 +135,21 @@ function reducer(state: AuthState, action: Action): AuthState {
         memberships: [],
         screen: "authed",
       };
+    case "WORKSPACE_LEFT":
+      // Settings' typed-confirmation workspace delete (web spec §2, task-5
+      // brief, binding): the account stays logged in -- this is NOT
+      // `LOGGED_OUT` -- it just no longer has a workspace, so it lands on
+      // the SAME "create-or-join" state a 0-membership login reaches
+      // above, with the (now workspace-tier-cleared) session `api.
+      // clearWorkspaceTier()` produced.
+      return {
+        ...state,
+        pending: false,
+        error: null,
+        session: action.session,
+        memberships: [],
+        screen: "create-or-join",
+      };
     case "LOGGED_OUT":
       return {
         screen: "welcome",
@@ -157,6 +173,10 @@ export type AuthContextValue = AuthState & {
   loginSuccess: (session: Session, workspaces: Membership[]) => void;
   /** Record a session that just gained (or switched) a workspace. */
   workspaceEntered: (session: Session) => void;
+  /** Record that the current workspace is gone (Settings' delete flow,
+   * after `api.deleteWorkspace()` + `api.clearWorkspaceTier()` succeed) --
+   * lands on "create-or-join" with the account tier still intact. */
+  workspaceLeft: (session: Session) => void;
   /** Log out locally (and best-effort server-side via `api.logout()`). */
   logout: () => Promise<void>;
 };
@@ -182,6 +202,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     (session: Session) => dispatch({ type: "WORKSPACE_ENTERED", session }),
     []
   );
+  const workspaceLeft = useCallback(
+    (session: Session) => dispatch({ type: "WORKSPACE_LEFT", session }),
+    []
+  );
   const logout = useCallback(async () => {
     await api.logout();
     dispatch({ type: "LOGGED_OUT" });
@@ -196,9 +220,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       accountReady,
       loginSuccess,
       workspaceEntered,
+      workspaceLeft,
       logout,
     }),
-    [state, navigate, setPending, setError, accountReady, loginSuccess, workspaceEntered, logout]
+    [
+      state,
+      navigate,
+      setPending,
+      setError,
+      accountReady,
+      loginSuccess,
+      workspaceEntered,
+      workspaceLeft,
+      logout,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

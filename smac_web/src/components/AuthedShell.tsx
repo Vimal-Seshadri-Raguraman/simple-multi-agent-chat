@@ -6,7 +6,7 @@ import { connectBell, connectRoom } from "../lib/live";
 import { useAuth } from "../state/auth";
 import { ViewportProvider, useViewportTier } from "../state/viewport";
 import { WorkspaceProvider, useWorkspace } from "../state/workspace";
-import Settings from "../screens/Settings";
+import Settings, { type SettingsSection } from "../screens/Settings";
 import "../styles/shell.css";
 import Drawer from "./Drawer";
 import MembersPanel from "./MembersPanel";
@@ -27,7 +27,7 @@ export type AuthedShellProps = {
  * -> Room -> Drawer, with the Cmd-K command palette floating above all of
  * it. Owns exactly the cross-cutting UI state no single child owns alone
  * (which drawer panel is open, whether the palette is open and with what
- * prefilter, the Settings-stub toggle) and wires the workspace store's
+ * prefilter, which Settings panel is showing) and wires the workspace store's
  * data down into each piece. Wrapped in its own `<WorkspaceProvider>`,
  * keyed on the current workspace id: `WorkspaceProvider`'s data-loading
  * effect only runs once per MOUNT (empty deps -- task-3 brief's Task-4
@@ -64,7 +64,9 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [youMenuOpen, setYouMenuOpen] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  // `null` = shell showing; otherwise which Settings panel to land on
+  // (task-5: Settings replaced the T3 stub -- see `screens/Settings.tsx`).
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
 
@@ -121,7 +123,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
       void workspace.refreshUnreads(); // bumps the rail's mention badge
       toastQueue.push(`🔔 New mention in #${event.message.Channel.channel_name}`, {
         onClick: () => {
-          setShowSettings(false);
+          setSettingsSection(null);
           workspace.selectChannel(eventChannelId);
         },
       });
@@ -201,7 +203,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
       createChannel: workspace.createChannel,
       refreshUnreads: workspace.refreshUnreads,
       showWhoami: () => setYouMenuOpen(true),
-      goToSettings: () => setShowSettings(true),
+      goToSettings: (section) => setSettingsSection(section ?? "agents"),
     }),
     [auth.navigate, auth.logout, workspace]
   );
@@ -214,12 +216,19 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
     }
   }
 
-  if (showSettings) {
-    return <Settings onBack={() => setShowSettings(false)} />;
-  }
-
   const currentMembership = memberships.find((m) => m.workspace_id === currentWorkspaceId);
   const workspaceName = currentMembership?.workspace_name ?? "SMAC";
+
+  if (settingsSection !== null) {
+    return (
+      <Settings
+        onBack={() => setSettingsSection(null)}
+        workspaceName={workspaceName}
+        initialSection={settingsSection}
+      />
+    );
+  }
+
   const currentChannel =
     workspace.channels.find((c) => c.channel_id === workspace.currentChannelId) ?? null;
   const memberById: Record<string, (typeof workspace.members)[number]> = {};
