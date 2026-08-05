@@ -11,6 +11,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useReducer,
 } from "react";
@@ -49,7 +50,8 @@ type Action =
   | { type: "LOGIN_SUCCESS"; session: Session; workspaces: Membership[] }
   | { type: "WORKSPACE_ENTERED"; session: Session }
   | { type: "WORKSPACE_LEFT"; session: Session }
-  | { type: "LOGGED_OUT" };
+  | { type: "LOGGED_OUT" }
+  | { type: "SESSION_EXPIRED"; message: string };
 
 function initialState(): AuthState {
   const session = api.getSession();
@@ -158,6 +160,25 @@ function reducer(state: AuthState, action: Action): AuthState {
         pending: false,
         error: null,
       };
+    case "SESSION_EXPIRED":
+      // Final review Finding 2 (IMPORTANT): an expiry-driven invalidation
+      // (a failed refresh chain -- `lib/api.ts`'s `raiseSessionExpired()`),
+      // NOT an explicit `logout()`. Lands on "login" (not "welcome") with
+      // the server-envelope/SessionExpired message on display -- the
+      // reader typed real credentials into a real session a moment ago,
+      // so re-entering them is the next step, not re-reading the wordmark
+      // landing page. This is also what tears the dead shell down: `App.
+      // tsx` only renders `AuthedShell` (and the sockets/`WorkspaceProvider`
+      // it owns) while `screen === "authed"`, so leaving that screen
+      // unmounts them, running every socket's own close-on-unmount cleanup
+      // -- no separate "close sockets" call needed here.
+      return {
+        screen: "login",
+        session: null,
+        memberships: [],
+        pending: false,
+        error: action.message,
+      };
     default:
       return state;
   }
@@ -185,6 +206,18 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, initialState);
+
+  // Final review Finding 2 (IMPORTANT): the one place `SessionExpired`
+  // raised by an expiry-driven `lib/api.ts` call site gets consumed --
+  // registered for the lifetime of the whole app (this provider never
+  // unmounts), deregistered defensively on unmount so a stray late call
+  // can never dispatch into a gone component.
+  useEffect(() => {
+    api.setSessionInvalidatedHandler((message) => {
+      dispatch({ type: "SESSION_EXPIRED", message });
+    });
+    return () => api.setSessionInvalidatedHandler(null);
+  }, []);
 
   const navigate = useCallback((screen: Screen) => dispatch({ type: "NAVIGATE", screen }), []);
   const setPending = useCallback(() => dispatch({ type: "PENDING" }), []);

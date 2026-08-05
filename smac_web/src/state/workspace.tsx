@@ -130,8 +130,23 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "MEMBERS":
       return { ...state, members: action.members };
-    case "CHANNELS":
-      return { ...state, channels: action.channels };
+    case "CHANNELS": {
+      // Final review Finding 3 (MINOR, same bug class as T6's unreads
+      // epoch fix): `refreshChannels` is fired unprompted by the bell
+      // handler on ANY unknown-channel mention and can be in flight for a
+      // while. A response that was in flight BEFORE the reader created a
+      // channel (`CHANNEL_CREATED`) landing AFTER would otherwise
+      // wholesale-clobber the rail, dropping the very channel the reader
+      // is now sitting in (`currentChannelId` pointing outside `channels`
+      // -- Room header shows "No channel"). There is no channel-DELETE
+      // feature in this product, so a locally-known channel going missing
+      // from a fresh fetch can only mean the fetch is stale, never that
+      // the channel was legitimately removed -- union by `channel_id`
+      // rather than replace, keeping the server's own ordering first.
+      const freshIds = new Set(action.channels.map((c) => c.channel_id));
+      const localOnly = state.channels.filter((c) => !freshIds.has(c.channel_id));
+      return { ...state, channels: [...action.channels, ...localOnly] };
+    }
     case "SELECT_CHANNEL":
       if (state.currentChannelId === action.channelId) {
         return state;
@@ -144,11 +159,35 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "HISTORY_START":
       return { ...state, error: null };
-    case "HISTORY_DONE":
+    case "HISTORY_DONE": {
       if (action.channelId !== state.currentChannelId) {
         return state; // a room switch raced this fetch -- discard the stale result
       }
-      return { ...state, messages: action.messages, hasMoreOlder: action.hasMoreOlder };
+      // Final review Finding 3 (MINOR, same bug class as T6's unreads
+      // epoch fix): `refreshHistory`'s walk is several sequential `await`s
+      // (`walkMessagePages`); a live message (including the sender's OWN
+      // send echo) can land via `APPEND_MESSAGE` mid-walk, after the
+      // page(s) that became `action.messages` were already snapshotted --
+      // a bare wholesale replace here would make that message vanish from
+      // the feed until the next refresh. Union by `message_id` instead: the
+      // fresh server snapshot, plus anything already in local state that
+      // snapshot doesn't know about yet (a mid-walk append, OR a
+      // previously-loaded-older scrollback page `loadOlderMessages`
+      // prepended -- neither should be silently discarded by a background
+      // catch-up refresh), re-sorted into chronological (oldest-first)
+      // order by `timestamp`.
+      const freshIds = new Set(action.messages.map((m) => m.Message.message_id));
+      const notInFreshSnapshot = state.messages.filter(
+        (m) => !freshIds.has(m.Message.message_id)
+      );
+      const messages =
+        notInFreshSnapshot.length === 0
+          ? action.messages
+          : [...action.messages, ...notInFreshSnapshot].sort((a, b) =>
+              a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
+            );
+      return { ...state, messages, hasMoreOlder: action.hasMoreOlder };
+    }
     case "OLDER_START":
       return { ...state, loadingOlder: true };
     case "OLDER_DONE":

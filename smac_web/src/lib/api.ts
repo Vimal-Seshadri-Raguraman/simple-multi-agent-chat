@@ -77,6 +77,41 @@ function invalidateSession(): void {
   clearSession();
 }
 
+/**
+ * Fix round (final review Finding 2, IMPORTANT): registered by
+ * `AuthProvider` (`state/auth.tsx`) so an EXPIRY-DRIVEN session
+ * invalidation -- a refresh chain that failed, not an explicit
+ * `logout()` -- can drive the app out of the authed shell instead of
+ * stranding the caller in a dead one (empty rail, sockets reconnect-
+ * looping forever, every click producing an unhandled rejection: the
+ * failure scenario the review reproduced with two tabs + a logout in
+ * one of them). `null` deregisters (component unmount).
+ */
+let onSessionInvalidated: ((message: string) => void) | null = null;
+
+export function setSessionInvalidatedHandler(handler: ((message: string) => void) | null): void {
+  onSessionInvalidated = handler;
+}
+
+/**
+ * The expiry-driven twin of a bare `invalidateSession()` call: clears the
+ * session AND notifies whatever `AuthProvider` registered above, so the
+ * UI actually leaves "authed" instead of `SessionExpired` sailing past
+ * every layer uncaught (the review's core finding -- T2/T3/T4 each built
+ * their own piece assuming some OTHER layer would consume this).
+ * Deliberately NOT used by the `setSession(null)` test hook or by
+ * `logout()`'s own `invalidateSession()` call: neither of those is a
+ * surprise-to-the-caller expiry -- `logout()` already drives its own
+ * explicit `LOGGED_OUT` transition, and the test hook is an intentional
+ * direct state swap, not a failure.
+ */
+function raiseSessionExpired(): SessionExpired {
+  invalidateSession();
+  const err = new SessionExpired();
+  onSessionInvalidated?.(err.message);
+  return err;
+}
+
 // -- low-level plumbing ---------------------------------------------------
 
 type SendOpts = {
@@ -274,8 +309,7 @@ async function recoverWorkspaceSession(): Promise<void> {
       }
     }
   }
-  invalidateSession();
-  throw new SessionExpired();
+  throw raiseSessionExpired();
 }
 
 /**
@@ -305,8 +339,7 @@ async function authedRequest<T>(
     }
     response = await send(method, path, { ...opts, bearer: currentSession.workspaceAccess });
     if (response.status === 401) {
-      invalidateSession();
-      throw new SessionExpired();
+      throw raiseSessionExpired();
     }
   }
   return parseResponse<T>(response);
@@ -329,16 +362,14 @@ async function accountAuthedRequest<T>(
   let response = await send(method, path, { ...opts, bearer: currentSession.accountAccess });
   if (response.status === 401) {
     if (!(await tryRefreshAccount())) {
-      invalidateSession();
-      throw new SessionExpired();
+      throw raiseSessionExpired();
     }
     if (currentSession === null) {
       throw new SessionExpired();
     }
     response = await send(method, path, { ...opts, bearer: currentSession.accountAccess });
     if (response.status === 401) {
-      invalidateSession();
-      throw new SessionExpired();
+      throw raiseSessionExpired();
     }
   }
   return parseResponse<T>(response);

@@ -224,6 +224,37 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
   const currentMembership = memberships.find((m) => m.workspace_id === currentWorkspaceId);
   const workspaceName = currentMembership?.workspace_name ?? "SMAC";
 
+  // Final review Finding 2b (IMPORTANT): `workspace.loading`/`workspace.
+  // error` (`state/workspace.tsx`'s initial channels/unreads/members/self
+  // fetch) were dispatched into the store but never rendered anywhere --
+  // a non-`SessionExpired` initial-load failure (e.g. the server
+  // unreachable) left the reader staring at a silent, empty shell with no
+  // indication anything went wrong. (A `SessionExpired` failure here is
+  // instead handled by Finding 2a: `raiseSessionExpired()` flips the auth
+  // screen away from "authed" before this ever renders, unmounting this
+  // whole tree.) Checked before the Settings early-return below -- there
+  // is no workspace data to administer yet if the initial load hasn't
+  // succeeded.
+  if (workspace.loading) {
+    return (
+      <div className="shell shell--status" data-theme={theme}>
+        <p className="shell__status-message">Loading workspace…</p>
+      </div>
+    );
+  }
+  if (workspace.error) {
+    return (
+      <div className="shell shell--status" data-theme={theme}>
+        <p role="alert" className="shell__status-message shell__status-message--error">
+          {workspace.error}
+        </p>
+        <button type="button" onClick={() => window.location.reload()}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
   if (settingsSection !== null) {
     return (
       <Settings

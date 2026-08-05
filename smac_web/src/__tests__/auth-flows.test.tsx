@@ -292,6 +292,39 @@ describe("version banner + focus-poll toast (VersionBanner, minimal per task-2 b
 
     await screen.findByText(/smac updated.*refresh/i);
   });
+
+  it("Finding 5 (final review, MINOR): does NOT stack a second toast on a later focus poll reporting the SAME new version", async () => {
+    vi.mocked(api.meta).mockResolvedValueOnce({ server_version: CLIENT_VERSION, api_version: 1 });
+    render(<App />);
+    await waitFor(() => expect(api.meta).toHaveBeenCalledTimes(1));
+
+    // Three more focus events, each polling and finding the SAME already-
+    // reported new version -- a tab left open, focused repeatedly, well
+    // after the one redeploy that happened.
+    vi.mocked(api.meta).mockResolvedValue({ server_version: "9.9.10", api_version: 1 });
+    fireEvent(window, new Event("focus"));
+    await screen.findByText(/smac updated.*refresh/i);
+    fireEvent(window, new Event("focus"));
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(api.meta).toHaveBeenCalledTimes(4));
+
+    expect(screen.getAllByText(/smac updated.*refresh/i)).toHaveLength(1); // one toast, not three
+  });
+
+  it("Finding 5 regression: a SECOND, later, DIFFERENT redeploy still gets its own toast", async () => {
+    vi.mocked(api.meta).mockResolvedValueOnce({ server_version: CLIENT_VERSION, api_version: 1 });
+    render(<App />);
+    await waitFor(() => expect(api.meta).toHaveBeenCalledTimes(1));
+
+    vi.mocked(api.meta).mockResolvedValueOnce({ server_version: "9.9.10", api_version: 1 });
+    fireEvent(window, new Event("focus"));
+    await screen.findByText(/smac updated.*refresh/i);
+
+    vi.mocked(api.meta).mockResolvedValueOnce({ server_version: "9.9.11", api_version: 1 });
+    fireEvent(window, new Event("focus"));
+
+    await waitFor(() => expect(screen.getAllByText(/smac updated.*refresh/i)).toHaveLength(2));
+  });
 });
 
 describe("Fix round 1: back-to-workspace affordance on CreateOrJoin/JoinScreen (task-5 review finding)", () => {

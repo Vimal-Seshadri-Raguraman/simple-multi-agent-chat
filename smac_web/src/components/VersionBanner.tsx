@@ -47,6 +47,18 @@ export default function VersionBanner() {
         .then((data) => {
           if (cancelled) return;
           if (loadedVersion !== null && data.server_version !== loadedVersion) {
+            // Final review Finding 5 (MINOR): update `loadedVersion` to the
+            // newly-seen server version BEFORE pushing -- a tab left open
+            // across a redeploy that gets focused five times over the
+            // afternoon used to push five identical sticky "SMAC updated"
+            // toasts (this comparison was against the ORIGINAL load
+            // version every time, and sticky toasts don't auto-dismiss).
+            // One active update toast max: once this focus's poll has
+            // reported the new version, the NEXT focus's poll compares
+            // against it and sees no further mismatch, unless the server
+            // redeploys again in the meantime -- which is a genuinely new
+            // notice, correctly toasted again.
+            loadedVersion = data.server_version;
             toastQueue.push("SMAC updated — refresh", {
               sticky: true,
               onClick: () => window.location.reload(),

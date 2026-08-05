@@ -5,6 +5,7 @@ import * as api from "../lib/api";
 import * as live from "../lib/live";
 import type { Closeable } from "../lib/live";
 import type { MentionEvent, MessagePayload, Session } from "../lib/api";
+import { Unreachable } from "../lib/errors";
 import { CLIENT_VERSION } from "../version";
 
 /**
@@ -223,6 +224,72 @@ describe("AuthedShell's bell wiring (task-4 brief: toast routing test)", () => {
     // Give any (incorrect) toast a chance to render before asserting its absence.
     await screen.findByRole("heading", { name: "#general" });
     expect(screen.queryByText(/New mention in/)).not.toBeInTheDocument();
+  });
+});
+
+describe("AuthedShell's workspace loading/error states (final review Finding 2b, IMPORTANT)", () => {
+  // Before this fix, `state/workspace.tsx` dispatched `LOAD_START`/
+  // `LOAD_ERROR` into a void -- nothing rendered `workspace.loading` or
+  // `workspace.error`, so a non-`SessionExpired` initial-load failure
+  // (server unreachable, dev-server DB reset, ...) left the reader
+  // staring at a silent, empty shell.
+  it("shows a loading message while the initial channels/unreads/members/self fetch is in flight", async () => {
+    let resolveChannels!: (value: { channel_id: string; channel_name: string }[]) => void;
+    vi.mocked(api.channels).mockReturnValue(
+      new Promise((resolve) => {
+        resolveChannels = resolve;
+      })
+    );
+
+    render(<App />);
+
+    await screen.findByText("Loading workspace…");
+
+    resolveChannels([{ channel_id: "c1", channel_name: "general" }]);
+    await screen.findByRole("heading", { name: "#general" }); // resolves into the normal shell
+  });
+
+  it("renders workspace.error (e.g. an unreachable server) instead of a silent empty shell", async () => {
+    vi.mocked(api.channels).mockRejectedValue(new Unreachable("http://localhost"));
+
+    render(<App />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("SMAC server is not reachable at http://localhost");
+  });
+});
+
+describe("Session-expiry recovery (final review Finding 2, IMPORTANT)", () => {
+  // Reproduces the review's failure scenario at the plumbing boundary this
+  // task adds: a real expired refresh chain (exhaustively covered against
+  // real HTTP semantics in `api.test.ts`'s own "session-invalidated
+  // handler" describe block) ends by calling whatever `AuthProvider`
+  // registered via `api.setSessionInvalidatedHandler` -- since `../lib/api`
+  // is mocked wholesale in this file (like every other test here), that
+  // registration call is captured directly and invoked by hand to drive
+  // the exact same signal a real failed refresh chain would raise.
+  it("closes both sockets and lands on the login screen with the session-expired notice", async () => {
+    await goToAuthedShell();
+    expect(closeRoom).not.toHaveBeenCalled();
+    expect(closeBell).not.toHaveBeenCalled();
+
+    const registeredHandler = vi.mocked(api.setSessionInvalidatedHandler).mock.calls[0]?.[0];
+    expect(registeredHandler).toBeTypeOf("function");
+
+    act(() => {
+      registeredHandler?.("Session expired — please log in again.");
+    });
+
+    // Leaving "authed" unmounts `AuthedShell` (and the `WorkspaceProvider`/
+    // room+bell sockets it owns) -- there is no separate "close sockets"
+    // call to wire up, React's own unmount runs each socket effect's
+    // cleanup.
+    await screen.findByRole("heading", { name: "Log in" });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Session expired — please log in again."
+    );
+    expect(closeRoom).toHaveBeenCalledTimes(1);
+    expect(closeBell).toHaveBeenCalledTimes(1);
   });
 });
 

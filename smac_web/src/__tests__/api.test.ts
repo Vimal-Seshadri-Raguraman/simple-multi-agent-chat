@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import {
   NameTakenError,
@@ -393,6 +393,78 @@ describe("refresh chain: EXACTLY smac_cli/api.py's _recover_workspace_session se
 
     await expect(api.enterWorkspace("ws9")).rejects.toBeInstanceOf(SessionExpired);
     expect(api.getSession()).toBeNull();
+  });
+});
+
+describe("session-invalidated handler (final review Finding 2a, IMPORTANT): the hook AuthProvider hangs its screen transition off", () => {
+  afterEach(() => {
+    api.setSessionInvalidatedHandler(null); // never leak a handler into another test
+  });
+
+  it("fires with the SessionExpired message once every workspace-tier refresh option is exhausted", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const handler = vi.fn();
+    api.setSessionInvalidatedHandler(handler);
+    const mock = installFetchMock();
+    mock.queue({ status: 401, body: ERROR_401 }); // channels() attempt 1
+    mock.queue({ status: 401, body: ERROR_401 }); // workspace /auth/refresh fails
+    mock.queue({ status: 401, body: ERROR_401 }); // account /auth/refresh fails too
+
+    await expect(api.channels()).rejects.toBeInstanceOf(SessionExpired);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith("Session expired — please log in again.");
+  });
+
+  it("fires once every account-tier refresh option is exhausted", async () => {
+    api.setSession(ACCOUNT_ONLY_SESSION);
+    const handler = vi.fn();
+    api.setSessionInvalidatedHandler(handler);
+    const mock = installFetchMock();
+    mock.queue({ status: 401, body: ERROR_401 });
+    mock.queue({ status: 401, body: ERROR_401 }); // account refresh fails, no further tier
+
+    await expect(api.enterWorkspace("ws9")).rejects.toBeInstanceOf(SessionExpired);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire on an explicit logout() -- that's not a surprise expiry", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const handler = vi.fn();
+    api.setSessionInvalidatedHandler(handler);
+    const mock = installFetchMock();
+    mock.queue({ status: 200, body: { status: "logged_out" } });
+    mock.queue({ status: 200, body: { status: "logged_out" } });
+
+    await api.logout();
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire on the setSession(null) test/store hook", () => {
+    api.setSession(WORKSPACE_SESSION);
+    const handler = vi.fn();
+    api.setSessionInvalidatedHandler(handler);
+
+    api.setSession(null);
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("deregisters cleanly when passed null -- a later expiry has nothing to call", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const handler = vi.fn();
+    api.setSessionInvalidatedHandler(handler);
+    api.setSessionInvalidatedHandler(null);
+    const mock = installFetchMock();
+    mock.queue({ status: 401, body: ERROR_401 });
+    mock.queue({ status: 401, body: ERROR_401 });
+    mock.queue({ status: 401, body: ERROR_401 });
+
+    await expect(api.channels()).rejects.toBeInstanceOf(SessionExpired);
+
+    expect(handler).not.toHaveBeenCalled();
   });
 });
 

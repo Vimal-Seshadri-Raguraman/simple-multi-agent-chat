@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import Settings from "../screens/Settings";
@@ -5,6 +8,9 @@ import * as api from "../lib/api";
 import type { MemberOut, MemberSelfOut, Session } from "../lib/api";
 import { AuthProvider, useAuth } from "../state/auth";
 import { WorkspaceProvider } from "../state/workspace";
+import { setViewportWidth } from "../testing/viewportMock";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * Task 5: Settings (agents/invites/workspace admin). Mirrors `auth-flows.
@@ -305,5 +311,41 @@ describe("Workspace panel: typed-confirmation delete (constitution §3)", () => 
     await waitFor(() =>
       expect(screen.getByTestId("auth-screen")).toHaveTextContent("create-or-join")
     );
+  });
+});
+
+describe("Settings' mobile tier (final review Finding 4, MINOR: the T4 responsive pass missed T5)", () => {
+  it("renders the same .settings__body/.settings__tabs structure the mobile media query below targets, at a 390px width", async () => {
+    // `Settings.tsx` itself is pure CSS-driven here (no `useViewportTier()`
+    // read, unlike Rail/Drawer/Room in `responsive.test.tsx`) -- the fix is
+    // a `shell.css` media query keying off these SAME class names, so this
+    // just documents the hook points exist and stay stable at the phone
+    // width the review's failure scenario used (390px), rather than
+    // asserting jsdom-uncomputable `@media` behavior.
+    setViewportWidth(390);
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+
+    const tabs = document.querySelector(".settings__tabs");
+    const body = document.querySelector(".settings__body");
+    expect(tabs).toBeInTheDocument();
+    expect(body).toBeInTheDocument();
+    expect(tabs?.parentElement).toBe(body);
+  });
+
+  it("shell.css has a <900px rule collapsing .settings__tabs to a horizontal row inside a stacked .settings__body (regression guard)", () => {
+    const css = readFileSync(resolve(__dirname, "../styles/shell.css"), "utf-8");
+    // Isolate just the Settings-specific mobile block by its own comment
+    // markers (there's more than one `@media (max-width: 899px)` block in
+    // the file) rather than assuming it's the first/last one.
+    const start = css.indexOf("Final review Finding 4");
+    expect(start).toBeGreaterThan(-1); // sanity: the block's own doc comment is still there
+    const end = css.indexOf("/* -- Agents panel", start);
+    expect(end).toBeGreaterThan(start);
+    const settingsBlock = css.slice(start, end);
+
+    expect(settingsBlock).toContain("@media (max-width: 899px)");
+    expect(settingsBlock).toMatch(/\.settings__body\s*\{[^}]*flex-direction:\s*column/);
+    expect(settingsBlock).toMatch(/\.settings__tabs\s*\{[^}]*flex-direction:\s*row/);
   });
 });

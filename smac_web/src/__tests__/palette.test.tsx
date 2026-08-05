@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import Palette from "../components/Palette";
-import { COMMANDS, type CommandContext } from "../lib/commands";
+import { COMMANDS, type Command, type CommandContext } from "../lib/commands";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -113,6 +113,85 @@ describe("Palette (Cmd-K, web spec §2)", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     expect(capturedArgs).toBe("general");
     expect(onClose).toHaveBeenCalled();
+  });
+
+  // Finding 1 (final review, IMPORTANT): exact-typed "/channels" and
+  // "/channel create <name>" used to run "/channel" instead, because
+  // registry order (not the longest/exact name match) decided which of the
+  // multiple `matches()` hits Enter selected. These three regression tests
+  // swap in spies for the affected commands' `run` so each can assert
+  // exactly one of them fired.
+  function withSpies(names: string[], fn: (spies: Record<string, ReturnType<typeof vi.fn>>) => void) {
+    const originals: Record<string, Command["run"]> = {};
+    const spies: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const name of names) {
+      const command = COMMANDS.find((c) => c.name === name)!;
+      originals[name] = command.run;
+      spies[name] = vi.fn();
+      command.run = spies[name];
+    }
+    try {
+      fn(spies);
+    } finally {
+      for (const name of names) {
+        COMMANDS.find((c) => c.name === name)!.run = originals[name];
+      }
+    }
+  }
+
+  it("Enter on exact-typed '/channels' runs /channels, not /channel (Finding 1 regression)", () => {
+    withSpies(["/channel", "/channels", "/channel create"], (spies) => {
+      render(
+        <Palette
+          open
+          initialQuery="channels"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+        />
+      );
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(spies["/channels"]).toHaveBeenCalled();
+      expect(spies["/channel"]).not.toHaveBeenCalled();
+      expect(spies["/channel create"]).not.toHaveBeenCalled();
+    });
+  });
+
+  it("Enter on '/channel create foo' runs /channel create with args 'foo', not /channel (Finding 1 regression)", () => {
+    withSpies(["/channel", "/channels", "/channel create"], (spies) => {
+      let capturedArgs: string | undefined;
+      render(
+        <Palette
+          open
+          initialQuery="channel create foo"
+          onClose={vi.fn()}
+          buildContext={(args) => {
+            capturedArgs = args;
+            return buildContext({ args });
+          }}
+        />
+      );
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(spies["/channel create"]).toHaveBeenCalled();
+      expect(spies["/channel"]).not.toHaveBeenCalled();
+      expect(capturedArgs).toBe("foo");
+    });
+  });
+
+  it("Enter on plain '/channel' (bare name, no args) runs /channel, not /channel create (Finding 1 regression)", () => {
+    withSpies(["/channel", "/channels", "/channel create"], (spies) => {
+      render(
+        <Palette
+          open
+          initialQuery="channel"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+        />
+      );
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(spies["/channel"]).toHaveBeenCalled();
+      expect(spies["/channel create"]).not.toHaveBeenCalled();
+      expect(spies["/channels"]).not.toHaveBeenCalled();
+    });
   });
 
   it("is fully clickable: clicking an entry runs it and closes the palette", () => {

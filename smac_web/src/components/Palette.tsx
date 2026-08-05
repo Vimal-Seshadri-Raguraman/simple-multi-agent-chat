@@ -46,6 +46,32 @@ function matches(command: Command, query: string): boolean {
   );
 }
 
+/**
+ * Finding 1 (final review, IMPORTANT): `matches()` alone lets a query that
+ * exactly types one command's name multi-match a REGISTRY-ADJACENT command
+ * whose name is a strict prefix of it -- `/channel` and `/channel create`
+ * both satisfy `needle.startsWith(name)` for the query "channel create
+ * standup", and `/channel`/`/channels` both satisfy it for "channels".
+ * Registry order (not intent) then decided which one Enter ran, so typing
+ * a canonical command exactly and hitting Enter could silently run a
+ * DIFFERENT command with the rest of the text as garbage `args`.
+ *
+ * This score breaks that tie the way the fix direction specifies: among
+ * everything `matches()` already let through, whichever command's name is
+ * the LONGEST prefix the (trimmed) query actually starts with wins --
+ * "/channel create" (15 chars) outranks "/channel" (7 chars) for "channel
+ * create standup"; "/channels" (8 chars) outranks "/channel" (7 chars) for
+ * "channels"; an exact-name match is just the query-length-equals-name-
+ * length case of the same rule, so it needs no separate tier. Anything
+ * that only matched via fuzzy substring/help-text browsing (not a name
+ * prefix at all) scores -1 and sorts after every real prefix match, in
+ * its original registry order (stable sort) -- unchanged from before.
+ */
+function rankScore(command: Command, needle: string): number {
+  const name = command.name.slice(1).toLowerCase();
+  return needle.startsWith(name) ? name.length : -1;
+}
+
 function splitArgs(command: Command, query: string): string {
   const nameNoSlash = command.name.slice(1).toLowerCase();
   if (query.toLowerCase().startsWith(nameNoSlash)) {
@@ -69,7 +95,16 @@ export default function Palette({ open, initialQuery, onClose, buildContext }: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialQuery]);
 
-  const filtered = useMemo(() => COMMANDS.filter((c) => matches(c, query)), [query]);
+  const filtered = useMemo(() => {
+    const needle = query.toLowerCase();
+    // `.sort()` on the array `.filter()` just produced is stable (ES2019+)
+    // and doesn't touch `COMMANDS` itself -- ties (including the all-fuzzy,
+    // score -1 case) keep the registry's own order, exactly as before this
+    // fix. See `rankScore`'s docstring for what the score means.
+    return COMMANDS.filter((c) => matches(c, query)).sort(
+      (a, b) => rankScore(b, needle) - rankScore(a, needle)
+    );
+  }, [query]);
 
   useEffect(() => {
     setActiveIndex(0);

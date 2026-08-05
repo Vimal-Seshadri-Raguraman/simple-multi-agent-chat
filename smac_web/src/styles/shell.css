@@ -22,6 +22,29 @@
   font-size: var(--font-size-base);
 }
 
+/* Initial-load loading/error states (final review Finding 2b): shown in
+ * place of the Rail/Room/Drawer layout while `state/workspace.tsx`'s
+ * initial fetch is in flight, or if it failed non-fatally (a
+ * `SessionExpired` failure never reaches this -- Finding 2a routes the
+ * app out of the authed screen first). */
+.shell--status {
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-4);
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.shell__status-message {
+  font-size: var(--font-size-base);
+  color: var(--color-text-dim);
+}
+
+.shell__status-message--error {
+  color: var(--color-danger);
+}
+
 /* -- Rail --------------------------------------------------------- */
 
 .rail {
@@ -952,6 +975,38 @@
 .settings__panel form button[type="submit"]:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Final review Finding 4 (MINOR): Settings was the one T5-era screen the
+ * T4 responsive pass missed -- `.settings__tabs`'s fixed 200px column ate
+ * half of a 390px phone's width, squeezing the Agents/Invites/Workspace
+ * panels (one-time key reveal, typed-delete confirm form) into a ~180px
+ * strip. Same breakpoint as every other mobile-tier rule in this file
+ * (web spec §1: <900px); the tab rail collapses from a left column to a
+ * horizontal top bar, matching the fix direction ("stack `.settings__body`
+ * vertically, make `.settings__tabs` a horizontal row").
+ */
+@media (max-width: 899px) {
+  .settings__body {
+    flex-direction: column;
+  }
+
+  .settings__tabs {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .settings__tab--active {
+    /* The active-tab accent was a left inset border for the vertical rail
+     * (`box-shadow: inset 3px 0 0 ...`) -- a bottom inset reads correctly
+     * once the rail is a horizontal row. */
+    box-shadow: inset 0 -3px 0 var(--color-accent);
+  }
 }
 
 /* -- Agents panel --------------------------------------------------------- */
