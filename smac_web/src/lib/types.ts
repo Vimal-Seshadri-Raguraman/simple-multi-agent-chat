@@ -40,6 +40,19 @@ export type WorkspaceOut = {
   visibility: string;
 };
 
+/** `GET /accounts/me`: the caller's own account plus every workspace
+ * membership it holds -- the Rail workspace switcher's source (task-3
+ * brief, web spec §2's "switcher menu: your memberships + create/join";
+ * `state/auth.tsx`'s `memberships` only survives until a workspace is
+ * entered, so the authed shell re-fetches this itself rather than
+ * threading the login-time list through). */
+export type AccountMeOut = {
+  account_id: string;
+  email: string | null;
+  created_at: string;
+  memberships: Membership[];
+};
+
 export type WorkspaceSearchOut = WorkspaceOut;
 
 export type ChannelOut = {

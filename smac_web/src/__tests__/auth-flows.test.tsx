@@ -33,6 +33,36 @@ beforeEach(() => {
   // a default resolved value so an unrelated test doesn't have to stub
   // it just to avoid an unhandled rejection/undefined-.then() crash.
   vi.mocked(api.meta).mockResolvedValue({ server_version: CLIENT_VERSION, api_version: 1 });
+  // Task 3's AuthedShell (+ its WorkspaceProvider) fetches all of these on
+  // mount, the moment a test reaches the "authed" screen -- default them
+  // to harmless empty results so tests that only care about REACHING
+  // "authed" (this file's concern) don't also have to stub the shell's
+  // own data plumbing (that's `rendering.test.tsx`/`rail.test.tsx`'s job).
+  vi.mocked(api.channels).mockResolvedValue([]);
+  vi.mocked(api.unreads).mockResolvedValue({ unreads: [] });
+  vi.mocked(api.members).mockResolvedValue([]);
+  vi.mocked(api.whoami).mockResolvedValue({
+    member_id: "m1",
+    member_name: "Alice Human",
+    member_type: "human",
+    handle: "alice",
+    workspace_id: "ws1",
+    account_id: "acc-1",
+    created_at: "2026-01-01T00:00:00",
+    first_name: null,
+    last_name: null,
+    company: null,
+    occupation: null,
+    job_role: null,
+    is_admin: null,
+    workspace_visibility: null,
+  });
+  vi.mocked(api.accountMe).mockResolvedValue({
+    account_id: "acc-1",
+    email: "alice@example.com",
+    created_at: "2026-01-01T00:00:00",
+    memberships: [],
+  });
 });
 
 afterEach(() => {
@@ -44,6 +74,34 @@ async function goToLogin() {
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   await screen.findByRole("button", { name: "Log in" }); // the submit button, distinct render pass
 }
+
+describe("page refresh with a saved session (state/auth.tsx's initialState)", () => {
+  it("an ACCOUNT-ONLY session (no workspace yet) lands on create-or-join, not welcome (task-3 brief's deferred T2 fix)", async () => {
+    vi.mocked(api.getSession).mockReturnValue(BASE_SESSION); // no workspaceId/workspaceAccess
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: /create or join a workspace/i });
+    expect(screen.queryByText("Simple Multi-Agent Chat")).not.toBeInTheDocument(); // Welcome's tagline
+  });
+
+  it("a full WORKSPACE-tier session lands straight on the authed shell", async () => {
+    vi.mocked(api.getSession).mockReturnValue(WORKSPACE_SESSION);
+
+    render(<App />);
+
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
+  });
+
+  it("no saved session lands on welcome", async () => {
+    vi.mocked(api.getSession).mockReturnValue(null);
+
+    render(<App />);
+
+    expect(screen.getByText("Simple Multi-Agent Chat")).toBeInTheDocument();
+    await waitFor(() => expect(api.meta).toHaveBeenCalled()); // let VersionBanner's effect settle
+  });
+});
 
 describe("the three login branches (web spec §2)", () => {
   it("0 memberships lands on create-or-join", async () => {
@@ -72,7 +130,10 @@ describe("the three login branches (web spec §2)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Log in" }));
 
     await waitFor(() => expect(api.enterWorkspace).toHaveBeenCalledWith("ws1"));
-    await screen.findByText(/signed in as alice@example\.com/i);
+    // Reached "authed" -- the Task 3 daily-driver shell (Rail/Room/Drawer)
+    // is now on screen (this file only cares about REACHING that screen;
+    // the shell's own content is `rail.test.tsx`/`rendering.test.tsx`'s job).
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
   });
 
   it(">1 memberships lands on the workspace picker, listing each by name + handle", async () => {
@@ -100,7 +161,7 @@ describe("the three login branches (web spec §2)", () => {
     fireEvent.click(screen.getByRole("button", { name: /widgets co/i }));
 
     await waitFor(() => expect(api.enterWorkspace).toHaveBeenCalledWith("ws2"));
-    await screen.findByText(/signed in as/i);
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
   });
 });
 
@@ -195,7 +256,7 @@ describe("join screen: live public search (debounced) + invite-code entry", () =
     await waitFor(() =>
       expect(api.joinCode).toHaveBeenCalledWith("abc123", "Bob", "Builder")
     );
-    await screen.findByText(/signed in as/i);
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
   });
 });
 

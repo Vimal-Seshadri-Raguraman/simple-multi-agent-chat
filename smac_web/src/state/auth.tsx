@@ -52,8 +52,20 @@ type Action =
 
 function initialState(): AuthState {
   const session = api.getSession();
+  // Three cases on a fresh page load: no saved session -> "welcome"; a
+  // saved session with a workspace tier already minted -> straight to
+  // "authed"; a saved ACCOUNT-ONLY session (e.g. refreshed mid register-
+  // step-1, or between logging in and picking/creating a workspace) ->
+  // "create-or-join", NOT "welcome" -- the account is real and already
+  // logged in, it just hasn't entered a workspace yet, so sending it
+  // back to the logged-out welcome screen would be wrong (task-3 brief's
+  // deferred T2 fix).
+  let screen: Screen = "welcome";
+  if (session) {
+    screen = session.workspaceId ? "authed" : "create-or-join";
+  }
   return {
-    screen: session && session.workspaceId ? "authed" : "welcome",
+    screen,
     session,
     memberships: [],
     pending: false,

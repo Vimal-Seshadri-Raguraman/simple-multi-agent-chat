@@ -25,6 +25,7 @@
 import { NoWorkspaceError, SessionExpired, Unreachable, fromEnvelope } from "./errors";
 import { type Session, clearSession, loadSession, saveSession } from "./session";
 import type {
+  AccountMeOut,
   ChannelOut,
   InviteOut,
   Membership,
@@ -510,6 +511,18 @@ export async function joinCode(
     jsonBody: { code, first_name: firstName, last_name: lastName },
   });
   return applyWorkspaceAuthOut(data);
+}
+
+/**
+ * `GET /accounts/me` (account bearer): this account's own profile plus
+ * every workspace membership it holds. The Rail workspace switcher's
+ * source (web spec §2) -- `state/auth.tsx`'s `memberships` field only
+ * lives from a `login()` response through the next `workspaceEntered`,
+ * so the authed shell re-fetches this directly rather than trying to
+ * keep that transient state alive.
+ */
+export async function accountMe(): Promise<AccountMeOut> {
+  return accountAuthedRequest<AccountMeOut>("GET", "/accounts/me");
 }
 
 // -- workspace-tier endpoints ------------------------------------------
