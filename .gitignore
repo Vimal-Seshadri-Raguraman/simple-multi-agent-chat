@@ -227,3 +227,10 @@ project.json
 docs/
 rough.*
 rough*
+
+# SMAC web UI (SMAC-85): node_modules is a dev-only dependency (Node is
+# never required by `pip install`); smac_web/dist is the intermediate Vite
+# build output. The bundle itself is COMMITTED at app/static/webui/ (design
+# system constitution §8's trade), so that path is deliberately NOT ignored.
+smac_web/node_modules/
+smac_web/dist/
