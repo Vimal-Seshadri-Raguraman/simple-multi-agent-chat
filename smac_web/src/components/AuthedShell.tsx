@@ -132,6 +132,24 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Unreads refetch on window focus (web spec §2's rail bullet, task-4
+  // brief line 9 -- fix round 1). A backgrounded tab's bell socket can be
+  // silently throttled or dropped by the browser, so returning to the tab
+  // needs its own catch-up beyond whatever the socket delivered while
+  // away; `VersionBanner.tsx` already does the analogous thing for the
+  // `/meta` version poll, on the same `window` "focus" event.
+  useEffect(() => {
+    function onFocus() {
+      void workspace.refreshUnreads();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+    // `workspace.refreshUnreads` is a stable (`useCallback([])`) reference
+    // -- see the room-socket effect above for the same non-reactive-deps
+    // rationale.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // The Rail workspace switcher's "your memberships" list -- re-fetched
   // whenever the entered workspace changes (including right after this
   // effect's own `enterWorkspace` calls below land a new session).

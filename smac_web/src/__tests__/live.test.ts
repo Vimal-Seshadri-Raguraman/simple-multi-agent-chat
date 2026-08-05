@@ -224,6 +224,41 @@ describe("connectRoom (task-4 brief: reconnect + gap discipline)", () => {
     conn.close();
   });
 
+  it("treats a `new WebSocket(url)` constructor failure (e.g. a malformed URL) as a connect failure and retries", async () => {
+    // A URL the constructor itself rejects (rather than the provider
+    // failing to produce one at all) -- the guard this exercises lives
+    // OUTSIDE the `urlProvider()` try/catch, wrapping `new WebSocket(...)`
+    // directly (fix round 1: this failure mode previously had no
+    // dedicated test of its own, only incidental coverage via other
+    // suites' default mocks).
+    let constructCalls = 0;
+    const ThrowingThenWorkingSocket = vi.fn().mockImplementation((url: string) => {
+      constructCalls++;
+      if (constructCalls === 1) {
+        throw new DOMException("The URL is invalid", "SyntaxError");
+      }
+      return new MockSocket(url);
+    });
+    vi.stubGlobal("WebSocket", ThrowingThenWorkingSocket);
+
+    vi.mocked(api.wsChannelUrl).mockResolvedValue("ws://x/channels/c1");
+    const onGap = vi.fn();
+    const conn = connectRoom("c1", vi.fn(), onGap);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(constructCalls).toBe(1);
+    expect(MockSocket.instances).toHaveLength(0); // the first attempt's constructor threw
+
+    await vi.advanceTimersByTimeAsync(1000); // the standard 1s initial backoff
+    expect(constructCalls).toBe(2);
+    expect(MockSocket.instances).toHaveLength(1); // the retry's constructor succeeded
+
+    latestSocket().open();
+    expect(onGap).toHaveBeenCalledTimes(1);
+
+    conn.close();
+  });
+
   it("close() cancels a pending reconnect timer -- no zombie dial after teardown", async () => {
     vi.mocked(api.wsChannelUrl).mockResolvedValue("ws://x/channels/c1");
     const conn = connectRoom("c1", vi.fn(), vi.fn());

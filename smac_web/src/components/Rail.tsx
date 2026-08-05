@@ -118,7 +118,22 @@ export default function Rail({
       <nav
         className={navClassName}
         aria-label="Workspace navigation"
-        {...(mobile && !open ? { "aria-hidden": true } : {})}
+        // `inert` (not just `aria-hidden`) when closed: `aria-hidden` alone
+        // hides the drawer from assistive tech but leaves its buttons in
+        // the tab order -- an off-screen, keyboard-reachable control is an
+        // invalid ARIA state (a review finding, task-4 fix round 1).
+        // `inert` removes it from both focus and the accessibility tree;
+        // `aria-hidden` is kept alongside for the (now redundant, but
+        // harmless) explicit AT signal on browsers with older `inert`
+        // support.
+        {...(mobile && !open
+          ? // This React/ReactDOM version doesn't recognize `inert` as a
+            // known boolean DOM property (a bare `true` is silently
+            // dropped with a dev warning) -- the plain HTML boolean-
+            // attribute form (any string value, presence is what
+            // matters) is what actually lands in the DOM.
+            { "aria-hidden": true, inert: "true" }
+          : {})}
         onTouchStart={mobile ? handleTouchStart : undefined}
         onTouchEnd={mobile ? handleTouchEnd : undefined}
       >

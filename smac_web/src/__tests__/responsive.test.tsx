@@ -75,17 +75,24 @@ function renderRail(overrides: Partial<ComponentProps<typeof Rail>> = {}) {
 }
 
 describe("Rail's mobile drawer mode (task-4 brief: rail -> swipe/tap drawer)", () => {
-  it("desktop (mobile=false, the default): no backdrop, nav never aria-hidden", () => {
+  it("desktop (mobile=false, the default): no backdrop, nav never aria-hidden/inert", () => {
     renderRail();
     expect(screen.queryByTestId("rail-backdrop")).not.toBeInTheDocument();
-    expect(screen.getByRole("navigation", { hidden: true })).not.toHaveAttribute("aria-hidden");
+    const nav = screen.getByRole("navigation", { hidden: true });
+    expect(nav).not.toHaveAttribute("aria-hidden");
+    expect(nav).not.toHaveAttribute("inert");
   });
 
-  it("mobile + closed: the drawer is aria-hidden and shows no backdrop", () => {
+  it("mobile + closed: the drawer is aria-hidden AND inert (its buttons aren't tabbable), shows no backdrop", () => {
     renderRail({ mobile: true, open: false });
     expect(screen.queryByTestId("rail-backdrop")).not.toBeInTheDocument();
     const nav = screen.getByRole("navigation", { hidden: true });
     expect(nav).toHaveAttribute("aria-hidden", "true");
+    // `inert` is what actually removes the closed drawer's buttons from
+    // the tab order -- `aria-hidden` alone would leave them keyboard-
+    // reachable while visually/semantically hidden (invalid ARIA; task-4
+    // fix round 1).
+    expect(nav).toHaveAttribute("inert");
     expect(nav.className).toContain("rail--drawer-closed");
   });
 

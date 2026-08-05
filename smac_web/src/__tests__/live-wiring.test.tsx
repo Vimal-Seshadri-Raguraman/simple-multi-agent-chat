@@ -225,3 +225,34 @@ describe("AuthedShell's bell wiring (task-4 brief: toast routing test)", () => {
     expect(screen.queryByText(/New mention in/)).not.toBeInTheDocument();
   });
 });
+
+describe("AuthedShell's window-focus unreads refetch (fix round 1: web spec §2's rail bullet)", () => {
+  it("refetches unreads when the window regains focus", async () => {
+    await goToAuthedShell();
+    const unreadsCallsBefore = vi.mocked(api.unreads).mock.calls.length;
+
+    act(() => {
+      fireEvent(window, new Event("focus"));
+    });
+
+    await waitFor(() =>
+      expect(vi.mocked(api.unreads).mock.calls.length).toBeGreaterThan(unreadsCallsBefore)
+    );
+  });
+
+  it("stops listening after the shell unmounts (clean teardown, no leaked listener)", async () => {
+    const { unmount } = render(<App />);
+    await screen.findByRole("heading", { name: "#general" });
+    await waitFor(() => expect(live.connectRoom).toHaveBeenCalled());
+
+    unmount();
+    const unreadsCallsAfterUnmount = vi.mocked(api.unreads).mock.calls.length;
+
+    fireEvent(window, new Event("focus"));
+
+    // Nothing to await -- a leaked listener would call refreshUnreads()
+    // synchronously off this same dispatch; asserting immediately (no
+    // new call landed) is exactly what proves the teardown ran.
+    expect(vi.mocked(api.unreads).mock.calls.length).toBe(unreadsCallsAfterUnmount);
+  });
+});
