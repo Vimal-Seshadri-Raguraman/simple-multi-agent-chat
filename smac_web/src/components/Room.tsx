@@ -9,6 +9,11 @@ import Feed from "./Feed";
  * a fresh instance per room (rather than the same instance reacting to a
  * changed `channelId` prop) is what resets its scroll/follow state
  * cleanly on every room switch.
+ *
+ * **Mobile tier (task-4 brief, web spec §1):** when `mobile` is true, a
+ * hamburger button appears at the head of the room header -- the rail's
+ * open affordance now that the rail itself is off-screen by default
+ * (`Rail.tsx`'s drawer mode).
  */
 
 export type RoomProps = {
@@ -26,6 +31,10 @@ export type RoomProps = {
   channels: ChannelOut[];
   onSend: (text: string) => Promise<void>;
   onOpenPalette: (prefilter: string) => void;
+  /** Mobile tier active (<900px). Default `false` -- desktop callers/tests unaffected. */
+  mobile?: boolean;
+  /** Opens the rail drawer (only rendered/used when `mobile` is true). */
+  onOpenRail?: () => void;
 };
 
 export default function Room({
@@ -43,10 +52,22 @@ export default function Room({
   channels,
   onSend,
   onOpenPalette,
+  mobile = false,
+  onOpenRail,
 }: RoomProps) {
   return (
     <div className="room">
       <header className="room__header">
+        {mobile && (
+          <button
+            type="button"
+            className="room__hamburger"
+            aria-label="Open channels"
+            onClick={onOpenRail}
+          >
+            ☰
+          </button>
+        )}
         <h2 className="room__title">{channel ? `#${channel.channel_name}` : "No channel"}</h2>
         <button type="button" className="room__member-count" onClick={onOpenDrawer}>
           {memberCount} member{memberCount === 1 ? "" : "s"}

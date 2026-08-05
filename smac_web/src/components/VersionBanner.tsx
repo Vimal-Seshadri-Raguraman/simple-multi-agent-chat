@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { CLIENT_VERSION } from "../version";
+import Toast, { useToastQueue } from "./Toast";
 
 /**
  * Server/client version handshake (web spec §2): `/meta` on mount, and
@@ -13,14 +14,16 @@ import { CLIENT_VERSION } from "../version";
  *    a "SMAC updated — refresh" toast, since this tab's already-loaded
  *    JS bundle may now be stale relative to what the server expects.
  *
- * Deliberately minimal: a fixed-position `<div>`, no animation, no
- * portal. Task 4 owns the real Toast component and is expected to unify
- * this with it -- do not invest further in this one's visuals.
+ * The toast is the shared `Toast` component (task-4 brief) -- the task-2
+ * placeholder this replaces explicitly deferred its real toast here.
+ * `sticky: true` because this one is actionable (click -> reload the
+ * page to pick up the new bundle) rather than a fire-and-forget notice,
+ * so it shouldn't vanish on its own before the reader acts on it.
  */
 export default function VersionBanner() {
   const [serverVersion, setServerVersion] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
-  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const toastQueue = useToastQueue();
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +47,10 @@ export default function VersionBanner() {
         .then((data) => {
           if (cancelled) return;
           if (loadedVersion !== null && data.server_version !== loadedVersion) {
-            setUpdateAvailable(true);
+            toastQueue.push("SMAC updated — refresh", {
+              sticky: true,
+              onClick: () => window.location.reload(),
+            });
           }
         })
         .catch(() => {
@@ -57,6 +63,7 @@ export default function VersionBanner() {
       cancelled = true;
       window.removeEventListener("focus", onFocus);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const mismatch = serverVersion !== null && serverVersion !== CLIENT_VERSION;
@@ -73,15 +80,7 @@ export default function VersionBanner() {
           </button>
         </div>
       )}
-      {updateAvailable && (
-        <div
-          className="version-toast"
-          role="status"
-          style={{ position: "fixed", bottom: "1rem", right: "1rem", zIndex: 1000 }}
-        >
-          SMAC updated — refresh
-        </div>
-      )}
+      <Toast toasts={toastQueue.toasts} onDismiss={toastQueue.dismiss} />
     </>
   );
 }

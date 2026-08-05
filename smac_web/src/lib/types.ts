@@ -132,3 +132,19 @@ export type MessagePayload = {
   mentions: Array<{ member_id: string; handle: string; member_name: string }>;
   channel_refs: Array<{ channel_id: string; channel_name: string }>;
 };
+
+/**
+ * `app.mentions.build_mention_event`'s wire shape -- delivered over the
+ * caller's private `/ws/.../members/me/events` feed (task-4 brief) one
+ * per mention, newest as they happen. `message` is the SAME
+ * `MessagePayload` shape the channel feed/REST history use, so a bell
+ * handler can route straight off `message.Channel.channel_id` without a
+ * second lookup.
+ */
+export type MentionEvent = {
+  event: "mention";
+  mention_id: string;
+  created_at: string;
+  mentioned_member_id: string;
+  message: MessagePayload;
+};

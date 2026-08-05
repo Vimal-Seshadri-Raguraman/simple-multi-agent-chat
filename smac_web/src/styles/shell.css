@@ -313,8 +313,20 @@
 }
 
 .room__title {
+  flex: 1;
   margin: 0;
   font-size: var(--font-size-lg);
+}
+
+.room__hamburger {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  flex: 0 0 auto;
 }
 
 .room__member-count {
@@ -697,6 +709,129 @@
 .members-panel__empty {
   color: var(--color-text-dim);
   font-size: var(--font-size-sm);
+}
+
+/* -- Mobile tier (web spec §1: <900px) ----------------------------------
+ * Rail becomes a swipe/tap drawer, the right Drawer becomes a bottom
+ * sheet -- both driven by the `mobile`/`open` props `AuthedShell.tsx`
+ * computes from `state/viewport.tsx`'s `useViewportTier()`, not by a CSS
+ * `@media` query, so the JS-driven tier and the styling can never
+ * disagree about which one is active. The `@media` block further below
+ * covers the few purely-cosmetic mobile tweaks (composer touch targets,
+ * safe-area insets) that don't need any JS state of their own.
+ */
+
+.rail--drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 90;
+  width: min(80vw, 300px);
+  box-shadow: 0 0 24px var(--color-border);
+  transition: transform 0.2s ease;
+}
+
+.rail--drawer-open {
+  transform: translateX(0);
+}
+
+.rail--drawer-closed {
+  transform: translateX(-100%);
+}
+
+.rail__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--color-bg);
+  opacity: 0.6;
+}
+
+.drawer--sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  z-index: 90;
+  max-height: 70vh;
+  border-left: none;
+  border-top: 1px solid var(--color-border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.drawer__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--color-bg);
+  opacity: 0.6;
+}
+
+@media (max-width: 899px) {
+  /* Thumb-anchored composer: bigger tap targets, safe-area-aware bottom
+   * padding (the on-screen keyboard/home-indicator strip on a phone). */
+  .composer {
+    padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+  }
+
+  .composer__send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .toast-stack {
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    max-width: none;
+  }
+}
+
+/* -- Toast (task-4 brief: bell -> toast, VersionBanner's update nudge) --- */
+
+.toast-stack {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(360px, 90vw);
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  box-shadow: 0 4px 16px var(--color-border);
+}
+
+.toast__body {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  padding: 0;
+}
+
+.toast__dismiss {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  line-height: 1;
+  padding: 0;
 }
 
 /* -- Settings stub -------------------------------------------------------- */

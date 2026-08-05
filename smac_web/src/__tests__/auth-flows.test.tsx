@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "../App";
 import * as api from "../lib/api";
+import * as live from "../lib/live";
 import type { Session } from "../lib/api";
 import { CLIENT_VERSION } from "../version";
 
@@ -11,6 +12,12 @@ import { CLIENT_VERSION } from "../version";
 // `api.getSession()`/calls `api.logout()` -- mocking the one module
 // covers both.
 vi.mock("../lib/api");
+// Task-4's live layer (`AuthedShell.tsx`'s socket wiring) mounts the
+// moment a test reaches "authed" -- mocked here too (with a harmless
+// no-op `Closeable`) so these tests, which only care about REACHING that
+// screen, don't also open a real `WebSocket` against an undefined URL
+// (`live.test.ts`/`live-wiring.test.tsx` own the real wiring's behavior).
+vi.mock("../lib/live");
 
 const BASE_SESSION: Session = {
   url: "http://localhost",
@@ -63,6 +70,8 @@ beforeEach(() => {
     created_at: "2026-01-01T00:00:00",
     memberships: [],
   });
+  vi.mocked(live.connectRoom).mockReturnValue({ close: vi.fn() });
+  vi.mocked(live.connectBell).mockReturnValue({ close: vi.fn() });
 });
 
 afterEach(() => {

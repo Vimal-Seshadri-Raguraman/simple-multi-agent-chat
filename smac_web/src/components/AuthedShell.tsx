@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import type { Membership } from "../lib/api";
 import type { CommandContext } from "../lib/commands";
+import { connectBell, connectRoom } from "../lib/live";
 import { useAuth } from "../state/auth";
+import { ViewportProvider, useViewportTier } from "../state/viewport";
 import { WorkspaceProvider, useWorkspace } from "../state/workspace";
 import Settings from "../screens/Settings";
 import "../styles/shell.css";
@@ -11,6 +13,7 @@ import MembersPanel from "./MembersPanel";
 import Palette from "./Palette";
 import Rail from "./Rail";
 import Room from "./Room";
+import Toast, { useToastQueue } from "./Toast";
 
 type Theme = "light" | "dark";
 
@@ -35,28 +38,99 @@ export type AuthedShellProps = {
  * needs the `key` to force a fresh provider instance (the same
  * "remount resets state" pattern `Room.tsx` uses for `Feed` per channel).
  * Without it, the shell would keep showing the PREVIOUS workspace's
- * channels/members/messages after switching.
+ * channels/members/messages after switching. `<ViewportProvider>` sits
+ * outside that keyed remount -- the mobile/desktop tier (task-4 brief)
+ * has nothing to do with which workspace is open and shouldn't reset
+ * alongside it.
  */
 export default function AuthedShell(props: AuthedShellProps) {
   const auth = useAuth();
   return (
-    <WorkspaceProvider key={auth.session?.workspaceId ?? "none"}>
-      <ShellBody {...props} />
-    </WorkspaceProvider>
+    <ViewportProvider>
+      <WorkspaceProvider key={auth.session?.workspaceId ?? "none"}>
+        <ShellBody {...props} />
+      </WorkspaceProvider>
+    </ViewportProvider>
   );
 }
 
 function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
   const auth = useAuth();
   const workspace = useWorkspace();
+  const viewportTier = useViewportTier();
+  const mobile = viewportTier === "mobile";
+  const toastQueue = useToastQueue();
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
   const [youMenuOpen, setYouMenuOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
 
   const currentWorkspaceId = auth.session?.workspaceId;
+
+  // -- Live layer (task-4 brief, web spec §3, constitution §5) -----------
+  //
+  // The current room's socket: reconnected (via the effect's own cleanup
+  // + re-run) every time `currentChannelId` changes, never left dangling
+  // on the PREVIOUS room's feed after a switch. `onGap` -- fired by
+  // `live.ts` after every successful (re)connect, including the very
+  // first -- runs the exact "catch-up-then-live" pair the task-3 brief
+  // exposed `refreshUnreads`/`refreshHistory` for.
+  useEffect(() => {
+    const channelId = workspace.currentChannelId;
+    if (channelId === null) {
+      return;
+    }
+    const connection = connectRoom(
+      channelId,
+      (payload) => workspace.appendMessage(channelId, payload),
+      () => {
+        void workspace.refreshUnreads();
+        void workspace.refreshHistory();
+      }
+    );
+    return () => connection.close();
+    // Deliberately NOT reacting to `workspace.appendMessage`/`refreshUnreads`/
+    // `refreshHistory` identity changes -- this effect's only job is
+    // "one live socket per current room", exactly like `workspace.tsx`'s
+    // own history-reload effect a few lines below it in that file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspace.currentChannelId]);
+
+  // The bell: one connection for the whole authed session (reconnecting
+  // on its own on a drop -- never torn down on a channel switch), so the
+  // handler reads the CURRENT room out of a ref rather than closing over
+  // a `currentChannelId` that would otherwise go stale the moment the
+  // reader switches rooms without this effect re-running.
+  const currentChannelIdRef = useRef(workspace.currentChannelId);
+  useEffect(() => {
+    currentChannelIdRef.current = workspace.currentChannelId;
+  }, [workspace.currentChannelId]);
+
+  useEffect(() => {
+    const connection = connectBell((event) => {
+      const eventChannelId = event.message.Channel.channel_id;
+      if (eventChannelId === currentChannelIdRef.current) {
+        // Already visible in place as an ordinary highlighted message
+        // line (constitution §5: "bell for OTHER-room mentions") --
+        // ringing the bell too would just duplicate what's on screen.
+        return;
+      }
+      void workspace.refreshUnreads(); // bumps the rail's mention badge
+      toastQueue.push(`🔔 New mention in #${event.message.Channel.channel_name}`, {
+        onClick: () => {
+          setShowSettings(false);
+          workspace.selectChannel(eventChannelId);
+        },
+      });
+    });
+    return () => connection.close();
+    // One bell per mount (see above) -- `workspace`/`toastQueue` are read
+    // through refs/stable callbacks, not tracked as effect deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The Rail workspace switcher's "your memberships" list -- re-fetched
   // whenever the entered workspace changes (including right after this
@@ -146,7 +220,10 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         channels={workspace.channels}
         unreads={workspace.unreads}
         currentChannelId={workspace.currentChannelId}
-        onSelectChannel={workspace.selectChannel}
+        onSelectChannel={(channelId) => {
+          workspace.selectChannel(channelId);
+          if (mobile) setRailOpen(false); // tapping a room closes the drawer behind it
+        }}
         onCreateChannel={(name) => void workspace.createChannel(name)}
         self={workspace.self}
         youMenuOpen={youMenuOpen}
@@ -154,6 +231,9 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         theme={theme}
         onToggleTheme={onToggleTheme}
         onLogout={() => void auth.logout()}
+        mobile={mobile}
+        open={mobile ? railOpen : true}
+        onRequestClose={() => setRailOpen(false)}
       />
       <Room
         channel={currentChannel}
@@ -170,8 +250,15 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         channels={workspace.channels}
         onSend={workspace.sendMessage}
         onOpenPalette={openPaletteWithQuery}
+        mobile={mobile}
+        onOpenRail={() => setRailOpen(true)}
       />
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Members">
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        title="Members"
+        mobile={mobile}
+      >
         <MembersPanel members={workspace.members} self={workspace.self} />
       </Drawer>
       <Palette
@@ -180,6 +267,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         onClose={() => setPaletteOpen(false)}
         buildContext={buildCommandContext}
       />
+      <Toast toasts={toastQueue.toasts} onDismiss={toastQueue.dismiss} />
     </div>
   );
 }

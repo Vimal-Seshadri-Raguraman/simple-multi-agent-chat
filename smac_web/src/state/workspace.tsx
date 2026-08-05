@@ -245,6 +245,14 @@ export type WorkspaceContextValue = WorkspaceState & {
   createChannel: (name: string) => Promise<void>;
   /** Post a message to the current channel, appending it locally on success. */
   sendMessage: (text: string) => Promise<void>;
+  /** Push a freshly-arrived LIVE message into `channelId`'s feed (task-4
+   * seam, per this file's module docstring above) -- the counterpart to
+   * `sendMessage`'s own local append, but for messages the socket
+   * delivered rather than this tab's own POST. A no-op if `channelId`
+   * isn't the channel currently on screen (`APPEND_MESSAGE`'s reducer
+   * case already guards this), so a live.ts handler never needs to check
+   * "is this still the current room?" itself before calling it. */
+  appendMessage: (channelId: string, message: MessagePayload) => void;
   /** Advance the current channel's read cursor to caught-up-with-`messages`
    * and refresh the local unread badge for it. The `onView` callback
    * `Feed` is handed (task-3 brief's injected mark-read seam). */
@@ -341,6 +349,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [state.currentChannelId]
   );
 
+  const appendMessage = useCallback((channelId: string, message: MessagePayload) => {
+    dispatch({ type: "APPEND_MESSAGE", channelId, message });
+  }, []);
+
   const markRead = useCallback(async (channelId: string) => {
     if (markReadInFlight.current.has(channelId)) return;
     markReadInFlight.current.add(channelId);
@@ -378,6 +390,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       loadOlderMessages,
       createChannel,
       sendMessage,
+      appendMessage,
       markRead,
     }),
     [
@@ -390,6 +403,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       loadOlderMessages,
       createChannel,
       sendMessage,
+      appendMessage,
       markRead,
     ]
   );
