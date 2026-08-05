@@ -1,4 +1,7 @@
-"""One end-to-end journey through the entire auth lifecycle."""
+"""One end-to-end journey through the entire two-tier auth lifecycle
+(Identity v2, SMAC-79 Task 2 cutover): signup -> found (account-authed,
+convenience workspace tokens) -> refresh -> logout -> expired/invalid
+tokens rejected."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -8,17 +11,24 @@ from app.security import SECRET_KEY
 
 
 def test_full_auth_lifecycle(client):
-    # Found a workspace → logged in immediately.
+    # Global signup -> ACCOUNT tokens, auto-logged-in.
+    signup = client.post(
+        "/accounts",
+        json={"email": "vimal@example.com", "password": "super-secret-1"},
+    ).json()
+    account_token = signup["tokens"]["access_token"]
+
+    # Found a workspace (account-authed) -> logged in immediately with a
+    # convenience WORKSPACE token pair.
     founded = client.post(
         "/workspaces",
         json={
             "workspace_name": "Home",
-            "email": "vimal@example.com",
-            "password": "super-secret-1",
-            "first_name": "Vimal",
-            "last_name": "Raguraman",
-            "company": "RIT",
+            "visibility": "private",
+            "display_first_name": "Vimal",
+            "display_last_name": "Raguraman",
         },
+        headers={"Authorization": f"Bearer {account_token}"},
     ).json()
     member_id = founded["member"]["member_id"]
     workspace_id = founded["workspace"]["workspace_id"]
@@ -30,24 +40,28 @@ def test_full_auth_lifecycle(client):
         == 200
     )
 
-    # Fresh login also works.
-    logged_in = client.post(
-        "/auth/login",
-        json={
-            "workspace_id": workspace_id,
-            "email": "vimal@example.com",
-            "password": "super-secret-1",
-        },
+    # The account token cannot be used on a workspace endpoint (tier wall).
+    denied = client.get(
+        f"/workspaces/{workspace_id}/members",
+        headers={"Authorization": f"Bearer {account_token}"},
+    )
+    assert denied.status_code == 401
+    assert denied.json()["error"]["code"] == "workspace_token_required"
+
+    # A fresh workspace-token mint via the account token also works.
+    minted = client.post(
+        f"/workspaces/{workspace_id}/token",
+        headers={"Authorization": f"Bearer {account_token}"},
     ).json()
-    assert logged_in["access_token"]
+    assert minted["access_token"]
 
     # Refresh rotates: old dies, new lives.
     refreshed = client.post(
-        "/auth/refresh", json={"refresh_token": logged_in["refresh_token"]}
+        "/auth/refresh", json={"refresh_token": founded["refresh_token"]}
     ).json()
     assert (
         client.post(
-            "/auth/refresh", json={"refresh_token": logged_in["refresh_token"]}
+            "/auth/refresh", json={"refresh_token": founded["refresh_token"]}
         ).status_code
         == 401
     )
@@ -74,9 +88,14 @@ def test_full_auth_lifecycle(client):
         == 401
     )
 
-    # An expired access token (forged with the real key) is rejected.
+    # An expired access token (forged with the real key, workspace scope)
+    # is rejected.
     expired = jwt.encode(
-        {"sub": member_id, "exp": datetime.now(timezone.utc) - timedelta(minutes=1)},
+        {
+            "sub": member_id,
+            "scope": "workspace",
+            "exp": datetime.now(timezone.utc) - timedelta(minutes=1),
+        },
         SECRET_KEY,
         algorithm="HS256",
     )

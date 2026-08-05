@@ -34,7 +34,7 @@ def test_malformed_bearer_token_is_401_invalid_token(client):
 
 
 def test_token_for_deleted_member_rejected(db_session):
-    token = create_access_token("no-such-member")
+    token = create_access_token("no-such-member", scope="workspace")
     with pytest.raises(InvalidTokenError):
         resolve_member(db_session, token, None)
 

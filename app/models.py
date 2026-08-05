@@ -54,10 +54,62 @@ class UTCDateTime(TypeDecorator[datetime]):
         return value
 
 
+class Account(Base):
+    """A global identity (Identity v2 / SMAC-79): one per human (email +
+    password) or one per agent/bot identity (no email/password -- keys
+    stay per-workspace on `Member`, Decision 2). Each workspace `Member`
+    row is a per-workspace PROFILE that links back here via
+    `Member.account_id`.
+
+    `email_key` is the SMAC-68 shadow-key pattern (see
+    `Workspace.workspace_name_key`): SQLAlchemy's SQLite dialect can't
+    reflect expression indexes, so case-insensitive global uniqueness is
+    enforced via a plain `UniqueConstraint` on a lowercased shadow column
+    instead, kept in sync by `_sync_email_key` on every write to `email`.
+    `email`/`email_key`/`password_hash` are nullable because agent/bot
+    accounts have none of the three -- they are identity-only.
+    """
+
+    __tablename__ = "accounts"
+    __table_args__ = (UniqueConstraint("email_key", name="uq_accounts_email_ci"),)
+
+    account_id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
+    account_type: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # human | agent | bot_app
+    email: Mapped[str | None] = mapped_column(String, nullable=True)
+    email_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False
+    )
+
+    @validates("email")
+    def _sync_email_key(self, key: str, value: str | None) -> str | None:
+        """Keep `email_key` = lower(email) on every write, same mechanism as
+        `Workspace._sync_name_key` -- see that docstring for why a shadow
+        column (not an expression index) is the fallback here."""
+        self.email_key = value.lower() if value is not None else None
+        return value
+
+
 class Member(Base):
+    """A per-workspace profile (Identity v2 / SMAC-79 Task 2): identity now
+    lives entirely on the linked `Account` (email/password, if any) --
+    `email`/`password_hash` were dropped from this table by migration B,
+    and every member must link to a real account (`account_id` NOT NULL).
+    `uq_members_workspace_account` is the new per-workspace invariant: one
+    profile per account per workspace (replacing the old per-workspace
+    email uniqueness). `member_type` stays here for query convenience but
+    must always equal the linked account's `account_type` -- spec §1's
+    invariant, covered by a dedicated test rather than a DB constraint.
+    """
+
     __tablename__ = "members"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "email", name="uq_members_workspace_email"),
+        UniqueConstraint(
+            "workspace_id", "account_id", name="uq_members_workspace_account"
+        ),
         UniqueConstraint("workspace_id", "handle", name="uq_members_workspace_handle"),
     )
 
@@ -68,8 +120,6 @@ class Member(Base):
     )  # human | agent | bot_app
     handle: Mapped[str] = mapped_column(String, nullable=False)
     api_key_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-    email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    password_hash: Mapped[str | None] = mapped_column(String, nullable=True)
     first_name: Mapped[str | None] = mapped_column(String, nullable=True)
     last_name: Mapped[str | None] = mapped_column(String, nullable=True)
     company: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -77,6 +127,9 @@ class Member(Base):
     job_role: Mapped[str | None] = mapped_column(String, nullable=True)
     workspace_id: Mapped[str] = mapped_column(
         String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
+    )
+    account_id: Mapped[str] = mapped_column(
+        String, ForeignKey("accounts.account_id"), nullable=False, index=True
     )
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -187,13 +240,31 @@ class RefreshToken(Base):
 
     One row per issued refresh token. Rows are deleted on rotation
     (/auth/refresh), logout, or when found expired.
+
+    Identity v2 (SMAC-79) two-tier auth: `scope` is `"workspace"` (every
+    workspace-birth/join door and `POST /workspaces/{id}/token`,
+    `member_id`/`workspace_id` set, `account_id` set to the member's
+    linked account) or `"account"` (account-tier tokens from
+    `POST /accounts` / `POST /accounts/login`, `account_id` set,
+    `member_id`/`workspace_id` NULL -- a brand-new account has no member
+    yet). `member_id` is therefore nullable; `/auth/refresh` reads
+    `scope` back off the stored row and echoes it into the reissued pair.
     """
 
     __tablename__ = "refresh_tokens"
 
     token_hash: Mapped[str] = mapped_column(String, primary_key=True)
-    member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False, index=True
+    member_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=True, index=True
+    )
+    account_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("accounts.account_id"), nullable=True, index=True
+    )
+    scope: Mapped[str] = mapped_column(
+        String, nullable=False, server_default="workspace"
+    )
+    workspace_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("workspaces.workspace_id"), nullable=True
     )
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

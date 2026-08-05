@@ -67,12 +67,19 @@ def test_handle_backfill_for_existing_members(tmp_path):
             ("m2", "Rita", "Mode", "Rita Mode"),  # collides -> rmode2
             ("m3", None, None, "Helper Bot"),
         ]:
+            # Every real human member has an email at the app level (email is
+            # nullable at the DB level only to accommodate agents/bots) --
+            # migration A's backfill (spec §5 step 2) keys off it, so these
+            # synthetic pre-Identity-v2 fixtures need one too, or account_id
+            # never gets backfilled and migration B's NOT NULL fails.
             conn.exec_driver_sql(
                 "INSERT INTO members (member_id, member_name, member_type,"
-                " workspace_id, is_admin, first_name, last_name, created_at)"
+                " workspace_id, is_admin, first_name, last_name, email,"
+                " created_at)"
                 f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
                 f" {'NULL' if first is None else repr(first)},"
-                f" {'NULL' if last is None else repr(last)}, '2026-01-01 00:00:00')"
+                f" {'NULL' if last is None else repr(last)},"
+                f" '{member_id}@test.example', '2026-01-01 00:00:00')"
             )
     command.upgrade(_alembic_config(url), "head")
     with engine.begin() as conn:
@@ -96,11 +103,15 @@ def test_read_cursor_backfill_sets_caught_up(tmp_path):
             " VALUES ('w1', 'Acme', 'private', '2026-01-01 00:00:00')"
         )
         for member_id, name in [("m1", "Rohan Mode"), ("m2", "Rita Mode")]:
+            # See test_handle_backfill_for_existing_members's comment: a real
+            # human member always has an email, which migration A's backfill
+            # (spec §5 step 2) requires to link an account_id.
             conn.exec_driver_sql(
                 "INSERT INTO members (member_id, member_name, member_type,"
-                " workspace_id, is_admin, handle, created_at)"
+                " workspace_id, is_admin, handle, email, created_at)"
                 f" VALUES ('{member_id}', '{name}', 'human', 'w1', 0,"
-                f" '{member_id}', '2026-01-01 00:00:00')"
+                f" '{member_id}', '{member_id}@test.example',"
+                " '2026-01-01 00:00:00')"
             )
         for channel_id, name in [("c1", "general"), ("c2", "empty")]:
             conn.exec_driver_sql(
@@ -244,3 +255,407 @@ def test_dedupe_and_shadow_key_backfill_for_unique_names(tmp_path):
                 " workspace_name_key, visibility, created_at) VALUES"
                 " ('w10', 'ÉQUIPE', 'équipe', 'private', '2026-01-01 00:00:07')"
             )
+
+
+def test_identity_v2_migration_a_backfill(tmp_path):
+    """Migration A backfill (spec §5 steps 1-3, SMAC-79 Task 1):
+
+    - same-email-two-workspaces with DIFFERENT passwords collapse into
+      ONE account; the OLDER member (by created_at then member_id)
+      donates its password_hash AND its email's original casing; both
+      members link to that one account via account_id.
+    - a same-email-same-password pair also collapses to one (different)
+      account, proving grouping is by email, not incidentally by hash.
+    - each agent/bot member gets its own BRAND-NEW account (no
+      cross-workspace merging), with no email/password.
+    - uq_accounts_email_ci is enforced afterward.
+    """
+    url = f"sqlite:///{tmp_path}/backfill.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")  # pre-identity-v2 schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        for workspace_id, name, key, created_at in [
+            ("w1", "Acme", "acme", "2026-01-01 00:00:00"),
+            ("w2", "Beta", "beta", "2026-01-01 00:00:01"),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                f" ('{workspace_id}', '{name}', '{key}', 'private', '{created_at}')"
+            )
+        # Same email (case-variant), DIFFERENT passwords -- m1 is older,
+        # so it must donate both its password_hash and its email casing.
+        for member_id, workspace_id, email, password_hash, handle, created_at in [
+            (
+                "m1",
+                "w1",
+                "Dup@Example.com",
+                "hash-oldest",
+                "dupuser",
+                "2026-01-01 00:00:00",
+            ),
+            (
+                "m2",
+                "w2",
+                "dup@example.com",
+                "hash-newest",
+                "dupuser2",
+                "2026-01-01 00:00:05",
+            ),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, handle, email, password_hash,"
+                " created_at) VALUES"
+                f" ('{member_id}', 'Dup User', 'human', '{workspace_id}', 0,"
+                f" '{handle}', '{email}', '{password_hash}', '{created_at}')"
+            )
+        # A second, distinct email shared by two members with the SAME
+        # password -- must also collapse to one (different) account.
+        for member_id, workspace_id, handle, created_at in [
+            ("m3", "w1", "sameuser", "2026-01-01 00:00:02"),
+            ("m4", "w2", "sameuser2", "2026-01-01 00:00:03"),
+        ]:
+            conn.exec_driver_sql(
+                "INSERT INTO members (member_id, member_name, member_type,"
+                " workspace_id, is_admin, handle, email, password_hash,"
+                " created_at) VALUES"
+                f" ('{member_id}', 'Same User', 'human', '{workspace_id}', 0,"
+                f" '{handle}', 'same@example.com', 'hash-same', '{created_at}')"
+            )
+        # An agent member: own brand-new account, no email/password.
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, created_at) VALUES"
+            " ('m5', 'Agent Bot', 'agent', 'w1', 0, 'agentbot',"
+            " '2026-01-01 00:00:04')"
+        )
+
+    command.upgrade(_alembic_config(url), "head")
+
+    with engine.begin() as conn:
+        member_accounts = dict(
+            conn.exec_driver_sql(
+                "SELECT member_id, account_id FROM members ORDER BY member_id"
+            ).fetchall()
+        )
+        accounts_by_id = {
+            row[0]: row
+            for row in conn.exec_driver_sql(
+                "SELECT account_id, account_type, email, email_key,"
+                " password_hash FROM accounts"
+            ).fetchall()
+        }
+
+    # Every member links to a real account.
+    assert all(account_id is not None for account_id in member_accounts.values())
+    assert set(member_accounts.values()) <= set(accounts_by_id.keys())
+
+    # m1 (oldest) and m2 share one account; m1 donated its password AND
+    # its email's original casing (NOT lowercased/overwritten).
+    assert member_accounts["m1"] == member_accounts["m2"]
+    dup_account = accounts_by_id[member_accounts["m1"]]
+    assert dup_account[1] == "human"  # account_type
+    assert dup_account[2] == "Dup@Example.com"  # email casing from oldest row
+    assert dup_account[3] == "dup@example.com"  # email_key
+    assert dup_account[4] == "hash-oldest"  # oldest member's password wins
+
+    # m3 and m4 (distinct email, same password) also collapse to one
+    # account -- a DIFFERENT account than the m1/m2 group.
+    assert member_accounts["m3"] == member_accounts["m4"]
+    assert member_accounts["m3"] != member_accounts["m1"]
+    same_account = accounts_by_id[member_accounts["m3"]]
+    assert same_account[4] == "hash-same"
+
+    # The agent gets its own brand-new account: no email/password, and
+    # not merged with either human group.
+    agent_account = accounts_by_id[member_accounts["m5"]]
+    assert agent_account[1] == "agent"
+    assert agent_account[2] is None
+    assert agent_account[4] is None
+    assert member_accounts["m5"] not in (member_accounts["m1"], member_accounts["m3"])
+
+    inspector = inspect(engine)
+    account_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("accounts")
+    }
+    assert "uq_accounts_email_ci" in account_constraints
+
+    # Case-insensitive uniqueness is enforced going forward.
+    with pytest.raises(IntegrityError):
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO accounts (account_id, account_type, email,"
+                " email_key, password_hash, created_at) VALUES"
+                " ('acct-x', 'human', 'DUP@EXAMPLE.COM', 'dup@example.com',"
+                " 'x', '2026-01-01 00:00:06')"
+            )
+
+
+def test_drift_guard_catches_missing_migration_a(tmp_path):
+    """Red -> green proof for migration A: with the migration chain
+    stopped one revision short (at 86eb92b1f702, the pre-Identity-v2
+    head), the model/migration comparator MUST report drift, since
+    Base.metadata now includes `accounts`, `members.account_id`, and the
+    refresh_tokens additions that 86eb92b1f702 alone doesn't create. This
+    is the "red" half of the red -> green proof that
+    test_no_model_migration_drift (green, against `head`) is the "green"
+    half of."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    url = f"sqlite:///{tmp_path}/pre_identity_v2.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        diffs = compare_metadata(ctx, Base.metadata)
+    assert diffs != [], "expected drift against the pre-Identity-v2 schema, found none"
+
+
+def test_drift_guard_catches_missing_migration_b(tmp_path):
+    """Red -> green proof for migration B (the cutover, SMAC-79 Task 2):
+    with the chain stopped at migration A's head (d379652f77fb -- accounts
+    exist, but members.email/password_hash are still there and account_id
+    is still nullable), the comparator MUST report drift, since
+    Base.metadata now has neither legacy column, account_id NOT NULL, and
+    uq_members_workspace_account instead of uq_members_workspace_email.
+    test_no_model_migration_drift (green, against `head`) is the "green"
+    half of this proof."""
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    url = f"sqlite:///{tmp_path}/pre_cutover.db"
+    command.upgrade(_alembic_config(url), "d379652f77fb")
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        ctx = MigrationContext.configure(conn)
+        diffs = compare_metadata(ctx, Base.metadata)
+    assert diffs != [], "expected drift against the pre-cutover schema, found none"
+
+
+def _client_for_migrated_db(url: str):
+    """A real TestClient/app wired to an already-upgraded sqlite FILE
+    (not the in-memory `client` fixture's `Base.metadata.create_all`),
+    so a populated-DB migration test can exercise real endpoints
+    ("via the API") against the exact rows the migration produced.
+    Returns `(client, restore)`; caller must call `restore()` when done.
+    """
+    import app.database as database_module
+    from app.database import enable_sqlite_foreign_keys, get_db
+    from app.main import app as fastapi_app
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+    enable_sqlite_foreign_keys(engine)
+    testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    def override_get_db():
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    original_session_local = database_module.SessionLocal
+    database_module.SessionLocal = testing_session_local
+    fastapi_app.dependency_overrides[get_db] = override_get_db
+
+    def restore() -> None:
+        fastapi_app.dependency_overrides.clear()
+        database_module.SessionLocal = original_session_local
+
+    return TestClient(fastapi_app), restore
+
+
+def test_identity_v2_migration_b_populated_db(tmp_path):
+    """Populated-DB test for migration B (spec §5 step 4-5, brief's
+    REQUIRED item): starting from a pre-Identity-v2 DB with a stray
+    refresh token and a same-email-different-password pair (oldest
+    wins, per migration A's already-proven backfill), upgrading through
+    both A and B must: purge every refresh_tokens row, drop
+    members.email/password_hash, add account_id NOT NULL +
+    uq_members_workspace_account -- and, via the real API post-upgrade,
+    let the WINNER (oldest member's) password log in while the loser's
+    password is rejected.
+
+    Final-review MINOR-7: also proves the batch rebuild's riskiest
+    property -- FK CHILDREN of a FK-referenced, populated `members` table
+    (channel_members/messages/mentions/workspace_invites, all keyed by
+    member_id) survive the copy/drop/rename intact, that SQLite's own FK
+    checker confirms every remaining foreign key resolves, and that the
+    migrated DB works beyond just login: minting a workspace token and
+    POSTing a brand-new message through the real API under FK
+    enforcement.
+    """
+    from app.security import hash_password
+
+    url = f"sqlite:///{tmp_path}/popb.db"
+    command.upgrade(_alembic_config(url), "86eb92b1f702")  # pre-Identity-v2 schema
+    engine = create_engine(url)
+    winner_hash = hash_password("winner-pass-123")
+    loser_hash = hash_password("loser-pass-456")
+    with engine.begin() as conn:
+        for workspace_id, name, key in [("w1", "Acme", "acme"), ("w2", "Beta", "beta")]:
+            conn.exec_driver_sql(
+                "INSERT INTO workspaces (workspace_id, workspace_name,"
+                " workspace_name_key, visibility, created_at) VALUES"
+                f" ('{workspace_id}', '{name}', '{key}', 'private',"
+                " '2026-01-01 00:00:00')"
+            )
+        # m1 (oldest) donates its password; m2 (newer, same email, a
+        # DIFFERENT password) does not -- migration A's already-tested
+        # winner-take-all backfill (test_identity_v2_migration_a_backfill).
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, email, password_hash,"
+            " created_at) VALUES"
+            " ('m1', 'Winner User', 'human', 'w1', 0, 'winner',"
+            f" 'winner@example.com', '{winner_hash}', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, is_admin, handle, email, password_hash,"
+            " created_at) VALUES"
+            " ('m2', 'Loser User', 'human', 'w2', 0, 'loser',"
+            f" 'winner@example.com', '{loser_hash}', '2026-01-01 00:00:05')"
+        )
+        # A stray refresh token, pre-dating scope/account_id/workspace_id
+        # (those columns don't exist at this revision yet) -- proves the
+        # purge reaches sessions that predate migration A too.
+        conn.exec_driver_sql(
+            "INSERT INTO refresh_tokens (token_hash, member_id, expires_at,"
+            " created_at) VALUES ('tok1', 'm1', '2099-01-01 00:00:00',"
+            " '2026-01-01 00:00:00')"
+        )
+        # FK children of `members`, populated pre-upgrade (MINOR-7): a
+        # channel, a channel membership, a message, a mention, and a
+        # pending email invite, all referencing m1 -- the batch rebuild
+        # that adds account_id NOT NULL to `members` must carry every one
+        # of these through, not just the `members` table itself.
+        conn.exec_driver_sql(
+            "INSERT INTO channels (channel_id, workspace_id, channel_name,"
+            " channel_name_key, created_at) VALUES ('c1', 'w1', 'general',"
+            " 'general', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO channel_members (channel_id, member_id, last_read_seq)"
+            " VALUES ('c1', 'm1', 0)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO messages (message_id, seq, channel_id, sender_member_id,"
+            " message_text, created_at) VALUES ('msg1', 1, 'c1', 'm1',"
+            " 'hello from before the cutover', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO mentions (mention_id, message_id, mentioned_member_id,"
+            " created_at) VALUES ('men1', 'msg1', 'm1', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO workspace_invites (invite_id, workspace_id, invite_type,"
+            " email, created_by, created_at) VALUES ('inv1', 'w1', 'email',"
+            " 'invitee@example.com', 'm1', '2026-01-01 00:00:00')"
+        )
+
+    command.upgrade(_alembic_config(url), "head")
+
+    inspector = inspect(engine)
+    member_cols = {c["name"] for c in inspector.get_columns("members")}
+    assert "email" not in member_cols
+    assert "password_hash" not in member_cols
+    member_constraints = {
+        uc["name"] for uc in inspector.get_unique_constraints("members")
+    }
+    assert "uq_members_workspace_account" in member_constraints
+    assert "uq_members_workspace_email" not in member_constraints
+
+    with engine.begin() as conn:
+        assert conn.exec_driver_sql("SELECT COUNT(*) FROM refresh_tokens").scalar() == 0
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM members WHERE account_id IS NULL"
+            ).scalar()
+            == 0
+        )
+        # FK children of `members` survived the batch rebuild intact --
+        # every row inserted above is still there, still pointing at m1.
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM channel_members WHERE member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM messages WHERE sender_member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM mentions WHERE mentioned_member_id = 'm1'"
+            ).scalar()
+            == 1
+        )
+        assert (
+            conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM workspace_invites WHERE created_by = 'm1'"
+            ).scalar()
+            == 1
+        )
+        # SQLite's own FK checker, not just row counts: every remaining
+        # foreign key in the migrated DB resolves to a real parent row.
+        assert conn.exec_driver_sql("PRAGMA foreign_key_check").fetchall() == []
+
+    client, restore = _client_for_migrated_db(url)
+    try:
+        with client as c:
+            winner_login = c.post(
+                "/accounts/login",
+                json={"email": "winner@example.com", "password": "winner-pass-123"},
+            )
+            assert winner_login.status_code == 200
+
+            loser_login = c.post(
+                "/accounts/login",
+                json={"email": "winner@example.com", "password": "loser-pass-456"},
+            )
+            assert loser_login.status_code == 401
+            assert loser_login.json()["error"]["code"] == "invalid_credentials"
+
+            # Non-login API exercise (MINOR-7): mint a workspace token for
+            # the winner and post a brand-new message with it -- the
+            # migrated DB must work beyond just login, through the exact
+            # FK-children path (channel_members/messages) proven intact
+            # above, with FK enforcement ON (`_client_for_migrated_db`
+            # calls `enable_sqlite_foreign_keys`).
+            workspace_token = c.post(
+                "/workspaces/w1/token",
+                headers={
+                    "Authorization": "Bearer "
+                    + winner_login.json()["tokens"]["access_token"]
+                },
+            )
+            assert workspace_token.status_code == 200
+            posted = c.post(
+                "/workspaces/w1/channels/c1/messages",
+                json={"message_text": "post-migration message"},
+                headers={
+                    "Authorization": "Bearer " + workspace_token.json()["access_token"]
+                },
+            )
+            assert posted.status_code == 200
+    finally:
+        restore()
+
+
+def test_migration_b_downgrade_raises(tmp_path):
+    """Migration B is data-destructive both ways (members.email/
+    password_hash dropped, refresh_tokens purged) -- downgrade() must
+    raise rather than pretend a real rollback is possible, per the
+    Global Constraints' first-irreversible-migration callout."""
+    url = f"sqlite:///{tmp_path}/downgrade.db"
+    command.upgrade(_alembic_config(url), "head")
+    with pytest.raises(NotImplementedError, match="restore from backup"):
+        command.downgrade(_alembic_config(url), "d379652f77fb")

@@ -64,28 +64,44 @@ def client():
 _TEST_PASSWORD = "test-password-123"
 
 
+def _create_account(client, email: str) -> dict:
+    """POST /accounts: create a global account, returning its auth body
+    (account + ACCOUNT-tier tokens). The one place every helper below
+    bootstraps an account from, so account creation can't drift out of
+    sync between founder_auth/member_auth."""
+    response = client.post(
+        "/accounts", json={"email": email, "password": _TEST_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def founder_auth(client, key: str = "w1", visibility: str = "public") -> dict:
-    """Found (once per client per key) a workspace via the real POST /workspaces.
+    """Found (once per client per key) a workspace via the real, account-authed
+    POST /workspaces: creates a fresh account for f"{key}@test.example", then
+    founds with it.
 
     Results are cached on the TestClient instance so repeated calls with the
-    same key reuse one workspace/founder pair.
+    same key reuse one account/workspace/founder pair. Returns the same
+    dict shape as before Identity v2, plus `account_id`/`account_token`
+    (spec's binding conftest contract, SMAC-79 Task 2).
     """
     cache = getattr(client, "_founder_auth_cache", None)
     if cache is None:
         cache = {}
         client._founder_auth_cache = cache
     if key not in cache:
+        account_body = _create_account(client, f"{key}@test.example")
+        account_token = account_body["tokens"]["access_token"]
         response = client.post(
             "/workspaces",
             json={
                 "workspace_name": f"{key}-workspace",
                 "visibility": visibility,
-                "email": f"{key}@test.example",
-                "password": _TEST_PASSWORD,
-                "first_name": "Test",
-                "last_name": key,
-                "display_name": f"Test {key}",
+                "display_first_name": "Test",
+                "display_last_name": key,
             },
+            headers={"Authorization": f"Bearer {account_token}"},
         )
         assert response.status_code == 200, response.text
         body = response.json()
@@ -94,6 +110,8 @@ def founder_auth(client, key: str = "w1", visibility: str = "public") -> dict:
             "member_id": body["member"]["member_id"],
             "workspace_id": body["workspace"]["workspace_id"],
             "default_channel_id": None,
+            "account_id": account_body["account"]["account_id"],
+            "account_token": account_token,
         }
     return cache[key]
 
@@ -108,11 +126,13 @@ def founder_headers(
 
 
 def member_auth(client, key: str, workspace_key: str = "w1") -> dict:
-    """Register (once per client per key) f"{key}@test.example" into a founder's
-    public test workspace via POST /workspaces/{id}/register.
+    """Register (once per client per key) a fresh account for
+    f"{key}@test.example" into a founder's public test workspace via the
+    real, account-authed POST /workspaces/{id}/register.
 
     Results are cached on the TestClient instance so repeated calls with the
-    same key reuse one member.
+    same key reuse one account/member pair. Returns the same dict shape as
+    before Identity v2, plus `account_id`/`account_token`.
     """
     cache = getattr(client, "_member_auth_cache", None)
     if cache is None:
@@ -120,15 +140,16 @@ def member_auth(client, key: str, workspace_key: str = "w1") -> dict:
         client._member_auth_cache = cache
     if key not in cache:
         workspace_id = founder_auth(client, workspace_key)["workspace_id"]
+        account_body = _create_account(client, f"{key}@test.example")
+        account_token = account_body["tokens"]["access_token"]
         response = client.post(
             f"/workspaces/{workspace_id}/register",
             json={
-                "email": f"{key}@test.example",
-                "password": _TEST_PASSWORD,
                 "first_name": "Test",
                 "last_name": key,
                 "display_name": f"Test {key}",
             },
+            headers={"Authorization": f"Bearer {account_token}"},
         )
         assert response.status_code == 200, response.text
         body = response.json()
@@ -137,6 +158,8 @@ def member_auth(client, key: str, workspace_key: str = "w1") -> dict:
             "member_id": body["member"]["member_id"],
             "workspace_id": body["workspace"]["workspace_id"],
             "default_channel_id": None,
+            "account_id": account_body["account"]["account_id"],
+            "account_token": account_token,
         }
     return cache[key]
 

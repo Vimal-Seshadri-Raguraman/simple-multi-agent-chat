@@ -29,6 +29,7 @@ from smac_cli.api import Session, SmacApi
 from smac_cli.errors import (
     AuthError,
     NameTakenError,
+    NoWorkspaceError,
     NotAMemberError,
     NotFoundError,
     RateLimitedError,
@@ -71,6 +72,8 @@ def _envelope_transport(
         ("unauthorized", AuthError),
         ("invalid_credentials", AuthError),
         ("invalid_token", AuthError),
+        ("workspace_token_required", AuthError),
+        ("account_token_required", AuthError),
         ("not_found", NotFoundError),
         ("invalid_invite", NotFoundError),
         ("not_a_member", NotAMemberError),
@@ -213,10 +216,12 @@ def _seed_session(home_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
     monkeypatch.setattr(Path, "home", lambda: home_dir)
     session = Session(
         url="http://fake.test",
+        email="a@test.example",
+        account_access_token="stale-account-access",
+        account_refresh_token="stale-account-refresh",
         workspace_id="w1",
         access_token="stale-access",
         refresh_token="stale-refresh",
-        email="a@test.example",
     )
     session.save(session_path())
     return session
@@ -345,10 +350,11 @@ def test_401_then_refresh_succeeds_but_session_nulled_concurrently_raises_sessio
 ) -> None:
     """Finding J: `self.session` can be nulled by a concurrent force-expiry
     (another thread's own failed refresh invalidating this shared
-    `SmacApi` instance) in the narrow window between `_refresh()` returning
-    successfully here and the retry reading `self.session.access_token`.
-    Before the guard this crashed with `AttributeError`; it must now raise
-    the same clean `SessionExpired` a normal failed refresh would.
+    `SmacApi` instance) in the narrow window between `_recover_workspace_
+    session()` returning successfully here and the retry reading
+    `self.session.access_token`. Before the guard this crashed with
+    `AttributeError`; it must now raise the same clean `SessionExpired` a
+    normal failed refresh would.
     """
     _seed_session(tmp_path, monkeypatch)
 
@@ -365,16 +371,16 @@ def test_401_then_refresh_succeeds_but_session_nulled_concurrently_raises_sessio
         "http://fake.test", session=session, transport=httpx.MockTransport(handler)
     )
 
-    def fake_refresh() -> None:
+    def fake_recover() -> None:
         # Simulate a concurrent thread's own (successful, from ITS point of
         # view) redemption of the same rotating token, followed by a force
         # -expiry that nulls the shared session -- without ever making a
         # real network call here, since the point under test is purely
         # `_authed_request`'s handling of `self.session` being `None`
-        # right after `_refresh()` returns.
+        # right after `_recover_workspace_session()` returns.
         api.session = None
 
-    monkeypatch.setattr(api, "_refresh", fake_refresh)
+    monkeypatch.setattr(api, "_recover_workspace_session", fake_recover)
 
     with pytest.raises(SessionExpired):
         api.channels()
@@ -439,11 +445,151 @@ def test_ws_events_url_refreshes_and_embeds_fresh_token(
 
 
 # --------------------------------------------------------------------------
+# Identity v2 (SMAC-79 Task 3): NoWorkspaceError + the account-refresh
+# fallback tier of the workspace 401 recovery chain.
+# --------------------------------------------------------------------------
+
+
+def test_workspace_call_with_no_workspace_entered_raises_no_workspace_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account-only session (fresh off `/register`, no workspace token
+    minted yet) must never even attempt an HTTP call for a workspace-tier
+    method -- and must never be mistaken for `SessionExpired` (the
+    account itself is perfectly valid)."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    session = Session(
+        url="http://fake.test",
+        email="a@test.example",
+        account_access_token="aat",
+        account_refresh_token="art",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    api = SmacApi(
+        "http://fake.test", session=session, transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(NoWorkspaceError):
+        api.channels()
+
+
+def test_401_falls_back_to_account_refresh_and_remints_workspace_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Binding refresh chain (brief): workspace refresh -> account-refresh
+    fallback -> re-mint via `POST /workspaces/{id}/token` -> retry. Here
+    the WORKSPACE refresh token is dead (already rotated/expired) but the
+    ACCOUNT token is still good, so the caller stays logged in without a
+    fresh `/login`."""
+    session = _seed_session(tmp_path, monkeypatch)
+    calls = {"channels": 0, "workspace_refresh": 0, "account_refresh": 0, "mint": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/refresh":
+            import json as _json
+
+            presented = _json.loads(request.content)["refresh_token"]
+            if presented == "stale-refresh":
+                calls["workspace_refresh"] += 1
+                return httpx.Response(
+                    401,
+                    json={"error": {"code": "invalid_token", "message": "dead"}},
+                )
+            assert presented == "stale-account-refresh"
+            calls["account_refresh"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "fresh-account-access",
+                    "refresh_token": "fresh-account-refresh",
+                    "token_type": "bearer",
+                    "expires_in": 900,
+                },
+            )
+        if request.url.path == "/workspaces/w1/token":
+            calls["mint"] += 1
+            assert request.headers["Authorization"] == "Bearer fresh-account-access"
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "reminted-access",
+                    "refresh_token": "reminted-refresh",
+                    "token_type": "bearer",
+                    "expires_in": 900,
+                },
+            )
+        if request.url.path == "/workspaces/w1/channels":
+            calls["channels"] += 1
+            if calls["channels"] == 1:
+                assert request.headers["Authorization"] == "Bearer stale-access"
+                return httpx.Response(
+                    401, json={"error": {"code": "invalid_token", "message": "expired"}}
+                )
+            assert request.headers["Authorization"] == "Bearer reminted-access"
+            return httpx.Response(
+                200, json=[{"channel_id": "c1", "channel_name": "general"}]
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    api = SmacApi(
+        "http://fake.test", session=session, transport=httpx.MockTransport(handler)
+    )
+
+    result = api.channels()
+
+    assert result == [{"channel_id": "c1", "channel_name": "general"}]
+    assert calls == {
+        "channels": 2,
+        "workspace_refresh": 1,
+        "account_refresh": 1,
+        "mint": 1,
+    }
+    assert api.session is not None
+    assert api.session.access_token == "reminted-access"
+    assert api.session.account_access_token == "fresh-account-access"
+
+
+def test_401_with_both_refresh_tokens_dead_raises_session_expired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both tiers of the fallback exhausted: the account refresh token is
+    ALSO dead, so there's nothing left but `SessionExpired` -- the saved
+    session is wiped, same as the pre-Identity-v2 single-tier failure."""
+    _seed_session(tmp_path, monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/refresh":
+            return httpx.Response(
+                401, json={"error": {"code": "invalid_token", "message": "dead"}}
+            )
+        if request.url.path == "/workspaces/w1/channels":
+            return httpx.Response(
+                401, json={"error": {"code": "invalid_token", "message": "expired"}}
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    session = Session.load(session_path())
+    assert session is not None
+    api = SmacApi(
+        "http://fake.test", session=session, transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(SessionExpired):
+        api.channels()
+
+    assert api.session is None
+    assert not session_path().exists()
+
+
+# --------------------------------------------------------------------------
 # Real-server integration
 # --------------------------------------------------------------------------
 
 
-def test_register_found_then_whoami_channels_post_mark_read_round_trip(
+def test_signup_then_create_workspace_whoami_channels_post_mark_read_round_trip(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url, home_dir = real_smac_server
@@ -451,22 +597,22 @@ def test_register_found_then_whoami_channels_post_mark_read_round_trip(
     api = SmacApi(url)
     email = f"{_unique('founder')}@test.example"
 
-    session = api.register_found(
-        email=email,
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=_unique("wksp"),
-        visibility="private",
-    )
-
-    assert session.workspace_id
-    assert session.access_token
+    account_session = api.signup(email, _TEST_PASSWORD)
+    assert account_session.account_access_token
+    assert account_session.workspace_id is None
     assert session_path().exists()
     assert stat.S_IMODE(session_path().stat().st_mode) == 0o600
 
+    session, workspace_name = api.create_workspace(
+        _unique("wksp"), "private", "Ada", "Lovelace"
+    )
+    assert session.workspace_id
+    assert session.access_token
+    assert workspace_name
+
     me = api.whoami()
-    assert me["email"] == email
+    assert me["handle"]
+    assert "email" not in me  # Identity v2 spec §7: member payloads never expose email
 
     channels = api.channels()
     assert any(c["channel_name"] == "general" for c in channels)
@@ -486,7 +632,7 @@ def test_register_found_then_whoami_channels_post_mark_read_round_trip(
     assert marked["unread_count"] == 0
 
 
-def test_discover_then_login_flow(
+def test_login_then_enter_workspace_flow(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url, home_dir = real_smac_server
@@ -494,53 +640,119 @@ def test_discover_then_login_flow(
     email = f"{_unique('discoverable')}@test.example"
 
     founding_api = SmacApi(url)
-    founding_api.register_found(
-        email=email,
-        password=_TEST_PASSWORD,
-        first_name="Grace",
-        last_name="Hopper",
-        workspace_name=_unique("wksp"),
-        visibility="private",
+    founding_api.signup(email, _TEST_PASSWORD)
+    _, workspace_name = founding_api.create_workspace(
+        _unique("wksp"), "private", "Grace", "Hopper"
     )
     assert founding_api.session is not None
     workspace_id = founding_api.session.workspace_id
 
     fresh_api = SmacApi(url)
-    matches = fresh_api.discover(email, _TEST_PASSWORD)
-    assert any(w["workspace_id"] == workspace_id for w in matches)
+    session, memberships = fresh_api.login(email, _TEST_PASSWORD)
+    assert session.workspace_id is None  # login is account-only, no workspace yet
+    assert any(
+        m["workspace_id"] == workspace_id and m["workspace_name"] == workspace_name
+        for m in memberships
+    )
 
-    session = fresh_api.login(workspace_id, email, _TEST_PASSWORD)
+    fresh_api.enter_workspace(workspace_id)
 
-    assert session.workspace_id == workspace_id
-    assert fresh_api.whoami()["email"] == email
+    assert fresh_api.session is not None
+    assert fresh_api.session.workspace_id == workspace_id
+    assert fresh_api.whoami()["handle"]
 
 
-def test_register_into_public_workspace(
+def test_login_wrong_password_raises_auth_error_byte_identical_to_unknown_email(
+    real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spec §7 security invariant, client-side view: `POST /accounts/
+    login` fails uniformly for an unknown email and a wrong password --
+    `SmacApi.login` must not paper over that by swallowing the error or
+    reshaping it into something branch-able; both cases are the identical
+    `AuthError`."""
+    url, home_dir = real_smac_server
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+    email = f"{_unique('founder')}@test.example"
+    api = SmacApi(url)
+    api.signup(email, _TEST_PASSWORD)
+
+    with pytest.raises(AuthError) as wrong_password:
+        SmacApi(url).login(email, "not-the-real-password")
+    with pytest.raises(AuthError) as unknown_email:
+        SmacApi(url).login(f"{_unique('nobody')}@test.example", _TEST_PASSWORD)
+
+    assert wrong_password.value.message == unknown_email.value.message
+
+
+def test_join_public_workspace_directly(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url, home_dir = real_smac_server
     monkeypatch.setattr(Path, "home", lambda: home_dir)
 
     founder_api = SmacApi(url)
-    founder_api.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=_unique("wksp"),
-        visibility="public",
-    )
+    founder_api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    founder_api.create_workspace(_unique("wksp"), "public", "Ada", "Lovelace")
     assert founder_api.session is not None
     workspace_id = founder_api.session.workspace_id
 
     joiner_api = SmacApi(url)
-    joiner_email = f"{_unique('joiner')}@test.example"
-    session = joiner_api.register_into(
-        workspace_id, joiner_email, _TEST_PASSWORD, "Alan", "Turing"
-    )
+    joiner_api.signup(f"{_unique('joiner')}@test.example", _TEST_PASSWORD)
+    session, workspace_name = joiner_api.join_public(workspace_id, "Alan", "Turing")
 
     assert session.workspace_id == workspace_id
-    assert joiner_api.whoami()["email"] == joiner_email
+    assert workspace_name
+    assert joiner_api.whoami()["handle"]
+
+
+def test_join_code_redeems_shareable_invite(
+    real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, home_dir = real_smac_server
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+
+    founder_api = SmacApi(url)
+    founder_api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    _, workspace_name = founder_api.create_workspace(
+        _unique("wksp"), "private", "Ada", "Lovelace"
+    )
+    invite = founder_api.mint_invite_code()
+    assert invite["code"]
+    assert founder_api.session is not None
+    workspace_id = founder_api.session.workspace_id
+
+    joiner_api = SmacApi(url)
+    joiner_api.signup(f"{_unique('joiner')}@test.example", _TEST_PASSWORD)
+    session, joined_name = joiner_api.join_code(invite["code"], "Alan", "Turing")
+
+    assert session.workspace_id == workspace_id
+    assert joined_name == workspace_name
+    assert joiner_api.whoami()["handle"]
+
+
+def test_mint_invite_code_any_human_member_not_admin_only(
+    real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`POST /workspaces/{id}/invites` is gated to human members of the
+    workspace (`app/authorization.py:authorize_management_action`), not
+    specifically admins -- unchanged by this task (`app/routers/
+    invites.py` wasn't touched). A non-admin member can mint a code just
+    like the founder can."""
+    url, home_dir = real_smac_server
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+
+    founder_api = SmacApi(url)
+    founder_api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    founder_api.create_workspace(_unique("wksp"), "public", "Ada", "Lovelace")
+    assert founder_api.session is not None
+    workspace_id = founder_api.session.workspace_id
+
+    member_api = SmacApi(url)
+    member_api.signup(f"{_unique('member')}@test.example", _TEST_PASSWORD)
+    member_api.join_public(workspace_id, "Alan", "Turing")
+
+    invite = member_api.mint_invite_code()
+    assert invite["code"]
 
 
 def test_search_public_finds_founded_public_workspace(
@@ -551,14 +763,8 @@ def test_search_public_finds_founded_public_workspace(
     workspace_name = _unique("searchable")
 
     api = SmacApi(url)
-    api.register_found(
-        email=f"{_unique('founder')}@test.example",
-        password=_TEST_PASSWORD,
-        first_name="Ada",
-        last_name="Lovelace",
-        workspace_name=workspace_name,
-        visibility="public",
-    )
+    api.signup(f"{_unique('founder')}@test.example", _TEST_PASSWORD)
+    api.create_workspace(workspace_name, "public", "Ada", "Lovelace")
 
     results = SmacApi(url).search_public(workspace_name)
 

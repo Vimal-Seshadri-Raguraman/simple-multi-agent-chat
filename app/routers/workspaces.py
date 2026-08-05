@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.accounts import build_member_self_out, create_member_account
-from app.auth import get_current_member
+from app.auth import get_current_account, get_current_member
 from app.authorization import require_same_workspace, require_workspace_admin
 from app.database import get_db
 from app.errors import (
@@ -13,6 +13,7 @@ from app.errors import (
     WorkspaceNameTakenError,
 )
 from app.models import (
+    Account,
     Channel,
     ChannelMember,
     Member,
@@ -25,12 +26,13 @@ from app.models import (
     new_id,
     utcnow,
 )
-from app.routers.auth import _issue_token_pair
+from app.routers.auth import _issue_workspace_token_pair
 from app.schemas import (
     FoundWorkspaceIn,
     InviteOut,
     MemberAdminIn,
     MemberOut,
+    TokenPairOut,
     WorkspaceAuthOut,
     WorkspaceOut,
     WorkspaceSearchOut,
@@ -45,9 +47,19 @@ router = APIRouter()
 
 @router.post("/workspaces", response_model=WorkspaceAuthOut)
 def found_workspace(
-    body: FoundWorkspaceIn, db: Session = Depends(get_db)
+    body: FoundWorkspaceIn,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
 ) -> WorkspaceAuthOut:
-    """Found a workspace: workspace + 'general' + admin account + audit record, atomically."""
+    """Found a workspace: workspace + 'general' + admin profile + audit record, atomically.
+
+    Account-authed (spec §3, SMAC-79 Task 2 cutover): the caller already
+    has a global account (via their account token); founding only ever
+    LINKS that account into a brand-new admin profile here, it never
+    creates a password. The response includes a convenience WORKSPACE
+    token pair (minted below) so the caller needs no second call to start
+    acting inside the workspace they just founded.
+    """
     duplicate = (
         db.query(Workspace)
         .filter(Workspace.workspace_name_key == body.workspace_name.lower())
@@ -75,14 +87,9 @@ def found_workspace(
     founder = create_member_account(
         db,
         workspace,
-        email=body.email,
-        password=body.password,
-        first_name=body.first_name,
-        last_name=body.last_name,
-        display_name=body.display_name,
-        company=body.company,
-        occupation=body.occupation,
-        job_role=body.job_role,
+        account=account,
+        first_name=body.display_first_name,
+        last_name=body.display_last_name,
         is_admin=True,
     )
     db.add(
@@ -94,12 +101,38 @@ def found_workspace(
     )
     db.commit()
     db.refresh(founder)
-    tokens = _issue_token_pair(db, founder)
+    tokens = _issue_workspace_token_pair(db, founder)
     return WorkspaceAuthOut(
         member=build_member_self_out(db, founder),
         workspace=WorkspaceOut.model_validate(workspace),
         **tokens.model_dump(),
     )
+
+
+@router.post("/workspaces/{workspace_id}/token", response_model=TokenPairOut)
+def mint_workspace_token(
+    workspace_id: str,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
+) -> TokenPairOut:
+    """Exchange an account token for a workspace token pair (spec §2).
+
+    The caller must hold a membership (a `Member` row linked to this
+    account) in `workspace_id`; a non-membership is the uniform 404 --
+    "the wall" -- indistinguishable from a nonexistent workspace, exactly
+    like `require_same_workspace` already does for workspace-tier
+    callers.
+    """
+    member = (
+        db.query(Member)
+        .filter(
+            Member.workspace_id == workspace_id, Member.account_id == account.account_id
+        )
+        .first()
+    )
+    if member is None:
+        raise NotFoundError(f"Workspace '{workspace_id}' not found")
+    return _issue_workspace_token_pair(db, member)
 
 
 # GET /workspaces/search MUST be defined before any /workspaces/{workspace_id} GET route

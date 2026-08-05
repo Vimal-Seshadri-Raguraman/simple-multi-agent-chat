@@ -7,7 +7,7 @@ from app.authorization import (
     require_same_workspace,
 )
 from app.errors import ForbiddenMemberTypeError, NotAMemberError, NotFoundError
-from app.models import Channel, ChannelMember, Member, Workspace
+from app.models import Account, Channel, ChannelMember, Member, Workspace
 
 
 def _make_workspace(db, workspace_id: str) -> None:
@@ -18,12 +18,16 @@ def _make_workspace(db, workspace_id: str) -> None:
 
 
 def _make_member(db, member_type: str, workspace_id: str = "w_1") -> Member:
-    """Insert a member with a valid workspace (workspace_id is NOT NULL post-cutover)."""
+    """Insert a member with a valid workspace + account (both NOT NULL post-cutover)."""
     _make_workspace(db, workspace_id)
+    account = Account(account_type=member_type)
+    db.add(account)
+    db.flush()
     member = Member(
         member_name="Test",
         member_type=member_type,
         workspace_id=workspace_id,
+        account_id=account.account_id,
         handle="test",
     )
     db.add(member)

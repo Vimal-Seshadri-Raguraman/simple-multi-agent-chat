@@ -8,6 +8,9 @@ from tests.conftest import founder_auth
 
 def test_integrity_race_returns_conflict_envelope(client, monkeypatch):
     ws = founder_auth(client, "w1")["workspace_id"]  # founded BEFORE the patch
+    account_token = client.post(
+        "/accounts", json={"email": "racer@test.example", "password": "racer-pass-12"}
+    ).json()["tokens"]["access_token"]
 
     original_commit = OrmSession.commit
     state = {"fired": False}
@@ -26,12 +29,8 @@ def test_integrity_race_returns_conflict_envelope(client, monkeypatch):
 
     response = client.post(
         f"/workspaces/{ws}/register",
-        json={
-            "email": "racer@test.example",
-            "password": "racer-pass-12",
-            "first_name": "Ra",
-            "last_name": "Cer",
-        },
+        json={"first_name": "Ra", "last_name": "Cer"},
+        headers={"Authorization": f"Bearer {account_token}"},
     )
     assert response.status_code == 409
     assert response.json() == {

@@ -50,6 +50,7 @@ class MemberOut(BaseModel):
     member_type: str
     handle: str
     created_at: datetime
+    account_id: str
     first_name: str | None = None
     last_name: str | None = None
     company: str | None = None
@@ -58,7 +59,21 @@ class MemberOut(BaseModel):
 
 
 class MemberRegisterIn(BaseModel):
-    member_name: str
+    """Create a brand-new agent/bot_app member (`member_name`), or attach an
+    EXISTING agent/bot_app account as a new per-workspace membership
+    (`account_id`, spec §4) -- exactly one of the two, never both/neither.
+    """
+
+    member_name: str | None = None
+    account_id: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_member_name_or_account_id(self) -> "MemberRegisterIn":
+        if (self.member_name is None) == (self.account_id is None):
+            raise ValueError(
+                "exactly one of member_name or account_id must be provided"
+            )
+        return self
 
 
 class MemberRegisterOut(BaseModel):
@@ -74,7 +89,12 @@ class MessageCreate(BaseModel):
 
 
 class MemberSelfOut(BaseModel):
-    """A member's own full profile, including their private email.
+    """A member's own full profile.
+
+    Identity v2 (SMAC-79 Task 2, spec §7): member payloads never expose
+    email anymore -- accounts hold it now; only `GET /accounts/me` shows
+    the caller their own. `account_id` links this profile back to the
+    caller's global account (additive, spec §4).
 
     `is_admin` and `workspace_visibility` (SMAC-72 task 6) exist for the
     TUI's `/whoami` command (spec §0.2), which needs both and had no other
@@ -84,14 +104,13 @@ class MemberSelfOut(BaseModel):
     carried here instead -- see `app.accounts.build_member_self_out`,
     the one place that assembles this schema, for how it's looked up.
 
-    Both are SELF-view-only, same as `email`: `GET /member` (looking up
-    ANOTHER member in your own workspace) nulls them out exactly like it
-    already nulls `email` for a foreign profile -- `/whoami` only ever
-    asks about the caller's own profile (`GET /members/me`), and there's
-    no product reason yet for one member to learn another's admin status
-    or the workspace's visibility through this route (a deliberate,
-    minimal scope -- an admin roster is a feature for another day, not a
-    side effect of this one).
+    Both are SELF-view-only: `GET /member` (looking up ANOTHER member in
+    your own workspace) nulls them out -- `/whoami` only ever asks about
+    the caller's own profile (`GET /members/me`), and there's no product
+    reason yet for one member to learn another's admin status or the
+    workspace's visibility through this route (a deliberate, minimal
+    scope -- an admin roster is a feature for another day, not a side
+    effect of this one).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -100,8 +119,8 @@ class MemberSelfOut(BaseModel):
     member_type: str
     handle: str
     workspace_id: str
+    account_id: str
     created_at: datetime
-    email: str | None
     first_name: str | None
     last_name: str | None
     company: str | None
@@ -152,16 +171,40 @@ class MemberProfileUpdate(BaseModel):
 
 
 class RegisterIn(BaseModel):
-    """Registration request. Names are required; the rest of the profile is optional."""
+    """Account-authed registration into a workspace (spec §3): the caller
+    already holds an account (identified by their account token), so this
+    only asks the per-workspace display name + optional profile fields --
+    no email/password here anymore (Identity v2, SMAC-79 Task 2)."""
 
-    email: EmailStr
-    password: str = Field(min_length=8)
     first_name: str = Field(min_length=1)
     last_name: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)
     company: str | None = None
     occupation: str | None = None
     job_role: str | None = None
+
+
+class MetaOut(BaseModel):
+    """Unauthenticated version handshake -- see GET /meta."""
+
+    server_version: str
+    api_version: int
+
+
+class TokenPairOut(BaseModel):
+    """An access/refresh token pair, mirrored after every login/refresh."""
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class AccountCreateIn(BaseModel):
+    """POST /accounts: create a global account (spec §2)."""
+
+    email: EmailStr
+    password: str = Field(min_length=8)
 
     @field_validator("password")
     @classmethod
@@ -174,51 +217,66 @@ class RegisterIn(BaseModel):
         return value
 
 
-class LoginIn(BaseModel):
-    workspace_id: str
-    email: EmailStr
-    password: str
-
-
-class MetaOut(BaseModel):
-    """Unauthenticated version handshake -- see GET /meta."""
-
-    server_version: str
-    api_version: int
-
-
-class DiscoverIn(BaseModel):
-    """Credentials for POST /auth/discover: no workspace_id (spec §2.5)."""
+class AccountLoginIn(BaseModel):
+    """POST /accounts/login: global login, no workspace_id (spec §2)."""
 
     email: EmailStr
     password: str
 
 
-class DiscoverWorkspaceOut(BaseModel):
+class AccountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    account_id: str
+    email: str | None
+    created_at: datetime
+
+
+class AccountAuthOut(BaseModel):
+    """POST /accounts' response shape: the new account, auto-logged-in."""
+
+    account: AccountOut
+    tokens: TokenPairOut
+
+
+class AccountMembershipOut(BaseModel):
+    """One of the caller's workspace profiles, as surfaced by
+    POST /accounts/login and GET /accounts/me."""
+
     workspace_id: str
     workspace_name: str
+    member_id: str
+    handle: str
 
 
-class DiscoverOut(BaseModel):
-    """Workspaces whose account matches the given credentials. No tokens."""
+class AccountLoginOut(AccountAuthOut):
+    """POST /accounts/login's response shape: account + tokens + every
+    workspace the account already has a profile in (the real thing
+    /auth/discover used to simulate)."""
 
-    workspaces: list[DiscoverWorkspaceOut]
-
-
-class TokenPairOut(BaseModel):
-    """An access/refresh token pair, mirrored after every login/refresh."""
-
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-    expires_in: int
+    workspaces: list[AccountMembershipOut]
 
 
-class FoundWorkspaceIn(RegisterIn):
-    """Found a workspace: workspace details + the founder's account in one body."""
+class AccountMeOut(BaseModel):
+    """GET /accounts/me: the caller's own account + their memberships."""
+
+    account_id: str
+    email: str | None
+    created_at: datetime
+    memberships: list[AccountMembershipOut]
+
+
+class FoundWorkspaceIn(BaseModel):
+    """Found a workspace (spec §3): account-authed -- the caller already
+    has an account (via their account token), so this only carries the
+    workspace's own details plus the founder's per-workspace display name
+    (`display_first_name`/`display_last_name`, deliberately distinct field
+    names from the join doors' `first_name`/`last_name` -- a locked
+    interface decision, spec §3)."""
 
     workspace_name: str = Field(min_length=1)
     visibility: Literal["public", "private"] = "private"
+    display_first_name: str = Field(min_length=1)
+    display_last_name: str = Field(min_length=1)
 
     @field_validator("workspace_name", mode="before")
     @classmethod

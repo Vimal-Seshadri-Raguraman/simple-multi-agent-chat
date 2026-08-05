@@ -7,27 +7,30 @@ the pull-up, and runs the handler on a worker thread (`SmacApp._run_command`)
 so the blocking `SmacApi` calls and the blocking `app.ask()`/`app.choose()`
 inline-form helpers never freeze the event loop.
 
-Task 4 (SMAC-72) registered the four commands the shell itself depends on
-to get a caller logged in: `/register`, `/login`, `/help`, `/quit`. Task 5
-wired the live room (no new commands). This task (6, final) adds
-`/whoami`, `/channels` (+ `/unreads`, the same handler under a second
-name), `/channel create`, and `/workspace delete`, and completes `/help`
-to describe all of them (spec §0.2).
+Identity v2 (SMAC-79 Task 3, spec §6) reworks the account/workspace
+commands around the server's two auth tiers: `/register` is now
+account-only (email+password, no workspace); `/workspace create <name>`
+founds a new one; `/join <code>` redeems a shareable invite code;
+`/login` discovers real memberships (from `POST /accounts/login`'s
+response) rather than simulating them; `/invite` (admin) mints a
+shareable code for `/workspace create`d workspaces. `/channel`,
+`/whoami`, `/channels`/`/unreads`, `/workspace delete`, `/help`, `/quit`
+are unchanged (SMAC-72's task 6 already built and tested those against
+the workspace tier, which this rework doesn't touch).
 
 A handler that raises `smac_cli.app.FormCancelled` (via `ask()`/`choose()`
 after Esc) is caught by the caller (`SmacApp._run_command`) -- handlers
 don't need their own `try`/`except` around it. A handler that lets a
 `smac_cli.errors.SmacError` propagate gets it turned into a message-only
-system line by that same caller -- this is what makes `/workspace
-delete`'s not-an-admin case "just work" with no special-casing here.
-`/channel create`'s 409 is the one narrow exception: spec §0.2's frame
-for it shows the server's `code: message` envelope verbatim
-(`channel_name_taken: A channel named '...' already exists...`), not just
-the message, so `cmd_channel` catches exactly `NameTakenError` itself
-(never the broader `SmacError` -- an unreachable server, a rate limit,
-etc. during `/channel create` still falls through to the same generic
-message-only handling every other command gets) rather than letting that
-one case fall through to it.
+system line by that same caller -- this is what makes `NoWorkspaceError`
+(typing a workspace-tier command before ever entering one) and
+`/workspace delete`'s not-an-admin case both "just work" with no
+special-casing here. `/channel create`'s 409 is the one narrow
+exception: spec §0.2's frame for it shows the server's full `code:
+message` envelope verbatim, not just the message, so `cmd_channel`
+catches exactly `NameTakenError` itself (never the broader `SmacError`)
+rather than letting that one case fall through to the generic handling
+every other command gets.
 """
 
 from __future__ import annotations
@@ -57,92 +60,169 @@ def _register(
     return wrap
 
 
-@_register("register", "create your account + workspace")
+@_register("register", "create your account (email + password)")
 def cmd_register(app: "SmacApp", args: str) -> None:
-    """`/register`: the two-step account-then-workspace form (spec Frame 3).
+    """`/register`: account-only signup (spec §3/§6) -- `POST /accounts`,
+    no workspace involved at all. Lands in the "signed in, no workspace
+    yet" state (`SmacApp.show_no_workspace_state`): the account-created
+    banner stays on screen, followed by the three next steps.
+    """
+    app.set_header("SMAC — creating your account")
+    email = app.ask("email")
+    password = app.ask("password", password=True)
 
-    Underneath it is ONE atomic `POST /workspaces` (`api.register_found`)
-    -- the two "steps" are presentation only, gathered via sequential
-    `app.ask()` calls before the single API call fires. On success: an
-    `── account created ──` / `── workspace founded ──` pair of system
-    lines, and the header switches to `<workspace> — #general`.
+    app.api.signup(email, password)
+    app.system_line(f"account created: {email}")
+    app.show_no_workspace_state()
+
+
+def _ask_display_name(app: "SmacApp") -> tuple[str, str]:
+    """The per-workspace display name every workspace-birth door needs
+    (`first_name`/`last_name`), shared by `/workspace create` and `/join`."""
+    first_name = app.ask("first name")
+    last_name = app.ask("last name")
+    return first_name, last_name
+
+
+@_register("workspace", "create <name>, or delete this workspace (admin)")
+def cmd_workspace(app: "SmacApp", args: str) -> None:
+    """`/workspace create <name>`: found a brand-new workspace, asking the
+    founder's per-workspace display name + visibility (spec §6). `/workspace
+    delete`: the existing admin-only, two-step typed confirmation
+    (SMAC-72 task 6, unchanged). Anything else is usage help -- the
+    server enforces every real rule (admin-only delete, workspace-name
+    uniqueness) regardless of what the client shows.
     """
     from smac_cli.app import cache_workspace_name
 
-    app.set_header("SMAC — creating your account")
-    app.system_line("step 1 of 2: create your account")
-    email = app.ask("email")
-    password = app.ask("password", password=True)
-    first_name = app.ask("first name")
-    last_name = app.ask("last name")
+    text = args.strip()
+    parts = text.split(None, 1)
+    sub = parts[0].lower() if parts else ""
 
-    app.system_line("step 2 of 2: your workspace")
-    workspace_name = app.ask("workspace name")
-    visibility = app.ask("visibility [private]", default="private")
-    if visibility not in ("public", "private"):
-        visibility = "private"
+    if sub == "create":
+        name = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            app.system_line("usage: /workspace create <name>")
+            return
+        first_name, last_name = _ask_display_name(app)
+        visibility = app.ask("visibility [private]", default="private")
+        if visibility not in ("public", "private"):
+            visibility = "private"
+        session, workspace_name = app.api.create_workspace(
+            name, visibility, first_name, last_name
+        )
+        assert session.workspace_id is not None  # just minted by create_workspace
+        cache_workspace_name(session.workspace_id, workspace_name)
+        app.enter_workspace(workspace_name, "general")
+        app.system_line(f'workspace "{workspace_name}" founded — you\'re in #general')
+        app.enter_general()
+        return
 
-    session = app.api.register_found(
-        email, password, first_name, last_name, workspace_name, visibility
-    )
+    if sub == "delete":
+        _confirm_and_delete_workspace(app)
+        return
+
+    app.system_line("usage: /workspace create <name>  or  /workspace delete")
+
+
+@_register("join", "join a workspace via invite code")
+def cmd_join(app: "SmacApp", args: str) -> None:
+    """`/join <code>`: redeem a shareable invite code (`POST /workspaces/
+    join`, spec §3/§6) -- asks the per-workspace display name (the
+    account may already exist, but this is always a brand-new membership,
+    so a name is always needed) then lands in `#general` of whichever
+    workspace the code belongs to.
+
+    Logged out, this used to prompt for both names and only THEN fail
+    deep inside `api.join_code` with a bare "No active session." --
+    final-review MINOR-4. The session check now runs BEFORE any
+    prompting, so a logged-out `/join <code>` fails immediately with an
+    actionable next step instead of wasting two answers first.
+    """
+    from smac_cli.app import cache_workspace_name
+
+    code = args.strip()
+    if not code:
+        app.system_line("usage: /join <code>")
+        return
+    if app.api.session is None or app.api.session.account_access_token is None:
+        app.system_line("create an account first: /register (then /join <code>)")
+        return
+    first_name, last_name = _ask_display_name(app)
+    session, workspace_name = app.api.join_code(code, first_name, last_name)
+    assert session.workspace_id is not None  # just minted by join_code
     cache_workspace_name(session.workspace_id, workspace_name)
-    member = app.api.whoami()
-    handle = member.get("handle", "")
-
     app.enter_workspace(workspace_name, "general")
-    app.system_line(f"account created: @{handle} (admin)")
-    app.system_line(f'workspace "{workspace_name}" founded — you\'re in #general')
+    app.system_line(f'joined "{workspace_name}" — you\'re in #general')
     app.enter_general()
+
+
+@_register("invite", "mint a shareable join code")
+def cmd_invite(app: "SmacApp", args: str) -> None:
+    """`/invite`: mint a shareable multi-use code (`POST /workspaces/
+    {id}/invites`, gated server-side to human members of the workspace --
+    `app/authorization.py:authorize_management_action`, unchanged by this
+    task) and print both the code AND the exact line to hand a
+    prospective member -- they need to `/register` an account first
+    (codes are redeemed by `/join`, which is account-authed), then
+    `/join` with it.
+    """
+    invite = app.api.mint_invite_code()
+    code = invite["code"]
+    app.system_line(f"invite code: {code}")
+    app.system_line(f"tell them: smac → /register → /join {code}")
 
 
 @_register("login", "log in (email + password)")
 def cmd_login(app: "SmacApp", args: str) -> None:
-    """`/login`: email + password only, then discovery decides the branch
-    (spec §2.5 + Frames 3b/3c):
+    """`/login`: global login (`POST /accounts/login`, spec §2/§6) --
+    branches on the REAL memberships the response carries:
 
-    - **one match** -- log straight into that workspace.
-    - **several matches** -- the workspace picker (`app.choose`).
+    - **one match** -- enter that workspace directly (`api.enter_workspace`
+      mints a fresh workspace token pair for it).
+    - **several matches** -- the workspace picker (`app.choose`), same as
+      before.
     - **zero matches** -- the public-directory join frame: a live-filtered
       `app.choose(..., filterable=True)` over `api.search_public`, then
-      name prompts + `api.register_into` for whichever workspace is picked.
-      Zero matches is byte-identical (by design, §2.5's security contract)
-      whether the email is unknown OR a real account's password was just
-      mistyped -- finding H: a one-line hint here softens the confusing
-      case of a returning user with a typo'd password landing in "join a
-      workspace" with no clue why, without weakening that contract (it's
-      just a system line, not a different response shape).
+      name prompts + `api.join_public` for whichever workspace is picked.
+
+    Unlike the retired `/auth/discover`-based flow, a WRONG password now
+    raises a real `AuthError` from `api.login` itself (propagates to
+    `SmacApp._run_command`'s generic message-only handling) -- there's no
+    more "zero matches" ambiguity between an unknown email and a typo'd
+    password to soften with a hint; "zero matches" now only ever means
+    "these are valid credentials, but this account has no workspace yet."
     """
     from smac_cli.app import cache_workspace_name
 
     email = app.ask("email")
     password = app.ask("password", password=True)
-    matches = app.api.discover(email, password)
+    _, memberships = app.api.login(email, password)
 
-    if len(matches) == 1:
-        match = matches[0]
-        app.api.login(match["workspace_id"], email, password)
+    if len(memberships) == 1:
+        match = memberships[0]
+        app.api.enter_workspace(match["workspace_id"])
         cache_workspace_name(match["workspace_id"], match["workspace_name"])
         app.enter_workspace(match["workspace_name"], "general")
         app.enter_general()
         return
 
-    if len(matches) > 1:
+    if len(memberships) > 1:
         app.set_header("SMAC — choose a workspace")
-        app.write_line("your accounts:")
-        items = [(m["workspace_id"], m["workspace_name"]) for m in matches]
+        app.write_line("your workspaces:")
+        items = [(m["workspace_id"], m["workspace_name"]) for m in memberships]
         workspace_id, workspace_name = app.choose(items)
-        app.api.login(workspace_id, email, password)
+        app.api.enter_workspace(workspace_id)
         cache_workspace_name(workspace_id, workspace_name)
         app.enter_workspace(workspace_name, "general")
         app.enter_general()
         return
 
-    # Zero matches: the join frame -- live-filtered public directory.
+    # Zero memberships: the join frame -- live-filtered public directory.
     app.set_header("SMAC — no workspace yet: join one")
     app.system_line(
-        "no workspaces found for these credentials — if you already have an "
-        "account, double-check your password; otherwise pick a workspace "
-        "below or /register"
+        "no workspaces yet for this account — pick a public one below, "
+        "/join <code> if you have one, or /workspace create <name>"
     )
     app.write_line("public workspaces (type to search):")
 
@@ -152,15 +232,13 @@ def cmd_login(app: "SmacApp", args: str) -> None:
             for w in app.api.search_public(query)
         ]
 
-    app.write_line("(or /register to create your own)")
+    app.write_line("(or /workspace create <name>, or /join <code>, or Esc to go back)")
     workspace_id, workspace_name = app.choose(
         _search(""), filterable=True, on_filter=_search
     )
-    first_name = app.ask("first name")
-    last_name = app.ask("last name")
-    session = app.api.register_into(
-        workspace_id, email, password, first_name, last_name
-    )
+    first_name, last_name = _ask_display_name(app)
+    session, workspace_name = app.api.join_public(workspace_id, first_name, last_name)
+    assert session.workspace_id is not None  # just minted by join_public
     cache_workspace_name(session.workspace_id, workspace_name)
     app.enter_workspace(workspace_name, "general")
     app.enter_general()
@@ -291,21 +369,10 @@ def _confirm_and_delete_workspace(app: "SmacApp") -> None:
     app.reset_to_logged_out(f'workspace "{workspace_name}" deleted')
 
 
-@_register("workspace", "delete this workspace (admin)")
-def cmd_workspace(app: "SmacApp", args: str) -> None:
-    """`/workspace delete`: the only subcommand today. Anything else is
-    usage help -- the server enforces admin-only regardless of what the
-    client shows, so a non-admin still gets a clear (verbatim) rejection
-    after typing through the confirmation."""
-    if args.strip().lower() != "delete":
-        app.system_line("usage: /workspace delete")
-        return
-    _confirm_and_delete_workspace(app)
-
-
 @_register("help", "command list")
 def cmd_help(app: "SmacApp", args: str) -> None:
-    """`/help`: the full command list (spec §0.2's `/help` frame).
+    """`/help`: the full command list (spec §0.2's `/help` frame, updated
+    for the Identity v2 command set).
 
     Curated rather than generated straight off `COMMANDS`: `/channel` is
     one registry entry but earns two lines here (switch vs. create), and
@@ -316,12 +383,15 @@ def cmd_help(app: "SmacApp", args: str) -> None:
     """
     app.system_line("commands")
     app.system_line(f"/register          {COMMANDS['register'][1]}")
+    app.system_line("/workspace create <name>  found a new workspace")
+    app.system_line(f"/join <code>       {COMMANDS['join'][1]}")
     app.system_line(f"/login             {COMMANDS['login'][1]}")
+    app.system_line(f"/invite            {COMMANDS['invite'][1]}")
     app.system_line(f"/whoami            {COMMANDS['whoami'][1]}")
     app.system_line("/channels /unreads your channels + unread badges")
     app.system_line("/channel <name>    switch channel")
     app.system_line("/channel create <name>  new channel")
-    app.system_line(f"/workspace delete  {COMMANDS['workspace'][1]}")
+    app.system_line("/workspace delete  delete this workspace (admin)")
     app.system_line(f"/quit              {COMMANDS['quit'][1]}")
     app.system_line(
         "anything without / is a message to the current channel (#general when you arrive)"

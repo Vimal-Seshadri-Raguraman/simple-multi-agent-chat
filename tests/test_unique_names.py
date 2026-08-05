@@ -8,16 +8,18 @@ from tests.conftest import founder_auth, founder_headers, general_channel_id
 
 
 def _found(client, name, email):
+    account_token = client.post(
+        "/accounts", json={"email": email, "password": "a-strong-password"}
+    ).json()["tokens"]["access_token"]
     return client.post(
         "/workspaces",
         json={
             "workspace_name": name,
             "visibility": "private",
-            "email": email,
-            "password": "a-strong-password",
-            "first_name": "Test",
-            "last_name": "User",
+            "display_first_name": "Test",
+            "display_last_name": "User",
         },
+        headers={"Authorization": f"Bearer {account_token}"},
     )
 
 

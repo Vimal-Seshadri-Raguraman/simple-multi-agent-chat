@@ -1,7 +1,14 @@
 """Handle slugging and per-workspace uniqueness."""
 
 from app.handles import generate_unique_handle, slugify
-from app.models import Member, Workspace
+from app.models import Account, Member, Workspace
+
+
+def _agent_account(db_session) -> Account:
+    account = Account(account_type="agent")
+    db_session.add(account)
+    db_session.flush()
+    return account
 
 
 def test_slugify_rules():
@@ -22,6 +29,7 @@ def test_unique_handle_suffixes(db_session):
             member_name="R",
             member_type="human",
             workspace_id=ws.workspace_id,
+            account_id=_agent_account(db_session).account_id,
             handle=first,
         )
     )
@@ -39,6 +47,7 @@ def test_same_handle_ok_across_workspaces(db_session):
             member_name="R",
             member_type="human",
             workspace_id=ws1.workspace_id,
+            account_id=_agent_account(db_session).account_id,
             handle="rmode",
         )
     )

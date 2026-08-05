@@ -10,6 +10,7 @@ from app import __version__
 from app.database import init_db
 from app.errors import AppError
 from app.routers import (
+    accounts,
     auth,
     channels,
     invites,
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Simple Multi-Agent Chat", lifespan=lifespan)
 
 app.include_router(auth.router)
+app.include_router(accounts.router)
 app.include_router(members.router)
 app.include_router(mentions.router)
 app.include_router(unreads.router)

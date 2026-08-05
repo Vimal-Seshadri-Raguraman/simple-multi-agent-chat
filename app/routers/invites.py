@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.accounts import build_member_self_out, create_member_account
-from app.auth import get_current_member
+from app.auth import get_current_account, get_current_member
 from app.authorization import authorize_management_action, require_same_workspace
 from app.database import get_db
 from app.errors import AlreadyAMemberError, InvalidInviteError, NotFoundError
-from app.models import Member, Workspace, WorkspaceInvite, utcnow
-from app.routers.auth import _issue_token_pair
+from app.models import Account, Member, Workspace, WorkspaceInvite, utcnow
+from app.routers.auth import _issue_workspace_token_pair
 from app.schemas import (
     CodeRegisterIn,
     InviteCreateIn,
@@ -67,15 +67,23 @@ def create_invite(
             # would silently vanish under `python -O`, so raise explicitly.
             raise ValueError("email is required for invite_type 'email'")
         email = body.email.lower()
-        existing_member = (
-            db.query(Member)
-            .filter(Member.workspace_id == workspace_id, Member.email == email)
-            .first()
-        )
-        if existing_member is not None:
-            raise AlreadyAMemberError(
-                f"'{email}' already belongs to a member of this workspace"
+        # Members no longer carry email directly (Identity v2, SMAC-79 Task
+        # 2) -- an existing membership for this email means the ACCOUNT
+        # with this email (if any) already has a Member row here.
+        existing_account = db.query(Account).filter(Account.email_key == email).first()
+        if existing_account is not None:
+            existing_member = (
+                db.query(Member)
+                .filter(
+                    Member.workspace_id == workspace_id,
+                    Member.account_id == existing_account.account_id,
+                )
+                .first()
             )
+            if existing_member is not None:
+                raise AlreadyAMemberError(
+                    f"'{email}' already belongs to a member of this workspace"
+                )
         pending = (
             db.query(WorkspaceInvite)
             .filter(
@@ -143,14 +151,15 @@ def revoke_invite(
 
 
 def _register_account(
-    db: Session, workspace: Workspace, body: RegisterIn
+    db: Session, workspace: Workspace, account: Account, body: RegisterIn
 ) -> WorkspaceAuthOut:
-    """Shared tail of both registration paths: create account, commit, log in."""
+    """Shared tail of every account-authed registration door: link the
+    caller's account into a new per-workspace profile, commit, log in
+    with a convenience WORKSPACE token pair."""
     member = create_member_account(
         db,
         workspace,
-        email=body.email,
-        password=body.password,
+        account=account,
         first_name=body.first_name,
         last_name=body.last_name,
         display_name=body.display_name,
@@ -160,7 +169,7 @@ def _register_account(
     )
     db.commit()
     db.refresh(member)
-    tokens = _issue_token_pair(db, member)
+    tokens = _issue_workspace_token_pair(db, member)
     return WorkspaceAuthOut(
         member=build_member_self_out(db, member),
         workspace=WorkspaceOut.model_validate(workspace),
@@ -170,44 +179,57 @@ def _register_account(
 
 @router.post("/workspaces/join", response_model=WorkspaceAuthOut)
 def register_by_code(
-    body: CodeRegisterIn, db: Session = Depends(get_db)
+    body: CodeRegisterIn,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
 ) -> WorkspaceAuthOut:
-    """Sign up into the workspace a shareable code belongs to (code = registration key)."""
+    """Sign up into the workspace a shareable code belongs to (code = registration key).
+
+    Account-authed (spec §3, SMAC-79 Task 2): the caller already has an
+    account, identified via the account token, not a body email/password.
+    """
     invite = db.query(WorkspaceInvite).filter(WorkspaceInvite.code == body.code).first()
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     workspace = db.get(Workspace, invite.workspace_id)
     if workspace is None:
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
-    # If this email also holds a pending reserved seat here, consume it —
-    # otherwise the seat becomes permanently unusable (the email now has an
-    # account) and its existence would leak via create_invite's 409. The
-    # staged delete rides _register_account's single commit; on a failed
-    # registration (e.g. email_taken) nothing is flushed and the seat stays.
-    seat = (
-        db.query(WorkspaceInvite)
-        .filter(
-            WorkspaceInvite.workspace_id == workspace.workspace_id,
-            WorkspaceInvite.invite_type == "email",
-            WorkspaceInvite.email == body.email.lower(),
+    # If the caller's ACCOUNT email also holds a pending reserved seat
+    # here, consume it -- otherwise the seat becomes permanently unusable
+    # (the account already exists) and its existence would leak via
+    # create_invite's 409. The staged delete rides _register_account's
+    # single commit; on a failed registration (e.g. already_a_member)
+    # nothing is flushed and the seat stays.
+    if account.email is not None:
+        seat = (
+            db.query(WorkspaceInvite)
+            .filter(
+                WorkspaceInvite.workspace_id == workspace.workspace_id,
+                WorkspaceInvite.invite_type == "email",
+                WorkspaceInvite.email == account.email.lower(),
+            )
+            .first()
         )
-        .first()
-    )
-    if seat is not None:
-        db.delete(seat)
-    return _register_account(db, workspace, body)
+        if seat is not None:
+            db.delete(seat)
+    return _register_account(db, workspace, account, body)
 
 
 @router.post("/workspaces/{workspace_id}/register", response_model=WorkspaceAuthOut)
 def register_into_workspace(
-    workspace_id: str, body: RegisterIn, db: Session = Depends(get_db)
+    workspace_id: str,
+    body: RegisterIn,
+    account: Account = Depends(get_current_account),
+    db: Session = Depends(get_db),
 ) -> WorkspaceAuthOut:
-    """Sign up into a workspace directly.
+    """Sign up into a workspace directly. Account-authed (spec §3, SMAC-79
+    Task 2): the caller already has an account, identified via the
+    account token, not a body email/password.
 
     Public workspace: open door. Private: only with a reserved seat (a
-    pending email invite matching the registration email), consumed on
-    success. No seat -> the uniform 404: private workspaces never confirm
-    their own existence.
+    pending email invite matching the caller's ACCOUNT email), consumed
+    on success. No seat -> the uniform 404: private workspaces never
+    confirm their own existence.
     """
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
@@ -218,20 +240,20 @@ def register_into_workspace(
             .filter(
                 WorkspaceInvite.workspace_id == workspace_id,
                 WorkspaceInvite.invite_type == "email",
-                WorkspaceInvite.email == body.email.lower(),
+                WorkspaceInvite.email == (account.email or "").lower(),
             )
             .first()
         )
         if seat is None:
             raise NotFoundError(f"Workspace '{workspace_id}' not found")
-        # Delete the seat *before* creating the account, not after: the delete
-        # is only staged here (autoflush is off), so it rides along with
-        # _register_account's single commit as one atomic transaction. If
-        # create_member_account raises (e.g. EmailTakenError), nothing has
-        # been flushed yet, the request's session is closed without a commit,
-        # and the seat survives untouched -- no window where a crash (or a
-        # failed registration) could burn a seat without an account to show
-        # for it.
+        # Delete the seat *before* creating the profile, not after: the
+        # delete is only staged here (autoflush is off), so it rides along
+        # with _register_account's single commit as one atomic
+        # transaction. If create_member_account raises (e.g.
+        # AlreadyAMemberError), nothing has been flushed yet, the
+        # request's session is closed without a commit, and the seat
+        # survives untouched -- no window where a crash (or a failed
+        # registration) could burn a seat without a profile to show for it.
         db.delete(seat)
-        return _register_account(db, workspace, body)
-    return _register_account(db, workspace, body)
+        return _register_account(db, workspace, account, body)
+    return _register_account(db, workspace, account, body)

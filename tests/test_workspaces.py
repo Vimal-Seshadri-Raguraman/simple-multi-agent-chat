@@ -1,21 +1,34 @@
 """Tests for workspace founding (POST /workspaces) and workspace-scoped member listing."""
 
 import app.database as database_module
-from app.models import ChannelMember, Member, Workspace, WorkspaceRecord
+from app.models import Account, ChannelMember, Member, Workspace, WorkspaceRecord
 from app.security import create_access_token
 from tests.conftest import founder_auth, founder_headers, member_auth
 
 FOUND_BODY = {
     "workspace_name": "Acme",
-    "email": "founder@test.example",
-    "password": "s3cret-password",
-    "first_name": "Ada",
-    "last_name": "Lovelace",
+    "visibility": "private",
+    "display_first_name": "Ada",
+    "display_last_name": "Lovelace",
 }
 
 
+def _account_headers(client, email: str) -> dict[str, str]:
+    """Create a fresh account and return account-tier Bearer headers for it
+    (spec §3: founding is account-authed)."""
+    response = client.post(
+        "/accounts", json={"email": email, "password": "s3cret-password"}
+    )
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['tokens']['access_token']}"}
+
+
 def test_founding_defaults_to_private_visibility(client):
-    response = client.post("/workspaces", json=FOUND_BODY)
+    response = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "founder@test.example"),
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["workspace"]["workspace_name"] == "Acme"
@@ -25,12 +38,20 @@ def test_founding_defaults_to_private_visibility(client):
 
 
 def test_founding_public_workspace(client):
-    response = client.post("/workspaces", json=dict(FOUND_BODY, visibility="public"))
+    response = client.post(
+        "/workspaces",
+        json=dict(FOUND_BODY, visibility="public"),
+        headers=_account_headers(client, "founder-pub@test.example"),
+    )
     assert response.json()["workspace"]["visibility"] == "public"
 
 
 def test_founder_is_admin(client):
-    response = client.post("/workspaces", json=FOUND_BODY)
+    response = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "founder-admin@test.example"),
+    )
     member_id = response.json()["member"]["member_id"]
     with database_module.SessionLocal() as db:
         member = db.get(Member, member_id)
@@ -38,7 +59,11 @@ def test_founder_is_admin(client):
 
 
 def test_founding_creates_workspace_record(client):
-    response = client.post("/workspaces", json=FOUND_BODY)
+    response = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "founder-record@test.example"),
+    )
     body = response.json()
     with database_module.SessionLocal() as db:
         record = db.get(WorkspaceRecord, body["workspace"]["workspace_id"])
@@ -47,8 +72,17 @@ def test_founding_creates_workspace_record(client):
         assert record.status == "active"
 
 
-def test_founding_creates_general_channel_with_founder_inside(client):
+def test_founding_requires_account_token(client):
     response = client.post("/workspaces", json=FOUND_BODY)
+    assert response.status_code == 401
+
+
+def test_founding_creates_general_channel_with_founder_inside(client):
+    response = client.post(
+        "/workspaces",
+        json=FOUND_BODY,
+        headers=_account_headers(client, "founder-general@test.example"),
+    )
     body = response.json()
     headers = {"Authorization": f"Bearer {body['access_token']}"}
     ws_id = body["workspace"]["workspace_id"]
@@ -106,28 +140,34 @@ def test_workspace_with_null_default_channel_supports_registration_and_listing(c
         ws = Workspace(workspace_name="Legacy", visibility="public")
         db.add(ws)
         db.flush()
+        seed_account = Account(account_type="human", email="seed@test.example")
+        db.add(seed_account)
+        db.flush()
         seed = Member(
             workspace_id=ws.workspace_id,
             member_name="Seed",
             member_type="human",
-            email="seed@test.example",
+            account_id=seed_account.account_id,
             is_admin=True,
             handle="seed",
         )
         db.add(seed)
         db.commit()
-        ws_id, seed_id = ws.workspace_id, seed.member_id
+        ws_id, seed_id, seed_account_id = (
+            ws.workspace_id,
+            seed.member_id,
+            seed_account.account_id,
+        )
 
-    headers = {"Authorization": f"Bearer {create_access_token(seed_id)}"}
+    headers = {
+        "Authorization": f"Bearer {create_access_token(seed_id, scope='workspace', account_id=seed_account_id)}"
+    }
 
+    newcomer_headers = _account_headers(client, "newcomer@test.example")
     response = client.post(
         f"/workspaces/{ws_id}/register",
-        json={
-            "email": "newcomer@test.example",
-            "password": "s3cret-password",
-            "first_name": "New",
-            "last_name": "Comer",
-        },
+        json={"first_name": "New", "last_name": "Comer"},
+        headers=newcomer_headers,
     )
     assert response.status_code == 200
     newcomer_id = response.json()["member"]["member_id"]

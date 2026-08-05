@@ -7,6 +7,12 @@ no real HTTP. `Path.home` is monkeypatched to `tmp_path` (the same
 pattern `test_tui_api.py` uses) so the workspace-name sidecar cache never
 touches a developer's real `~/.config/smac`.
 
+Identity v2 (SMAC-79 Task 3, spec §6): `FakeApi` mirrors the NEW
+`SmacApi` method set -- `signup`/`login`/`enter_workspace`/
+`create_workspace`/`join_public`/`join_code`/`mint_invite_code` -- one
+honest fake shared by every test in this module (and re-imported by
+`test_tui_commands.py`), not per-test lambdas.
+
 Because every `SmacApi` call runs on a `run_worker(thread=True)` worker
 (the whole point of the design -- see `smac_cli/app.py`'s module
 docstring), these tests can't just `await pilot.press(...)` and assume
@@ -28,7 +34,7 @@ import pytest
 from smac_cli import CLIENT_VERSION
 from smac_cli.api import Session
 from smac_cli.app import DEFAULT_URL, SmacApp, cache_workspace_name, main, resolve_url
-from smac_cli.errors import RateLimitedError, SessionExpired, Unreachable
+from smac_cli.errors import AuthError, RateLimitedError, SessionExpired, Unreachable
 from smac_cli.paths import session_path
 
 
@@ -50,9 +56,14 @@ def _home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 class FakeApi:
     """A stub implementing every `SmacApi` method name the shell calls.
 
-    Mirrors `SmacApi`'s real behavior just closely enough for the shell's
-    logic to be exercised: `login`/`register_found`/`register_into` all
-    set `self.session` and return it, exactly like the real client.
+    Mirrors the real client's Identity v2 contract just closely enough to
+    exercise the shell's logic: `signup`/`login` set `self.session` to an
+    ACCOUNT-only session (no workspace fields); `enter_workspace`/
+    `create_workspace`/`join_public`/`join_code` all fill in the
+    workspace fields of that SAME session object, exactly like the real
+    `SmacApi` does (never swapping in a brand-new `Session`, so a test's
+    `fake.session is not None` checks stay meaningful across a whole
+    flow).
     """
 
     def __init__(
@@ -62,12 +73,31 @@ class FakeApi:
         self.session = session
         self.server_version = server_version
         self.meta_error: Exception | None = None
-        self.discover_result: list[dict[str, str]] = []
-        self.search_result: list[dict[str, str]] = []
+        # /login stubs: the memberships list `POST /accounts/login` would
+        # return, or an error (e.g. AuthError for wrong credentials --
+        # Identity v2 login is a REAL login, not the old discover-style
+        # "always 200, empty list" simulation).
+        self.login_result: list[dict[str, Any]] = []
+        self.login_error: Exception | None = None
+        self.search_result: list[dict[str, Any]] = []
         self.whoami_error: Exception | None = None
         self.posts: list[tuple[str, str]] = []
         self.search_calls: list[str] = []
         self._next_workspace_id = 0
+        self.enter_workspace_calls: list[str] = []
+        self.enter_workspace_error: Exception | None = None
+        self.create_workspace_error: Exception | None = None
+        self.join_public_error: Exception | None = None
+        self.join_code_error: Exception | None = None
+        #: What `/join <code>` resolves the code to -- (workspace_id,
+        #: workspace_name); a test overrides this to pick a specific target.
+        self.join_code_target: tuple[str, str] = ("ws-code", "Coded Co")
+        self.mint_invite_result: dict[str, Any] = {
+            "invite_id": "inv-1",
+            "code": "shareable-abc123",
+            "invite_type": "code",
+        }
+        self.mint_invite_error: Exception | None = None
         # Live-room stubs (SMAC-72 task 5): a lone "general" channel, no
         # history, mark-read a no-op, no other members. `ws_channel_url`/
         # `ws_events_url` are deliberately NOT implemented -- ChannelFeed/
@@ -104,49 +134,91 @@ class FakeApi:
             raise self.meta_error
         return {"server_version": self.server_version, "api_version": 1}
 
-    def discover(self, email: str, password: str) -> list[dict[str, str]]:
-        return self.discover_result
+    # -- account-tier ----------------------------------------------------
 
-    def _new_session(self, workspace_id: str, email: str) -> Session:
+    def signup(self, email: str, password: str) -> Session:
         session = Session(
             url=self.url,
-            workspace_id=workspace_id,
-            access_token="at",
-            refresh_token="rt",
             email=email,
+            account_access_token="aat",
+            account_refresh_token="art",
         )
         self.session = session
         return session
 
-    def login(self, workspace_id: str, email: str, password: str) -> Session:
-        return self._new_session(workspace_id, email)
+    def login(self, email: str, password: str) -> tuple[Session, list[dict[str, Any]]]:
+        if self.login_error is not None:
+            raise self.login_error
+        session = Session(
+            url=self.url,
+            email=email,
+            account_access_token="aat",
+            account_refresh_token="art",
+        )
+        self.session = session
+        return session, self.login_result
 
-    def register_found(
-        self,
-        email: str,
-        password: str,
-        first_name: str,
-        last_name: str,
-        workspace_name: str,
-        visibility: str,
-    ) -> Session:
+    def enter_workspace(self, workspace_id: str) -> None:
+        self.enter_workspace_calls.append(workspace_id)
+        if self.enter_workspace_error is not None:
+            raise self.enter_workspace_error
+        assert self.session is not None
+        self.session.workspace_id = workspace_id
+        self.session.access_token = "at"
+        self.session.refresh_token = "rt"
+
+    def _mint_workspace(self, workspace_id: str) -> Session:
+        assert self.session is not None
+        self.session.workspace_id = workspace_id
+        self.session.access_token = "at"
+        self.session.refresh_token = "rt"
+        return self.session
+
+    def create_workspace(
+        self, name: str, visibility: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        if self.create_workspace_error is not None:
+            raise self.create_workspace_error
         self._next_workspace_id += 1
-        return self._new_session(f"ws-{self._next_workspace_id}", email)
+        session = self._mint_workspace(f"ws-{self._next_workspace_id}")
+        return session, name
 
-    def register_into(
-        self,
-        workspace_id: str,
-        email: str,
-        password: str,
-        first_name: str,
-        last_name: str,
-    ) -> Session:
-        return self._new_session(workspace_id, email)
+    def join_public(
+        self, workspace_id: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        if self.join_public_error is not None:
+            raise self.join_public_error
+        name = next(
+            (
+                w["workspace_name"]
+                for w in self.search_result
+                if w["workspace_id"] == workspace_id
+            ),
+            workspace_id,
+        )
+        session = self._mint_workspace(workspace_id)
+        return session, name
+
+    def join_code(
+        self, code: str, first_name: str, last_name: str
+    ) -> tuple[Session, str]:
+        if self.join_code_error is not None:
+            raise self.join_code_error
+        workspace_id, workspace_name = self.join_code_target
+        session = self._mint_workspace(workspace_id)
+        return session, workspace_name
+
+    def mint_invite_code(self) -> dict[str, Any]:
+        if self.mint_invite_error is not None:
+            raise self.mint_invite_error
+        return self.mint_invite_result
 
     def search_public(self, q: str = "") -> list[dict[str, str]]:
         self.search_calls.append(q)
         q_lower = q.lower()
         return [w for w in self.search_result if q_lower in w["workspace_name"].lower()]
+
+    # -- workspace-tier ----------------------------------------------------
 
     def whoami(self) -> dict[str, Any]:
         if self.whoami_error is not None:
@@ -223,6 +295,7 @@ async def test_welcome_screen_shows_commands_and_server_status() -> None:
         text = _body_text(app)
         assert "/register" in text
         assert "/login" in text
+        assert "/join" in text
         assert "server: http://fake.example" in text
         assert "running (v" in text
         assert app.header_text == "SMAC — not logged in"
@@ -262,17 +335,26 @@ async def test_matching_version_shows_no_update_line() -> None:
         assert "update: git pull" not in _body_text(app)
 
 
-@pytest.mark.anyio
-async def test_session_restore_lands_in_general_with_cached_name(
-    tmp_path: Path,
-) -> None:
-    session = Session(
+def _full_session(**overrides: Any) -> Session:
+    """A fully-authenticated session (account + workspace tokens both
+    present) -- the common case for tests that restore straight into a
+    workspace."""
+    defaults: dict[str, Any] = dict(
         url="http://fake.example",
+        email="vimal@example.com",
+        account_access_token="aat",
+        account_refresh_token="art",
         workspace_id="ws-cached",
         access_token="at",
         refresh_token="rt",
-        email="vimal@example.com",
     )
+    defaults.update(overrides)
+    return Session(**defaults)
+
+
+@pytest.mark.anyio
+async def test_session_restore_lands_in_general_with_cached_name() -> None:
+    session = _full_session()
     cache_workspace_name("ws-cached", "AI Finance Co")
     app = SmacApp(FakeApi(session=session))
     async with app.run_test() as pilot:
@@ -284,13 +366,7 @@ async def test_session_restore_lands_in_general_with_cached_name(
 
 @pytest.mark.anyio
 async def test_session_expired_falls_back_to_welcome_screen() -> None:
-    session = Session(
-        url="http://fake.example",
-        workspace_id="ws-1",
-        access_token="at",
-        refresh_token="rt",
-        email="vimal@example.com",
-    )
+    session = _full_session()
     fake = FakeApi(session=session)
     fake.whoami_error = SessionExpired()
     app = SmacApp(fake)
@@ -300,6 +376,77 @@ async def test_session_expired_falls_back_to_welcome_screen() -> None:
         )
         assert app.header_text == "SMAC — not logged in"
         assert "Welcome to SMAC" in _body_text(app)
+
+
+@pytest.mark.anyio
+async def test_old_session_without_account_tokens_treated_as_expired(
+    tmp_path: Path,
+) -> None:
+    """Backward compat (this task's binding requirement): a session.json
+    written by a pre-Identity-v2 build has no `account_access_token` at
+    all. It must never crash the restore, and must land on the SAME
+    "session expired — /login" message a genuinely-expired session shows
+    -- WITHOUT ever calling `whoami()` (there is nothing a request could
+    succeed with; every server-side refresh token was purged by the
+    Identity v2 migration)."""
+    legacy_session = Session(
+        url="http://fake.example",
+        email="vimal@example.com",
+        workspace_id="ws-1",
+        access_token="at",
+        refresh_token="rt",
+        # account_access_token/account_refresh_token default to None --
+        # exactly the shape `Session.load` produces for an old file.
+    )
+    fake = FakeApi(session=legacy_session)
+
+    def _boom() -> dict[str, Any]:
+        raise AssertionError("whoami() must not be called for an old-format session")
+
+    fake.whoami = _boom  # type: ignore[method-assign]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("session expired" in line for line in app._log_lines)
+        )
+        assert app.header_text == "SMAC — not logged in"
+        assert "Welcome to SMAC" in _body_text(app)
+        assert app.api.session is None
+
+
+@pytest.mark.anyio
+async def test_account_only_session_restore_shows_no_workspace_state() -> None:
+    """A session saved right after `/register` (account tokens, no
+    workspace) restores straight into the "no workspace yet" screen --
+    never the logged-out welcome screen, and `whoami()` (workspace-tier)
+    is never attempted."""
+    session = Session(
+        url="http://fake.example",
+        email="vimal@example.com",
+        account_access_token="aat",
+        account_refresh_token="art",
+    )
+    fake = FakeApi(session=session)
+
+    def _boom() -> dict[str, Any]:
+        raise AssertionError("whoami() must not be called with no workspace entered")
+
+    fake.whoami = _boom  # type: ignore[method-assign]
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        # Wait for the LAST line `show_no_workspace_state` writes (the
+        # server-status line), not just the header flip -- each `write_line`/
+        # `set_header` call is applied via a separate `call_from_thread`
+        # round trip, so waiting on the header alone can observe the screen
+        # only partially drawn.
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        assert app.header_text == "SMAC — no workspace yet"
+        text = _body_text(app)
+        assert "/workspace create <name>" in text
+        assert "/join <code>" in text
+        assert "Welcome to SMAC" not in text
 
 
 # --------------------------------------------------------------------------
@@ -317,9 +464,9 @@ async def test_slash_shows_pullup_filters_and_escape_dismisses() -> None:
 
         await pilot.press("/")
         await _wait_until(pilot, lambda: app.pullup.display)
-        # register, login, channel, help, quit, whoami, channels, unreads,
-        # workspace (SMAC-72 task 6 adds the last four).
-        assert app.pullup.option_count == 9
+        # register, workspace, join, invite, login, channel, whoami,
+        # channels, unreads, help, quit.
+        assert app.pullup.option_count == 11
 
         await pilot.press(*"re")
         await _wait_until(pilot, lambda: app.pullup.option_count == 1)
@@ -361,6 +508,24 @@ async def test_bare_text_logged_out_shows_not_logged_in_line() -> None:
 
 
 @pytest.mark.anyio
+async def test_bare_text_no_workspace_shows_next_steps_line() -> None:
+    session = Session(
+        url="http://fake.example",
+        email="vimal@example.com",
+        account_access_token="aat",
+        account_refresh_token="art",
+    )
+    app = SmacApp(FakeApi(session=session))
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+        await pilot.press(*"hello there")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot, lambda: any("no workspace yet" in line for line in app._log_lines)
+        )
+
+
+@pytest.mark.anyio
 async def test_empty_enter_is_a_no_op() -> None:
     app = SmacApp(FakeApi())
     async with app.run_test() as pilot:
@@ -374,12 +539,16 @@ async def test_empty_enter_is_a_no_op() -> None:
 
 
 # --------------------------------------------------------------------------
-# /register: the two-step form
+# /register: account-only, then /workspace create
 # --------------------------------------------------------------------------
 
 
 async def _run_register(
-    pilot: Any, app: SmacApp, *, visibility: str | None = None
+    pilot: Any,
+    app: SmacApp,
+    *,
+    email: str = "vimal@example.com",
+    password: str = "hunter2-pass",
 ) -> None:
     await pilot.press("/")
     await _wait_until(pilot, lambda: app.pullup.display)
@@ -387,25 +556,33 @@ async def _run_register(
     await pilot.press("enter")
 
     await _wait_until(pilot, lambda: app.footer_input.placeholder == "email")
-    await pilot.press(*"vimal@example.com")
+    await pilot.press(*email)
     await pilot.press("enter")
 
     await _wait_until(pilot, lambda: app.footer_input.placeholder == "password")
     assert app.footer_input.password is True
-    await pilot.press(*"hunter2-pass")
+    await pilot.press(*password)
+    await pilot.press("enter")
+
+
+async def _run_workspace_create(
+    pilot: Any,
+    app: SmacApp,
+    name: str,
+    *,
+    first_name: str = "Vimal",
+    last_name: str = "Raguraman",
+    visibility: str | None = None,
+) -> None:
+    await pilot.press(*f"/workspace create {name}")
     await pilot.press("enter")
 
     await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
-    assert app.footer_input.password is False
-    await pilot.press(*"Vimal")
+    await pilot.press(*first_name)
     await pilot.press("enter")
 
     await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
-    await pilot.press(*"Raguraman")
-    await pilot.press("enter")
-
-    await _wait_until(pilot, lambda: app.footer_input.placeholder == "workspace name")
-    await pilot.press(*"AI Finance Co")
+    await pilot.press(*last_name)
     await pilot.press("enter")
 
     await _wait_until(pilot, lambda: "visibility" in app.footer_input.placeholder)
@@ -415,7 +592,7 @@ async def _run_register(
 
 
 @pytest.mark.anyio
-async def test_register_two_step_form_lands_in_general() -> None:
+async def test_register_lands_in_no_workspace_state() -> None:
     fake = FakeApi()
     app = SmacApp(fake)
     async with app.run_test() as pilot:
@@ -424,18 +601,43 @@ async def test_register_two_step_form_lands_in_general() -> None:
         )
         await _run_register(pilot, app)
 
-        await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
-        assert app.current_channel_name == "general"
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
         text = _body_text(app)
-        assert "step 1 of 2: create your account" in text
-        assert "step 2 of 2: your workspace" in text
-        # Account-created banner precedes the workspace-founded banner
-        # (spec Frame 4's order), and both precede the header settling.
-        assert text.index("account created") < text.index(
-            'workspace "AI Finance Co" founded'
-        )
-        assert "@vraguraman" in text
+        assert "account created: vimal@example.com" in text
+        assert "/workspace create <name>" in text
+        assert "/join <code>" in text
+        assert "/login" in text
         assert fake.session is not None
+        assert fake.session.account_access_token == "aat"
+        assert fake.session.workspace_id is None
+
+
+@pytest.mark.anyio
+async def test_register_then_workspace_create_lands_in_general() -> None:
+    fake = FakeApi()
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _run_register(pilot, app)
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+
+        await _run_workspace_create(pilot, app, "AI Finance Co")
+
+        # Wait on the LAST thing `cmd_workspace`'s create branch writes
+        # (the "founded" banner, which lands via its own `call_from_thread`
+        # round trip AFTER `enter_workspace`'s header-setting one) rather
+        # than the header alone -- polling can otherwise observe the
+        # header already flipped while that trailing line hasn't landed
+        # yet.
+        await _wait_until(
+            pilot, lambda: 'workspace "AI Finance Co" founded' in _body_text(app)
+        )
+        assert app.header_text == "AI Finance Co — #general"
+        assert app.current_channel_name == "general"
+        assert fake.session is not None
+        assert fake.session.workspace_id is not None
 
 
 @pytest.mark.anyio
@@ -455,6 +657,101 @@ async def test_register_form_escape_cancels_and_resets_header() -> None:
         assert app.api.session is None
 
 
+@pytest.mark.anyio
+async def test_workspace_create_escape_cancels_stays_in_no_workspace_state() -> None:
+    fake = FakeApi()
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _run_register(pilot, app)
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+
+        await pilot.press(*"/workspace create AI Finance Co")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
+
+        await pilot.press("escape")
+        await _wait_until(pilot, lambda: not app.footer_input.password)
+        assert app.header_text == "SMAC — no workspace yet"
+        assert fake.session is not None
+        assert fake.session.workspace_id is None
+
+
+# --------------------------------------------------------------------------
+# /join <code>
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_join_code_lands_in_general() -> None:
+    fake = FakeApi()
+    fake.join_code_target = ("ws-code", "Coded Co")
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _run_register(pilot, app)
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+
+        await pilot.press(*"/join abc123")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "first name")
+        await pilot.press(*"New")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: app.footer_input.placeholder == "last name")
+        await pilot.press(*"Member")
+        await pilot.press("enter")
+
+        # Wait on the trailing "joined" line (see the analogous comment in
+        # `test_register_then_workspace_create_lands_in_general`) rather
+        # than the header alone.
+        await _wait_until(pilot, lambda: 'joined "Coded Co"' in _body_text(app))
+        assert app.header_text == "Coded Co — #general"
+        assert fake.session is not None
+        assert fake.session.workspace_id == "ws-code"
+
+
+@pytest.mark.anyio
+async def test_join_no_code_shows_usage() -> None:
+    fake = FakeApi()
+    app = SmacApp(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await _run_register(pilot, app)
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+
+        await pilot.press(*"/join")
+        await pilot.press("enter")
+        await _wait_until(pilot, lambda: "usage: /join <code>" in _body_text(app))
+
+
+@pytest.mark.anyio
+async def test_join_logged_out_fails_before_prompting() -> None:
+    """Final-review MINOR-4: logged out, `/join <code>` used to ask for
+    first name then last name and only THEN die with "No active
+    session." -- two wasted answers before an unhelpful message. The
+    session check now runs before any prompting, so the actionable
+    system line appears immediately and the name prompts never show."""
+    app = SmacApp(FakeApi())
+    async with app.run_test() as pilot:
+        await _wait_until(
+            pilot, lambda: any("server:" in line for line in app._log_lines)
+        )
+        await pilot.press(*"/join abc123")
+        await pilot.press("enter")
+        await _wait_until(
+            pilot,
+            lambda: "create an account first: /register (then /join <code>)"
+            in _body_text(app),
+        )
+        assert app.footer_input.placeholder != "first name"
+
+
 # --------------------------------------------------------------------------
 # /login: one-match, multi-match picker, zero-match join frame
 # --------------------------------------------------------------------------
@@ -472,9 +769,16 @@ async def _start_login(pilot: Any, app: SmacApp, email: str, password: str) -> N
 
 
 @pytest.mark.anyio
-async def test_login_one_match_auto_login_updates_header() -> None:
+async def test_login_one_membership_enters_workspace_directly() -> None:
     fake = FakeApi()
-    fake.discover_result = [{"workspace_id": "ws-1", "workspace_name": "AI Finance Co"}]
+    fake.login_result = [
+        {
+            "workspace_id": "ws-1",
+            "workspace_name": "AI Finance Co",
+            "member_id": "m1",
+            "handle": "vraguraman",
+        }
+    ]
     app = SmacApp(fake)
     async with app.run_test() as pilot:
         await _wait_until(
@@ -484,14 +788,25 @@ async def test_login_one_match_auto_login_updates_header() -> None:
         await _wait_until(pilot, lambda: app.header_text == "AI Finance Co — #general")
         assert fake.session is not None
         assert fake.session.workspace_id == "ws-1"
+        assert fake.enter_workspace_calls == ["ws-1"]
 
 
 @pytest.mark.anyio
-async def test_login_multi_match_shows_picker_with_both_names() -> None:
+async def test_login_multi_membership_shows_picker_with_both_names() -> None:
     fake = FakeApi()
-    fake.discover_result = [
-        {"workspace_id": "ws-1", "workspace_name": "AI Finance Co"},
-        {"workspace_id": "ws-2", "workspace_name": "Research Lab"},
+    fake.login_result = [
+        {
+            "workspace_id": "ws-1",
+            "workspace_name": "AI Finance Co",
+            "member_id": "m1",
+            "handle": "vraguraman",
+        },
+        {
+            "workspace_id": "ws-2",
+            "workspace_name": "Research Lab",
+            "member_id": "m2",
+            "handle": "vraguraman2",
+        },
     ]
     app = SmacApp(fake)
     async with app.run_test() as pilot:
@@ -505,25 +820,34 @@ async def test_login_multi_match_shows_picker_with_both_names() -> None:
         labels = {app.pullup.get_option_at_index(i).prompt for i in (0, 1)}
         assert any("AI Finance Co" in str(label) for label in labels)
         assert any("Research Lab" in str(label) for label in labels)
-        # The "your accounts:" caption is a plain line (Frame 3b draws it
-        # un-wrapped), not a dim "── ── " system line.
-        assert "your accounts:" in app._log_lines
-        assert "── your accounts: ──" not in app._log_lines
+        assert "your workspaces:" in app._log_lines
+        assert "── your workspaces: ──" not in app._log_lines
 
-        # Select the second entry and confirm it logs into THAT workspace.
+        # Select the second entry and confirm it enters THAT workspace.
         await pilot.press("down")
         await pilot.press("enter")
         await _wait_until(pilot, lambda: app.header_text == "Research Lab — #general")
         assert fake.session is not None
         assert fake.session.workspace_id == "ws-2"
+        assert fake.enter_workspace_calls == ["ws-2"]
 
 
 @pytest.mark.anyio
-async def test_login_multi_match_escape_cancels_and_resets_header() -> None:
+async def test_login_multi_membership_escape_cancels_to_no_workspace_state() -> None:
     fake = FakeApi()
-    fake.discover_result = [
-        {"workspace_id": "ws-1", "workspace_name": "AI Finance Co"},
-        {"workspace_id": "ws-2", "workspace_name": "Research Lab"},
+    fake.login_result = [
+        {
+            "workspace_id": "ws-1",
+            "workspace_name": "AI Finance Co",
+            "member_id": "m1",
+            "handle": "vraguraman",
+        },
+        {
+            "workspace_id": "ws-2",
+            "workspace_name": "Research Lab",
+            "member_id": "m2",
+            "handle": "vraguraman2",
+        },
     ]
     app = SmacApp(fake)
     async with app.run_test() as pilot:
@@ -535,15 +859,19 @@ async def test_login_multi_match_escape_cancels_and_resets_header() -> None:
         await _wait_until(pilot, lambda: app.pullup.option_count == 2)
 
         await pilot.press("escape")
-        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
-        assert app.api.session is None
+        # The account login itself already happened (real, not simulated)
+        # -- cancelling the workspace picker lands back on the
+        # "no workspace yet" state, not a logged-out one.
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+        assert fake.session is not None
+        assert fake.session.workspace_id is None
         assert not app.pullup.display
 
 
 @pytest.mark.anyio
-async def test_login_zero_match_join_flow_filters_and_registers() -> None:
+async def test_login_zero_memberships_join_flow_filters_and_registers() -> None:
     fake = FakeApi()
-    fake.discover_result = []
+    fake.login_result = []
     fake.search_result = [
         {
             "workspace_id": "ws-pub-1",
@@ -567,10 +895,11 @@ async def test_login_zero_match_join_flow_filters_and_registers() -> None:
             pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
         )
         await _wait_until(pilot, lambda: app.pullup.option_count == 2)
-        # The caption and the "/register" hint are plain lines (Frame 3c
-        # draws both un-wrapped), not dim "── ── " system lines.
         assert "public workspaces (type to search):" in app._log_lines
-        assert "(or /register to create your own)" in app._log_lines
+        assert (
+            "(or /workspace create <name>, or /join <code>, or Esc to go back)"
+            in app._log_lines
+        )
         assert "── public workspaces (type to search): ──" not in app._log_lines
 
         await pilot.press(*"fin")
@@ -592,9 +921,11 @@ async def test_login_zero_match_join_flow_filters_and_registers() -> None:
 
 
 @pytest.mark.anyio
-async def test_login_zero_match_join_frame_escape_cancels_and_resets_header() -> None:
+async def test_login_zero_memberships_join_frame_escape_cancels_to_no_workspace_state() -> (
+    None
+):
     fake = FakeApi()
-    fake.discover_result = []
+    fake.login_result = []
     fake.search_result = [
         {
             "workspace_id": "ws-pub-1",
@@ -614,40 +945,33 @@ async def test_login_zero_match_join_frame_escape_cancels_and_resets_header() ->
         await _wait_until(pilot, lambda: app.pullup.option_count == 1)
 
         await pilot.press("escape")
-        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
-        assert app.api.session is None
+        await _wait_until(pilot, lambda: app.header_text == "SMAC — no workspace yet")
+        assert fake.session is not None
+        assert fake.session.workspace_id is None
         assert not app.pullup.display
 
 
 @pytest.mark.anyio
-async def test_login_zero_match_shows_wrong_password_hint() -> None:
-    """Finding H: zero discover matches is byte-identical (by design) for
-    an unknown email AND a real account's mistyped password -- a
-    returning user with a typo lands in the join frame with no clue why.
-    One system line softens that without changing the response shape."""
+async def test_login_wrong_credentials_shows_server_message_directly() -> None:
+    """Unlike the retired discover-based flow, `POST /accounts/login` is a
+    REAL login -- wrong credentials raise `AuthError` straight out of
+    `api.login`, propagating to `SmacApp._run_command`'s generic
+    message-only handling. There's no more "zero matches" ambiguity
+    between an unknown email and a mistyped password to soften with a
+    hint (spec: that whole class of finding no longer exists); "zero
+    matches" from a SUCCESSFUL login now only ever means "this account
+    has no workspace yet" (covered above)."""
     fake = FakeApi()
-    fake.discover_result = []
-    fake.search_result = []
+    fake.login_error = AuthError("invalid_credentials", "Invalid email or password")
     app = SmacApp(fake)
     async with app.run_test() as pilot:
         await _wait_until(
             pilot, lambda: any("server:" in line for line in app._log_lines)
         )
-        await _start_login(pilot, app, "returning@example.com", "typo'd-password")
-        await _wait_until(
-            pilot, lambda: app.header_text == "SMAC — no workspace yet: join one"
-        )
-        text = _body_text(app)
-        assert "no workspaces found for these credentials" in text
-        assert "double-check your password" in text
-        assert "/register" in text
-
-        # Resolve the still-pending join-frame picker (same cleanup every
-        # other escape-cancels test in this module does) -- otherwise the
-        # command worker sits blocked on `choose()`'s `event.wait()`
-        # forever, since no selection was ever made.
-        await pilot.press("escape")
-        await _wait_until(pilot, lambda: app.header_text == "SMAC — not logged in")
+        await _start_login(pilot, app, "vimal@example.com", "wrong-password")
+        await _wait_until(pilot, lambda: "Invalid email or password" in _body_text(app))
+        assert app.header_text == "SMAC — not logged in"
+        assert fake.session is None
 
 
 # --------------------------------------------------------------------------
@@ -670,6 +994,8 @@ async def test_help_lists_registered_commands() -> None:
         text = _body_text(app)
         assert "/register" in text
         assert "/login" in text
+        assert "/join" in text
+        assert "/invite" in text
         assert "/quit" in text
 
 
@@ -701,14 +1027,7 @@ async def test_quit_prints_goodbye_and_exits() -> None:
 
 @pytest.mark.anyio
 async def test_rate_limited_send_preserves_draft_and_shows_server_message() -> None:
-    session = Session(
-        url="http://fake.example",
-        workspace_id="ws-1",
-        access_token="at",
-        refresh_token="rt",
-        email="vimal@example.com",
-    )
-    fake = FakeApi(session=session)
+    fake = FakeApi(session=_full_session())
     fake.post_error = RateLimitedError(
         "rate_limited", "Posting too fast — wait a moment"
     )
@@ -731,14 +1050,7 @@ async def test_rate_limited_send_preserves_draft_and_shows_server_message() -> N
 async def test_non_rate_limit_error_does_not_restore_draft() -> None:
     from smac_cli.errors import NotAMemberError
 
-    session = Session(
-        url="http://fake.example",
-        workspace_id="ws-1",
-        access_token="at",
-        refresh_token="rt",
-        email="vimal@example.com",
-    )
-    fake = FakeApi(session=session)
+    fake = FakeApi(session=_full_session())
     fake.post_error = NotAMemberError(
         "not_a_member", "You are not a member of this channel"
     )
@@ -761,7 +1073,7 @@ async def test_non_rate_limit_error_does_not_restore_draft() -> None:
 # (finding A -- `smac-server --port 9000` used to be permanently
 # unreachable from `smac`: no flag, no env var, and a session file only
 # ever gets a URL from a login that couldn't happen against a non-default
-# port in the first place).
+# port in the first place.)
 # --------------------------------------------------------------------------
 
 
@@ -799,13 +1111,7 @@ def test_main_uses_session_url_ignoring_flag_and_env(
     letting an ambient env var or flag redirect it would silently send
     those tokens to a different server."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    session = Session(
-        url="http://session.example:8000",
-        workspace_id="w1",
-        access_token="a",
-        refresh_token="r",
-        email="e@test.example",
-    )
+    session = _full_session(url="http://session.example:8000", workspace_id="w1")
     session.save(session_path())
     monkeypatch.setenv("SMAC_URL", "http://env.example:9000")
 
