@@ -4,17 +4,24 @@ import react from "@vitejs/plugin-react";
 
 // Dev-only proxy so `npm run dev` can run against a real, locally running
 // SMAC server (`smac-server`, default 127.0.0.1:8000) without CORS or a
-// second origin -- mirrors the serving contract in app/webui.py exactly:
-// everything under these prefixes is the API/WS surface, never the SPA.
+// second origin. app/webui.py derives its own passthrough set from the
+// live FastAPI route table (so it can never silently drift), but this
+// config is static and evaluated by Node with no access to that table --
+// keep it in sync by hand with app/main.py's routers if a new top-level
+// API prefix is ever added (server/tests/scripts/dev/README all reference
+// the same set; grep for API_PREFIXES).
 const API_PROXY_TARGET = "http://127.0.0.1:8000";
 const API_PREFIXES = [
   "/accounts",
   "/workspaces",
   "/members",
+  "/member",
   "/mentions",
   "/auth",
   "/meta",
+  "/health",
   "/docs",
+  "/redoc",
   "/openapi.json",
 ];
 
