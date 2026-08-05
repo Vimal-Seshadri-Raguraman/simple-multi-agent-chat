@@ -293,3 +293,91 @@ describe("version banner + focus-poll toast (VersionBanner, minimal per task-2 b
     await screen.findByText(/smac updated.*refresh/i);
   });
 });
+
+describe("Fix round 1: back-to-workspace affordance on CreateOrJoin/JoinScreen (task-5 review finding)", () => {
+  // The palette's `/workspace create`/`/join` commands (and the Rail
+  // switcher's "Create or join a workspace…" entry, same underlying
+  // screens) land here via a bare NAVIGATE that does NOT clear the
+  // session -- before this fix, neither screen offered any way back to
+  // the workspace the user started in.
+  const CURRENT_MEMBERSHIP = {
+    workspace_id: "ws1",
+    workspace_name: "Acme",
+    member_id: "m1",
+    handle: "alice",
+  };
+
+  function openPaletteAndRunCommand(commandText: string) {
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    fireEvent.mouseDown(screen.getByText(commandText));
+  }
+
+  it("/workspace create (palette) shows 'Back to Acme', which returns to the authed shell with the same workspace", async () => {
+    vi.mocked(api.getSession).mockReturnValue(WORKSPACE_SESSION);
+    vi.mocked(api.accountMe).mockResolvedValue({
+      account_id: "acc-1",
+      email: "alice@example.com",
+      created_at: "2026-01-01T00:00:00",
+      memberships: [CURRENT_MEMBERSHIP],
+    });
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
+
+    openPaletteAndRunCommand("/workspace create");
+
+    await screen.findByRole("heading", { name: /create or join a workspace/i });
+    const backButton = await screen.findByRole("button", { name: /back to acme/i });
+
+    fireEvent.click(backButton);
+
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
+  });
+
+  it("/join (palette) shows 'Back to Acme', which returns to the authed shell with the same workspace", async () => {
+    vi.mocked(api.getSession).mockReturnValue(WORKSPACE_SESSION);
+    vi.mocked(api.accountMe).mockResolvedValue({
+      account_id: "acc-1",
+      email: "alice@example.com",
+      created_at: "2026-01-01T00:00:00",
+      memberships: [CURRENT_MEMBERSHIP],
+    });
+    vi.mocked(api.searchPublic).mockResolvedValue([]);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
+
+    openPaletteAndRunCommand("/join");
+
+    await screen.findByRole("heading", { name: /join a workspace/i });
+    const backButton = await screen.findByRole("button", { name: /back to acme/i });
+
+    fireEvent.click(backButton);
+
+    await screen.findByRole("navigation", { name: /workspace navigation/i });
+  });
+
+  it("shows NO back affordance during first-run onboarding (register step 1, a 0-membership login, or its Join screen) -- there's no workspace behind it", async () => {
+    vi.mocked(api.signup).mockResolvedValue(BASE_SESSION);
+    vi.mocked(api.searchPublic).mockResolvedValue([]);
+
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Create an account" }));
+    await screen.findByLabelText("Email");
+    expect(screen.queryByRole("button", { name: /back to/i })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "hunter2000" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), {
+      target: { value: "hunter2000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByRole("heading", { name: /create or join a workspace/i });
+    expect(screen.queryByRole("button", { name: /back to/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /join a workspace/i }));
+    await screen.findByRole("heading", { name: /join a workspace/i });
+    expect(screen.queryByRole("button", { name: /back to/i })).not.toBeInTheDocument();
+  });
+});

@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
+import BackToWorkspace from "../components/BackToWorkspace";
 import type { WorkspaceSearchOut } from "../lib/api";
 import { errorMessage } from "../lib/errors";
 import { useAuth } from "../state/auth";
@@ -11,6 +12,11 @@ const SEARCH_DEBOUNCE_MS = 300;
  * directory, plus a shareable invite-code entry. Both actions need the
  * caller's per-workspace display name first, so first/last name fields
  * live at the top rather than being duplicated per-action.
+ *
+ * Also reachable with a LIVE workspace session still underneath (the
+ * palette's `/join`) -- `<BackToWorkspace />` renders the escape hatch
+ * back to it in that case, and nothing at all otherwise (fix round 1,
+ * see that component's docstring).
  */
 export default function JoinScreen() {
   const { navigate, workspaceEntered, setPending, setError, pending, error } = useAuth();
@@ -63,6 +69,7 @@ export default function JoinScreen() {
 
   return (
     <div className="auth-screen auth-screen--join">
+      <BackToWorkspace />
       <h1>Join a workspace</h1>
       <div className="join-screen__display-name">
         <label htmlFor="join-first-name">Your first name</label>
