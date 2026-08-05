@@ -54,6 +54,7 @@ function renderRail(overrides: Partial<ComponentProps<typeof Rail>> = {}) {
     theme: "dark",
     onToggleTheme: vi.fn(),
     onLogout: vi.fn(),
+    onOpenSettings: vi.fn(),
     ...overrides,
   };
   return { props, ...render(<Rail {...props} />) };
@@ -122,5 +123,20 @@ describe("Rail (web spec §2)", () => {
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Log out" }));
     expect(props.onLogout).toHaveBeenCalled();
+  });
+
+  // SMAC-85: Settings (agents/invites/workspace admin, including workspace
+  // delete) was previously reachable ONLY via Cmd-K palette commands --
+  // these two are the rail's mouse-first entry points.
+  it("the rail's gear button opens Settings via onOpenSettings", () => {
+    const { props } = renderRail();
+    fireEvent.click(screen.getByLabelText("Settings"));
+    expect(props.onOpenSettings).toHaveBeenCalled();
+  });
+
+  it("the YOU menu's Settings entry opens Settings via onOpenSettings", () => {
+    const { props } = renderRail({ youMenuOpen: true });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    expect(props.onOpenSettings).toHaveBeenCalled();
   });
 });

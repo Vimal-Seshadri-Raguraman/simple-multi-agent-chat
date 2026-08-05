@@ -64,7 +64,15 @@
   margin-bottom: var(--space-3);
 }
 
+.rail__workspace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .rail__workspace-name {
+  flex: 1;
+  min-width: 0;
   width: 100%;
   text-align: left;
   font-weight: 700;
@@ -74,6 +82,34 @@
   border: none;
   cursor: pointer;
   padding: var(--space-2) 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Settings entry point (SMAC-85): a quiet, dim icon-button that brightens
+ * on hover -- constitution §2's "one confident accent" rule reserves
+ * `--color-accent` for the product's single accent use, not a plain
+ * administration affordance, so this deliberately never touches it. */
+.rail__settings-button {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  font-size: var(--font-size-base);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail__settings-button:hover {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
 }
 
 .rail__switcher {

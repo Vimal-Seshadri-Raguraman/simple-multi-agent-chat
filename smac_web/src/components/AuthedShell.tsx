@@ -194,6 +194,23 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
     setPaletteOpen(true);
   }, []);
 
+  // SMAC-85: the rail gear button and the YOU menu's "Settings" item both
+  // land here, opening Settings at its default (Agents) section -- kept
+  // separate from `buildCommandContext`'s `goToSettings` below (used by the
+  // palette's `/invite`/`/workspace delete`) rather than sharing it, so
+  // this fix doesn't touch the existing, already-tested palette wiring.
+  // Also closes the YOU menu and (on mobile) the rail drawer -- both are
+  // popovers/overlays that would otherwise still read as "open" underneath
+  // Settings' full-screen replacement of this whole body, and stay stuck
+  // open when `onBack` returns here, exactly the stale-state trap the
+  // existing `onSelectChannel` mobile-close wiring a few lines below
+  // already avoids for channel taps.
+  const openSettings = useCallback(() => {
+    setYouMenuOpen(false);
+    setSettingsSection("agents");
+    if (mobile) setRailOpen(false);
+  }, [mobile]);
+
   const buildCommandContext = useCallback(
     (args: string): CommandContext => ({
       args,
@@ -294,6 +311,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         theme={theme}
         onToggleTheme={onToggleTheme}
         onLogout={() => void auth.logout()}
+        onOpenSettings={openSettings}
         mobile={mobile}
         open={mobile ? railOpen : true}
         onRequestClose={() => setRailOpen(false)}

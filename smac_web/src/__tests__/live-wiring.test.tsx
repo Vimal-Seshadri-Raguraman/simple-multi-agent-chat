@@ -6,6 +6,7 @@ import * as live from "../lib/live";
 import type { Closeable } from "../lib/live";
 import type { MentionEvent, MessagePayload, Session } from "../lib/api";
 import { Unreachable } from "../lib/errors";
+import { setViewportWidth } from "../testing/viewportMock";
 import { CLIENT_VERSION } from "../version";
 
 /**
@@ -321,5 +322,53 @@ describe("AuthedShell's window-focus unreads refetch (fix round 1: web spec §2'
     // synchronously off this same dispatch; asserting immediately (no
     // new call landed) is exactly what proves the teardown ran.
     expect(vi.mocked(api.unreads).mock.calls.length).toBe(unreadsCallsAfterUnmount);
+  });
+});
+
+// SMAC-85: Settings (`screens/Settings.tsx`) was previously reachable ONLY
+// via Cmd-K palette commands (`/invite`, `/workspace delete`) -- there was
+// no clickable entry anywhere in the shell for a mouse-first reader.
+// `rail.test.tsx` covers the rail gear/YOU-menu buttons calling
+// `onOpenSettings` in isolation; this describe block covers the one thing
+// that needs the FULL shell mounted to observe: on mobile, opening Settings
+// closes the swipe/tap drawer behind it (mirroring the existing
+// `onSelectChannel` mobile-close wiring), so returning via Settings' own
+// "Back to the room" button doesn't land back on an unexpectedly-still-open
+// drawer.
+describe("AuthedShell's Settings entry points (SMAC-85 fix: clickable settings)", () => {
+  afterEach(() => {
+    act(() => setViewportWidth(1024)); // back to desktop -- avoid bleeding into other tests in this file
+  });
+
+  it("desktop: the rail gear button opens Settings", async () => {
+    await goToAuthedShell();
+    fireEvent.click(screen.getByLabelText("Settings"));
+    await screen.findByRole("heading", { name: "Settings" });
+  });
+
+  it("desktop: the YOU menu's Settings entry opens Settings", async () => {
+    await goToAuthedShell();
+    fireEvent.click(screen.getByText("@alice"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    await screen.findByRole("heading", { name: "Settings" });
+  });
+
+  it("mobile: opening Settings via the rail gear closes the drawer behind it", async () => {
+    await goToAuthedShell();
+    act(() => setViewportWidth(400));
+
+    // Open the mobile drawer via the room's hamburger, same as a reader would.
+    fireEvent.click(screen.getByLabelText("Open channels"));
+    expect(screen.getByTestId("rail-backdrop")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Settings"));
+    await screen.findByRole("heading", { name: "Settings" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the room" }));
+    await screen.findByRole("heading", { name: "#general" });
+
+    // If the drawer's `railOpen` state hadn't been reset when Settings
+    // opened, it would still read "open" here and show the backdrop again.
+    expect(screen.queryByTestId("rail-backdrop")).not.toBeInTheDocument();
   });
 });

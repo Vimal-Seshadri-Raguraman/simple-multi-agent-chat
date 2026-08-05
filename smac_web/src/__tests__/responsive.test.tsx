@@ -68,6 +68,7 @@ function renderRail(overrides: Partial<ComponentProps<typeof Rail>> = {}) {
     theme: "dark",
     onToggleTheme: vi.fn(),
     onLogout: vi.fn(),
+    onOpenSettings: vi.fn(),
     onRequestClose: vi.fn(),
     ...overrides,
   };

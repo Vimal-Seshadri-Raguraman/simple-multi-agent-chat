@@ -3,9 +3,18 @@ import type { ChannelOut, MemberSelfOut, Membership, UnreadsRowOut } from "../li
 
 /**
  * The left rail (web spec §2): workspace name + switcher (memberships +
- * create/join), the channel list with live unread/mention badges, "+"
+ * create/join), a gear button next to the workspace name that opens
+ * Settings, the channel list with live unread/mention badges, "+"
  * create channel, and YOU at the bottom (avatar/handle -> menu: whoami
- * card, theme toggle, logout).
+ * card, a "Settings" item, theme toggle, logout).
+ *
+ * SMAC-85: before this, Settings (`screens/Settings.tsx` -- agents/
+ * invites/workspace admin, including workspace delete) was reachable
+ * ONLY via Cmd-K palette commands (`/invite`, `/workspace delete`) --
+ * no mouse-first affordance existed anywhere in the shell. The gear
+ * button and the YOU menu's "Settings" item both call `onOpenSettings`
+ * (owned by `AuthedShell.tsx`, same lifted-state pattern as the YOU
+ * menu itself below), landing on Settings' default section (Agents).
  *
  * The YOU menu's open/closed state is lifted to the shell
  * (`AuthedShell.tsx`) rather than owned locally, because the Cmd-K
@@ -42,6 +51,13 @@ export type RailProps = {
   theme: "light" | "dark";
   onToggleTheme: () => void;
   onLogout: () => void;
+  /** Opens Settings at its default section (web spec §2: the
+   * administration home) -- SMAC-85's clickable entry points, wired to
+   * BOTH the rail's gear button (next to the workspace name) and the
+   * YOU menu's "Settings" item, since previously Settings was reachable
+   * ONLY via Cmd-K palette commands with no mouse-first affordance at
+   * all. */
+  onOpenSettings: () => void;
   /** Mobile tier active (<900px, per `state/viewport.tsx`). Default
    * `false` -- every existing (desktop) caller/test is unaffected. */
   mobile?: boolean;
@@ -74,6 +90,7 @@ export default function Rail({
   theme,
   onToggleTheme,
   onLogout,
+  onOpenSettings,
   mobile = false,
   open = true,
   onRequestClose,
@@ -138,14 +155,27 @@ export default function Rail({
         onTouchEnd={mobile ? handleTouchEnd : undefined}
       >
         <div className="rail__workspace">
-          <button
-            type="button"
-            className="rail__workspace-name"
-            onClick={() => setSwitcherOpen((v) => !v)}
-            aria-expanded={switcherOpen}
-          >
-            {workspaceName}
-          </button>
+          <div className="rail__workspace-row">
+            <button
+              type="button"
+              className="rail__workspace-name"
+              onClick={() => setSwitcherOpen((v) => !v)}
+              aria-expanded={switcherOpen}
+            >
+              {workspaceName}
+            </button>
+            {/* Design system constitution §2: a dim icon-button that
+             * brightens on hover, not a colored/accented button -- Settings
+             * is administration, not the product's one confident accent. */}
+            <button
+              type="button"
+              className="rail__settings-button"
+              aria-label="Settings"
+              onClick={onOpenSettings}
+            >
+              ⚙
+            </button>
+          </div>
           {switcherOpen && (
             <div className="rail__switcher" role="menu">
               {memberships.map((m) => (
@@ -260,6 +290,9 @@ export default function Rail({
                   </p>
                 </div>
               )}
+              <button type="button" role="menuitem" onClick={onOpenSettings}>
+                Settings
+              </button>
               <button type="button" role="menuitem" onClick={onToggleTheme}>
                 {theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
               </button>
