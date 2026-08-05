@@ -1,7 +1,7 @@
 {
   "name": "smac-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.6.0",
   "type": "module",
   "description": "SMAC Web UI -- the browser client (constitution-bound: docs/superpowers/specs/2026-08-04-smac-design-system.md). Node 18.19/npm 9.2 is the system floor; dependency majors below are pinned to versions that run on it.",
   "scripts": {

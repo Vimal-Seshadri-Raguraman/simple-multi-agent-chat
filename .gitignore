@@ -234,3 +234,9 @@ rough*
 # system constitution §8's trade), so that path is deliberately NOT ignored.
 smac_web/node_modules/
 smac_web/dist/
+
+# The generic `lib/` rule above (Python packaging boilerplate) also
+# matches smac_web/src/lib/ -- the TS API client module task-2's brief
+# pins that exact path for (api.ts/errors.ts/session.ts/types.ts). Un-
+# ignore it explicitly rather than renaming the directory.
+!smac_web/src/lib/
