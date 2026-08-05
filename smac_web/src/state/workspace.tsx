@@ -278,6 +278,29 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // call onView repeatedly while the user sits at the bottom of a live
   // channel) into "only one in flight at a time per channel".
   const markReadInFlight = useRef<Set<string>>(new Set());
+  // Fix round 1 (review finding): a stale-overwrite race between
+  // `refreshUnreads`'s wholesale `UNREADS` dispatch and `markRead`'s
+  // scoped, always-fresh `UNREAD_ROW` dispatch. `refreshUnreads` is
+  // fired unprompted by the bell handler (`AuthedShell.tsx`, on ANY
+  // other-room mention) and can be in flight for a while; if a `markRead`
+  // call starts and resolves WHILE an earlier `refreshUnreads` request is
+  // still in flight, that request's eventual response reflects
+  // server state from BEFORE the mark-read landed -- dispatching it
+  // clobbers the just-applied `UNREAD_ROW` update, pinning a badge back
+  // to its pre-mark-read count (reproduced by the review: `npm run e2e`
+  // run repeatedly, badge stuck at 1 after landing in the channel).
+  //
+  // `unreadsEpoch` is a monotonic counter: every `refreshUnreads` call
+  // captures the counter's value at REQUEST time and only dispatches its
+  // response if the counter is unchanged when the response arrives; every
+  // `markRead` call that lands bumps the counter, so any
+  // `refreshUnreads` response still in flight at that moment -- no matter
+  // when it eventually arrives -- is provably stale and discarded instead
+  // of overwriting `markRead`'s own (necessarily fresher) row update.
+  // This also naturally resolves overlapping `refreshUnreads` calls
+  // against EACH OTHER: only the most recently DISPATCHED one's response
+  // can ever commit, regardless of arrival order.
+  const unreadsEpoch = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -298,7 +321,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refreshUnreads = useCallback(async () => {
+    const requestEpoch = ++unreadsEpoch.current;
     const out = await api.unreads();
+    if (unreadsEpoch.current !== requestEpoch) {
+      // A `markRead` (or a newer `refreshUnreads`) landed while this
+      // request was in flight -- this response is stale, discard it
+      // rather than clobber fresher state. See `unreadsEpoch`'s own
+      // docstring above for the full race this guards against.
+      return;
+    }
     dispatch({ type: "UNREADS", unreads: out.unreads });
   }, []);
 
@@ -386,6 +417,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     markReadInFlight.current.add(channelId);
     try {
       const row = await api.markRead(channelId);
+      // Bump BEFORE dispatching: any `refreshUnreads` response that was
+      // already in flight when this landed is now provably stale (see
+      // `unreadsEpoch`'s docstring) and must lose the race even if it
+      // resolves a tick later than this dispatch.
+      unreadsEpoch.current += 1;
       dispatch({ type: "UNREAD_ROW", row });
     } finally {
       markReadInFlight.current.delete(channelId);
