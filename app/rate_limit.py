@@ -45,3 +45,11 @@ post_limiter = SlidingWindowRateLimiter(
     int(os.getenv("RATE_LIMIT_POSTS", "10")),
     float(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "10")),
 )
+
+#: `POST /agents/join` (SMAC-92) is unauthenticated -- there is no member_id
+#: to key a per-caller budget by yet, so this one is keyed by client IP
+#: instead. Caps brute-forcing a bogus/expired agent invite code.
+agent_join_limiter = SlidingWindowRateLimiter(
+    int(os.getenv("RATE_LIMIT_AGENT_JOIN", "5")),
+    float(os.getenv("RATE_LIMIT_AGENT_JOIN_WINDOW_SECONDS", "60")),
+)

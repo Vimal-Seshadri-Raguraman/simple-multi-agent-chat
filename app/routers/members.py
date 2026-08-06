@@ -20,12 +20,20 @@ from app.schemas import (
 router = APIRouter()
 
 
-def _register(
+def _register_member(
     db: Session, member_name: str, member_type: str, workspace_id: str
-) -> MemberRegisterOut:
+) -> tuple[Member, str]:
     """Create a brand-new agent/bot_app: a brand-new identity-only global
     Account (no email/password; the API key stays right here on Member,
-    per-workspace, spec Decision 2) plus its first membership profile."""
+    per-workspace, spec Decision 2) plus its first membership profile.
+
+    Returns the persisted `Member` ORM row and the raw (unhashed) API
+    key -- shown to the caller exactly once. Caller-agnostic: takes no
+    `member`/auth dependency, so it's shared by `_register` below (the
+    authed `/members/agents` and `/members/bots` doors) and the
+    unauthenticated `/agents/join` invite-redemption door (SMAC-92)
+    without either one assuming the other's caller shape.
+    """
     raw_key = generate_api_key()
     account = create_agent_account(db, member_type)
     member = Member(
@@ -39,6 +47,15 @@ def _register(
     db.add(member)
     db.commit()
     db.refresh(member)
+    return member, raw_key
+
+
+def _register(
+    db: Session, member_name: str, member_type: str, workspace_id: str
+) -> MemberRegisterOut:
+    """Thin wrapper of `_register_member` for the two authed doors below,
+    shaping the result into `MemberRegisterOut` (unchanged wire contract)."""
+    member, raw_key = _register_member(db, member_name, member_type, workspace_id)
     return MemberRegisterOut(
         member_id=member.member_id,
         member_name=member.member_name,

@@ -1,12 +1,14 @@
 """Workspace invitations: create/list/revoke (workspace-side) + registration (invitee-side)."""
 
+import logging
 import os
 import secrets
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from app import rate_limit
 from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_account, get_current_member
 from app.authorization import require_same_workspace
@@ -17,10 +19,14 @@ from app.errors import (
     CapabilityDeniedError,
     InvalidInviteError,
     NotFoundError,
+    RateLimitedError,
 )
 from app.models import Account, Member, Workspace, WorkspaceInvite, utcnow
 from app.routers.auth import _issue_workspace_token_pair
+from app.routers.members import _register_member
 from app.schemas import (
+    AgentJoinIn,
+    AgentJoinOut,
     CodeRegisterIn,
     InviteCreateIn,
     InviteOut,
@@ -30,18 +36,18 @@ from app.schemas import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 INVITE_CODE_TTL_DAYS: int = int(os.getenv("INVITE_CODE_TTL_DAYS", "7"))
 
 _INVALID_INVITE_MESSAGE = "Invite is invalid or expired"
 
 # Per-invite-type mint capability (SMAC-92): create_invite's required cap
-# depends on body.invite_type. Task 3 (agent invites) extends this dict
-# with one line -- "agent_code": Cap.MINT_AGENT_INVITES -- rather than
-# branching logic.
+# depends on body.invite_type.
 _MINT_CAP_BY_TYPE: dict[str, Cap] = {
     "email": Cap.MINT_HUMAN_INVITES,
     "code": Cap.MINT_HUMAN_INVITES,
+    "agent_code": Cap.MINT_AGENT_INVITES,
 }
 
 # list/revoke accept either mint capability: an agent_admin must be able to
@@ -129,9 +135,13 @@ def create_invite(
             created_by=member.member_id,
         )
     else:
+        # "code" (human, multi-use) and "agent_code" (SMAC-92, single-use --
+        # burnt on redemption by `join_as_agent`) are minted identically:
+        # same token shape/TTL/cleanup, differing only in invite_type and
+        # which door will accept them later.
         invite = WorkspaceInvite(
             workspace_id=workspace_id,
-            invite_type="code",
+            invite_type=body.invite_type,
             code=secrets.token_urlsafe(9),
             created_by=member.member_id,
             expires_at=utcnow() + timedelta(days=INVITE_CODE_TTL_DAYS),
@@ -285,3 +295,92 @@ def register_into_workspace(
         db.delete(seat)
         return _register_account(db, workspace, account, body)
     return _register_account(db, workspace, account, body)
+
+
+def _client_key(request: Request) -> str:
+    """Best-effort caller identity for `agent_join_limiter`, keyed by
+    client IP since `join_as_agent` has no credential/member_id to key
+    a budget by. `request.client` is only unset for certain non-HTTP
+    transports (never real HTTP traffic); the fallback just shares one
+    bucket across those rather than crashing."""
+    return request.client.host if request.client is not None else "unknown"
+
+
+@router.post("/agents/join", response_model=AgentJoinOut, status_code=201)
+def join_as_agent(
+    body: AgentJoinIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AgentJoinOut:
+    """Redeem a single-use agent invite code (SMAC-92) -- UNAUTHENTICATED:
+    the caller has no account/credential yet, only the code. Mints a
+    brand-new agent account + per-workspace member + API key and returns
+    the key here, exactly once -- `Member.api_key_hash` is one-way, so
+    there is no other way to retrieve it later.
+
+    Every failure mode -- unknown code, expired, already-redeemed,
+    revoked, a human ('email'/'code') invite presented at this door, or
+    an orphaned invite whose workspace no longer exists -- raises the
+    exact same `InvalidInviteError` (404 `invalid_invite` / "Invite is
+    invalid or expired"): a caller can never learn from the response
+    which of those happened, same uniform-404 contract every other
+    invite door in this file already uses.
+
+    Rate-limited per client IP (`rate_limit.agent_join_limiter`), since
+    an unauthenticated door has no member_id to throttle by otherwise --
+    the one thing standing between a bogus code and a brute-force loop.
+    """
+    if not rate_limit.agent_join_limiter.allow(_client_key(request)):
+        raise RateLimitedError("Too many attempts -- wait a moment")
+
+    invite = (
+        db.query(WorkspaceInvite)
+        .filter(
+            WorkspaceInvite.code == body.code,
+            WorkspaceInvite.invite_type == "agent_code",
+        )
+        .first()
+    )
+    if invite is None or _delete_if_expired(db, invite):
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+
+    workspace = db.get(Workspace, invite.workspace_id)
+    if workspace is None:
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+    # Captured before the claim/commit below so the response never has to
+    # touch a possibly-expired ORM attribute post-commit.
+    workspace_id = workspace.workspace_id
+    workspace_out = WorkspaceOut.model_validate(workspace)
+
+    # Atomic single-use claim: a bulk DELETE keyed by invite_id (not the
+    # SELECT above). Two concurrent redemptions of the same code both
+    # pass the lookup/expiry/workspace checks above -- but SQLite
+    # serializes the two DELETEs that follow (the loser's WHERE matches
+    # zero rows once the winner's has committed), so exactly one caller
+    # observes `claimed == 1` and only that one goes on to mint an
+    # account/key. The other gets the same uniform 404 a bogus code
+    # would, never a distinguishable "already used" response.
+    claimed = (
+        db.query(WorkspaceInvite)
+        .filter(WorkspaceInvite.invite_id == invite.invite_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    if claimed == 0:
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+
+    member, raw_key = _register_member(db, body.name, "agent", workspace_id)
+    # Never the code or the key -- only the identifiers a server operator
+    # is entitled to see after the fact.
+    logger.info(
+        "agent invite redeemed workspace_id=%s member_id=%s",
+        workspace_id,
+        member.member_id,
+    )
+    return AgentJoinOut(
+        account_id=member.account_id,
+        member_id=member.member_id,
+        handle=member.handle,
+        api_key=raw_key,
+        workspace=workspace_out,
+    )

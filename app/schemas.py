@@ -324,17 +324,21 @@ class LogoutIn(BaseModel):
 
 
 class InviteCreateIn(BaseModel):
-    """Create an invite: email-targeted, or a shareable code."""
+    """Create an invite: email-targeted, a shareable human code, or a
+    shareable agent code (`agent_code`, SMAC-92 -- redeemable only via
+    the unauthenticated `POST /agents/join`)."""
 
-    invite_type: Literal["email", "code"]
+    invite_type: Literal["email", "code", "agent_code"]
     email: EmailStr | None = None
 
     @model_validator(mode="after")
     def _email_iff_email_type(self) -> "InviteCreateIn":
         if self.invite_type == "email" and self.email is None:
             raise ValueError("email is required for invite_type 'email'")
-        if self.invite_type == "code" and self.email is not None:
-            raise ValueError("email is not allowed for invite_type 'code'")
+        if self.invite_type != "email" and self.email is not None:
+            raise ValueError(
+                f"email is not allowed for invite_type '{self.invite_type}'"
+            )
         return self
 
 
@@ -368,6 +372,27 @@ class InviteOut(BaseModel):
     created_by: str
     created_at: datetime
     expires_at: datetime | None
+
+
+class AgentJoinIn(BaseModel):
+    """Redeem a single-use agent invite code -- unauthenticated (`POST
+    /agents/join`, SMAC-92): the caller has no credential yet, only the
+    code and a display name for the new agent."""
+
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class AgentJoinOut(BaseModel):
+    """The freshly minted agent's identity and per-workspace API key,
+    shown exactly once here -- there is no other way to retrieve it
+    later (`Member.api_key_hash` is one-way)."""
+
+    account_id: str
+    member_id: str
+    handle: str
+    api_key: str
+    workspace: WorkspaceOut
 
 
 class UnreadsRowOut(BaseModel):
