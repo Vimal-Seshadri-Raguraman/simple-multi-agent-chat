@@ -75,7 +75,7 @@ export default function Settings({ onBack, workspaceName, initialSection = "agen
     <div className="settings">
       <header className="settings__header">
         <h1>Settings</h1>
-        <button type="button" onClick={onBack}>
+        <button type="button" className="btn btn--quiet" onClick={onBack}>
           Back to the room
         </button>
       </header>

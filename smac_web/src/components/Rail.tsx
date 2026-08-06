@@ -1,5 +1,6 @@
 import { type FormEvent, type TouchEvent, useRef, useState } from "react";
 import type { ChannelOut, MemberSelfOut, Membership, UnreadsRowOut } from "../lib/api";
+import { initialsFor } from "../lib/avatar";
 
 /**
  * The left rail (web spec §2): workspace name + switcher (memberships +
@@ -275,7 +276,9 @@ export default function Rail({
             onClick={() => onSetYouMenuOpen(!youMenuOpen)}
             aria-expanded={youMenuOpen}
           >
-            <span className="rail__you-avatar" aria-hidden="true" />
+            <span className="rail__you-avatar" aria-hidden="true">
+              {self ? initialsFor(self.member_name, self.handle) : ""}
+            </span>
             <span className="rail__you-handle">@{self?.handle ?? "…"}</span>
           </button>
           {youMenuOpen && (

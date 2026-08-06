@@ -60,11 +60,11 @@ export default function Login() {
             {error}
           </p>
         )}
-        <button type="submit" disabled={pending}>
+        <button type="submit" className="btn btn--primary btn--block" disabled={pending}>
           {pending ? "Logging in…" : "Log in"}
         </button>
       </form>
-      <button type="button" onClick={() => navigate("welcome")}>
+      <button type="button" className="btn btn--quiet btn--block" onClick={() => navigate("welcome")}>
         Back
       </button>
     </div>

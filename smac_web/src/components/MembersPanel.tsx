@@ -1,4 +1,5 @@
 import type { MemberOut, MemberSelfOut } from "../lib/api";
+import { initialsFor } from "../lib/avatar";
 
 /**
  * The Drawer's members panel (web spec §2 / constitution §6): every
@@ -67,7 +68,9 @@ export default function MembersPanel({ members, self }: MembersPanelProps) {
                       : "members-panel__member"
                   }
                 >
-                  <span className="members-panel__avatar-ring" aria-hidden="true" />
+                  <span className="members-panel__avatar-ring" aria-hidden="true">
+                    {initialsFor(member.member_name, member.handle)}
+                  </span>
                   <span className="members-panel__handle">@{member.handle}</span>
                   {isSelf && self?.is_admin && (
                     <span className="members-panel__admin-mark">admin</span>

@@ -60,7 +60,7 @@ export default function BackToWorkspace() {
   return (
     <button
       type="button"
-      className="auth-screen__back-to-workspace"
+      className="btn btn--quiet auth-screen__back-to-workspace"
       onClick={() => navigate("authed")}
     >
       ← Back to {name ?? "your workspace"}

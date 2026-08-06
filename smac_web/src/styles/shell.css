@@ -289,11 +289,20 @@
 }
 
 .rail__you-avatar {
+  flex: 0 0 auto;
   width: 24px;
   height: 24px;
   border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
 }
 
 .rail__you-handle {
@@ -435,13 +444,34 @@
   padding: var(--space-2);
 }
 
-.feed__day-divider {
+.feed__empty {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+  padding: var(--space-6);
   text-align: center;
+}
+
+.feed__day-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   color: var(--color-text-dim);
   font-size: var(--font-size-xs);
-  margin: var(--space-4) 0 var(--space-2);
+  margin: var(--space-5) 0 var(--space-3);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.feed__day-divider::before,
+.feed__day-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
 }
 
 .feed__new-below-pill {
@@ -461,15 +491,58 @@
 /* -- Message line ----------------------------------------------------- */
 
 .message-line {
-  padding: var(--space-1) 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 calc(var(--space-3) * -1);
+  border-radius: var(--radius-sm);
   line-height: 1.5;
+}
+
+.message-line:hover {
+  background: var(--color-surface-raised);
 }
 
 .message-line--mention {
   background: var(--color-mention-bg);
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
-  margin: 0 calc(var(--space-2) * -1);
+}
+
+.message-line--mention:hover {
+  /* Stays on its own highlight -- a row hover shouldn't wash out the
+   * "this mentions you" signal the mention background exists to give. */
+  background: var(--color-mention-bg);
+}
+
+/* Avatar chip (SMAC-85 work item 3): initials on a surface-raised
+ * circle; agents get an `agent`-color ring so a reader can always tell
+ * humans from agents at a glance (constitution §2), even scanning the
+ * feed by eye rather than reading each handle. */
+.message-line__avatar {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-raised);
+  border: 2px solid var(--color-border);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.message-line__avatar--agent {
+  border-color: var(--color-agent);
+  color: var(--color-agent);
+}
+
+.message-line__body {
+  flex: 1;
+  min-width: 0;
 }
 
 .message-line__meta {
@@ -738,11 +811,20 @@
 }
 
 .members-panel__avatar-ring {
-  width: 20px;
-  height: 20px;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: 2px solid var(--color-border);
   background: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
 }
 
 .members-panel__member--agent .members-panel__avatar-ring {
@@ -988,7 +1070,8 @@
   color: var(--color-text-dim);
 }
 
-.settings__panel form input {
+.settings__panel form input,
+.settings__panel form select {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -997,20 +1080,19 @@
   font-size: var(--font-size-sm);
 }
 
-.settings__panel form button[type="submit"] {
-  align-self: flex-start;
-  background: var(--color-accent);
-  color: var(--color-bg);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-  margin-top: var(--space-2);
+.settings__panel form input:focus,
+.settings__panel form select:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
 }
 
-.settings__panel form button[type="submit"]:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+/* Submit/action buttons in Settings forms render through the shared
+ * `.btn` system (`styles/buttons.css`, SMAC-85) directly in JSX -- no
+ * bespoke `button[type="submit"]` rule needed here anymore. */
+.settings__panel form button[type="submit"] {
+  align-self: flex-start;
+  margin-top: var(--space-2);
 }
 
 /* Final review Finding 4 (MINOR): Settings was the one T5-era screen the
@@ -1087,16 +1169,6 @@
   gap: var(--space-2);
 }
 
-.agents-panel__actions button {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-}
-
 .agents-panel__error {
   color: var(--color-danger);
   font-size: var(--font-size-sm);
@@ -1132,30 +1204,16 @@
   margin-top: var(--space-3);
 }
 
-.agents-panel__reveal-actions button {
-  background: var(--color-accent);
-  color: var(--color-bg);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-}
-
 /* -- Invites panel ---------------------------------------------------------- */
 
-.invites-panel > button {
-  background: var(--color-accent);
-  color: var(--color-bg);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
+.invites-panel > .btn {
   margin-top: var(--space-2);
 }
 
-.invites-panel > button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.invites-panel__hint {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+  max-width: 32rem;
 }
 
 .invites-panel__error {
@@ -1197,28 +1255,8 @@
   border-bottom: none;
 }
 
-.workspace-panel__section > button {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  padding: var(--space-2) var(--space-4);
-  cursor: pointer;
-}
-
-.workspace-panel__section > button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .workspace-panel__section--danger h2 {
   color: var(--color-danger);
-}
-
-.settings__panel form button[type="submit"].workspace-panel__delete-button {
-  background: var(--color-danger);
-  color: var(--color-bg);
-  border: none;
 }
 
 .workspace-panel__error {

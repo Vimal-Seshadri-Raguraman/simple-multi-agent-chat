@@ -59,7 +59,7 @@ export default function WorkspacePicker() {
           </li>
         ))}
       </ul>
-      <button type="button" onClick={() => void logout()}>
+      <button type="button" className="btn btn--quiet btn--block" onClick={() => void logout()}>
         Log out
       </button>
     </div>

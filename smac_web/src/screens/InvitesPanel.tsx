@@ -46,8 +46,11 @@ export default function InvitesPanel() {
   return (
     <div className="invites-panel">
       <h2>Invites</h2>
-      <p>Mint a shareable code so a teammate can join this workspace.</p>
-      <button type="button" onClick={() => void handleMint()} disabled={pending}>
+      <p className="invites-panel__hint">
+        Mint a shareable code so a teammate can join this workspace. Anyone with the code can
+        join without an admin approving each request.
+      </p>
+      <button type="button" className="btn btn--primary" onClick={() => void handleMint()} disabled={pending}>
         {pending ? "Minting…" : "Mint invite code"}
       </button>
       {error && (
@@ -60,7 +63,7 @@ export default function InvitesPanel() {
           <pre className="invites-panel__code" data-testid="invite-code">
             <code>{code}</code>
           </pre>
-          <button type="button" onClick={() => void copyCode()}>
+          <button type="button" className="btn btn--quiet btn--sm" onClick={() => void copyCode()}>
             {copied ? "Copied!" : "Copy code"}
           </button>
           <p className="invites-panel__bob">

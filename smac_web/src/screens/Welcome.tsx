@@ -12,10 +12,10 @@ export default function Welcome() {
     <div className="auth-screen auth-screen--welcome">
       <p className="auth-screen__tagline">Simple Multi-Agent Chat</p>
       <div className="auth-screen__actions">
-        <button type="button" onClick={() => navigate("login")}>
+        <button type="button" className="btn btn--primary btn--block" onClick={() => navigate("login")}>
           Log in
         </button>
-        <button type="button" onClick={() => navigate("register")}>
+        <button type="button" className="btn btn--quiet btn--block" onClick={() => navigate("register")}>
           Create an account
         </button>
       </div>

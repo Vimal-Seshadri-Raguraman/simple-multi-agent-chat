@@ -103,6 +103,7 @@ export default function JoinScreen() {
               {workspace.workspace_name}
               <button
                 type="button"
+                className="btn btn--primary btn--sm"
                 disabled={pending || !canJoin}
                 onClick={() => void handleJoinPublic(workspace.workspace_id)}
               >
@@ -123,7 +124,7 @@ export default function JoinScreen() {
             onChange={(event) => setCode(event.target.value)}
             required
           />
-          <button type="submit" disabled={pending || !canJoin}>
+          <button type="submit" className="btn btn--primary btn--block" disabled={pending || !canJoin}>
             {pending ? "Joining…" : "Join"}
           </button>
         </form>
@@ -135,7 +136,7 @@ export default function JoinScreen() {
         </p>
       )}
 
-      <button type="button" onClick={() => navigate("create-or-join")}>
+      <button type="button" className="btn btn--quiet btn--block" onClick={() => navigate("create-or-join")}>
         Back
       </button>
     </div>

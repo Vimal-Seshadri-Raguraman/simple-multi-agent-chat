@@ -102,7 +102,12 @@ export default function WorkspacePanel({ workspaceName, initialVisibility }: Wor
             {visError}
           </p>
         )}
-        <button type="button" onClick={() => void handleToggleVisibility()} disabled={visPending}>
+        <button
+          type="button"
+          className="btn btn--quiet"
+          onClick={() => void handleToggleVisibility()}
+          disabled={visPending}
+        >
           {visPending ? "Updating…" : visibility === "public" ? "Make private" : "Make public"}
         </button>
       </section>
@@ -140,7 +145,7 @@ export default function WorkspacePanel({ workspaceName, initialVisibility }: Wor
           <button
             type="submit"
             disabled={!canDelete || deletePending}
-            className="workspace-panel__delete-button"
+            className="btn btn--danger"
           >
             {deletePending ? "Deleting…" : `Delete ${workspaceName}`}
           </button>

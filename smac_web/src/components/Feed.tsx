@@ -155,6 +155,9 @@ export default function Feed({
         data-testid="feed-scroll"
       >
         {loadingOlder && <div className="feed__loading-older">Loading older messages…</div>}
+        {rows.length === 0 && !loadingOlder && (
+          <div className="feed__empty">No messages yet — say hello.</div>
+        )}
         {rows.map((row) =>
           row.kind === "divider" ? (
             <div className="feed__day-divider" key={row.key}>

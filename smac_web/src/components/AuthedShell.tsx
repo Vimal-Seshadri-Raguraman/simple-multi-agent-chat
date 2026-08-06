@@ -265,7 +265,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         <p role="alert" className="shell__status-message shell__status-message--error">
           {workspace.error}
         </p>
-        <button type="button" onClick={() => window.location.reload()}>
+        <button type="button" className="btn btn--primary" onClick={() => window.location.reload()}>
           Retry
         </button>
       </div>

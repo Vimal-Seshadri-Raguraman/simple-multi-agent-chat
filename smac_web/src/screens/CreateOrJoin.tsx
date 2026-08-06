@@ -78,11 +78,11 @@ export default function CreateOrJoin() {
               {error}
             </p>
           )}
-          <button type="submit" disabled={pending}>
+          <button type="submit" className="btn btn--primary btn--block" disabled={pending}>
             {pending ? "Creating…" : "Create workspace"}
           </button>
         </form>
-        <button type="button" onClick={() => setShowCreateForm(false)}>
+        <button type="button" className="btn btn--quiet btn--block" onClick={() => setShowCreateForm(false)}>
           Back
         </button>
       </div>
@@ -94,14 +94,14 @@ export default function CreateOrJoin() {
       <BackToWorkspace />
       <h1>Create or join a workspace</h1>
       <div className="auth-screen__actions">
-        <button type="button" onClick={() => setShowCreateForm(true)}>
+        <button type="button" className="btn btn--primary btn--block" onClick={() => setShowCreateForm(true)}>
           Create your own
         </button>
-        <button type="button" onClick={() => navigate("join")}>
+        <button type="button" className="btn btn--quiet btn--block" onClick={() => navigate("join")}>
           Join a workspace
         </button>
       </div>
-      <button type="button" onClick={() => void logout()}>
+      <button type="button" className="btn btn--quiet btn--block" onClick={() => void logout()}>
         Log out
       </button>
     </div>

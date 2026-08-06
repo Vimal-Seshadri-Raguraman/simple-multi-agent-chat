@@ -1,5 +1,6 @@
 import { useState } from "react";
 import "./styles/tokens.css";
+import "./styles/buttons.css";
 import "./App.css";
 import AuthedShell from "./components/AuthedShell";
 import VersionBanner from "./components/VersionBanner";

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { MemberOut, MessagePayload } from "../lib/api";
+import { initialsFor } from "../lib/avatar";
 
 /**
  * One channel message, rendered per web spec §2's Room bullet:
@@ -106,23 +107,31 @@ export default function MessageLine({ payload, memberById, currentMemberId }: Me
   ]
     .filter(Boolean)
     .join(" ");
+  const avatarClassName = isAgent
+    ? "message-line__avatar message-line__avatar--agent"
+    : "message-line__avatar";
 
   return (
     <div className={className} data-testid="message-line">
-      <span className="message-line__meta">
-        <span className="message-line__time">[{formatHHMM(payload.timestamp)}]</span>{" "}
-        <span
-          className={
-            isAgent ? "message-line__handle message-line__handle--agent" : "message-line__handle"
-          }
-        >
-          @{handle}
+      <span className={avatarClassName} aria-hidden="true">
+        {initialsFor(senderMember?.member_name, handle)}
+      </span>
+      <div className="message-line__body">
+        <span className="message-line__meta">
+          <span className="message-line__time">[{formatHHMM(payload.timestamp)}]</span>{" "}
+          <span
+            className={
+              isAgent ? "message-line__handle message-line__handle--agent" : "message-line__handle"
+            }
+          >
+            @{handle}
+          </span>
+          {": "}
         </span>
-        {": "}
-      </span>
-      <span className="message-line__text">
-        {renderMessageText(payload.Message.message_text, payload.mentions)}
-      </span>
+        <span className="message-line__text">
+          {renderMessageText(payload.Message.message_text, payload.mentions)}
+        </span>
+      </div>
     </div>
   );
 }

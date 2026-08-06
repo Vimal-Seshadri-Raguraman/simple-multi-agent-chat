@@ -112,10 +112,10 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
           <code>{revealed.apiKey}</code>
         </pre>
         <div className="agents-panel__reveal-actions">
-          <button type="button" onClick={() => void copyKey()}>
+          <button type="button" className="btn btn--quiet" onClick={() => void copyKey()}>
             {copied ? "Copied!" : "Copy key"}
           </button>
-          <button type="button" onClick={dismissReveal}>
+          <button type="button" className="btn btn--primary" onClick={dismissReveal}>
             Done — I&apos;ve saved it
           </button>
         </div>
@@ -126,7 +126,12 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
   return (
     <div className="agents-panel">
       <h2>Agents</h2>
-      {agents.length === 0 && <p className="agents-panel__empty">No agents yet.</p>}
+      {agents.length === 0 && (
+        <p className="agents-panel__empty">
+          No agents yet. Agents are teammates with their own handle and API key — create one to
+          give a bot a seat in this workspace.
+        </p>
+      )}
       {agents.length > 0 && (
         <ul className="agents-panel__list">
           {agents.map((agent) => (
@@ -140,10 +145,18 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
       )}
 
       <div className="agents-panel__actions">
-        <button type="button" onClick={() => setMode(mode === "create" ? null : "create")}>
+        <button
+          type="button"
+          className="btn btn--quiet"
+          onClick={() => setMode(mode === "create" ? null : "create")}
+        >
           + Create agent
         </button>
-        <button type="button" onClick={() => setMode(mode === "attach" ? null : "attach")}>
+        <button
+          type="button"
+          className="btn btn--quiet"
+          onClick={() => setMode(mode === "attach" ? null : "attach")}
+        >
           Attach existing
         </button>
       </div>
@@ -163,7 +176,7 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
               {error}
             </p>
           )}
-          <button type="submit" disabled={pending}>
+          <button type="submit" className="btn btn--primary" disabled={pending}>
             {pending ? "Creating…" : "Create"}
           </button>
         </form>
@@ -185,7 +198,7 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
               {error}
             </p>
           )}
-          <button type="submit" disabled={pending}>
+          <button type="submit" className="btn btn--primary" disabled={pending}>
             {pending ? "Attaching…" : "Attach"}
           </button>
         </form>
