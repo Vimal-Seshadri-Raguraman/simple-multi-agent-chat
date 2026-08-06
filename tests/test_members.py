@@ -72,7 +72,7 @@ def test_register_bot_app_returns_api_key(client):
 
 
 def test_search_members_by_name(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
         headers=founder_headers(client, "w1"),
@@ -83,7 +83,11 @@ def test_search_members_by_name(client):
         headers=founder_headers(client, "w1"),
     )
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    # Cap.VIEW_MEMBERS-gated (final review F2): a human credential drives
+    # this search, same as every other role that holds the cap -- an
+    # agent key's inability to call this route at all is covered by
+    # test_privilege_matrix.py's test_agent_key_cannot_search_members.
+    headers = founder_headers(client, "w1")
     response = client.get(
         "/members", params={"search_name": "Research"}, headers=headers
     )
@@ -93,7 +97,7 @@ def test_search_members_by_name(client):
 
 
 def test_search_members_by_type(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
@@ -104,7 +108,7 @@ def test_search_members_by_type(client):
         headers=founder_headers(client, "w1"),
     )
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/members", params={"search_type": "agent"}, headers=headers)
     results = response.json()
     assert len(results) == 1
@@ -112,13 +116,13 @@ def test_search_members_by_type(client):
 
 
 def test_search_members_returns_empty_list_when_no_match(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/members", params={"search_name": "nobody"}, headers=headers)
     assert response.status_code == 200
     assert response.json() == []
@@ -131,7 +135,11 @@ def test_get_member_profile(client):
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": registered["api_key"]}
+    # Cap.VIEW_MEMBERS-gated (final review F2): looked up by a human
+    # holding the cap -- an agent key's inability to call this route at
+    # all is covered by test_privilege_matrix.py's
+    # test_agent_key_cannot_get_member.
+    headers = founder_headers(client, "w1")
     response = client.get(
         "/member", params={"id": registered["member_id"]}, headers=headers
     )
@@ -142,13 +150,13 @@ def test_get_member_profile(client):
 
 
 def test_get_member_profile_404(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/member", params={"id": "does-not-exist"}, headers=headers)
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"

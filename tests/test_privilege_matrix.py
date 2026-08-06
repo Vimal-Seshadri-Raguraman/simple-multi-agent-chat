@@ -82,17 +82,22 @@ def test_agent_key_cannot_manage(client):
     assert r.json()["error"]["code"] == "forbidden"
 
 
-# --- GET /workspaces/{id}/members: VIEW_MEMBERS gate decision -------------
+# --- VIEW_MEMBERS gate: all three member-directory routes ------------------
 #
-# Task 1's reviewer flagged this route as ungated. Investigated for this
-# task: every human role holds Cap.VIEW_MEMBERS (app/capabilities.py's
-# _MEMBER_CAPS), so gating only bites the type-cap path (an agent/bot_app
-# key, whose caps intersect down to {post, read, ack_mentions}). Checked
-# every agent-key call site in smac_mcp/ (the MCP bridge): it only ever
-# calls /members/me, /workspaces/{id}/{channels,unreads}, channel
-# messages/read -- never this listing route -- so gating it cannot
-# regress the bridge. Gated it below; these two tests are that decision's
-# regression coverage.
+# Task 1's reviewer flagged /workspaces/{id}/members as ungated; Task 2
+# gated it with Cap.VIEW_MEMBERS. Final review F2 found the two SIBLING
+# routes that return the same MemberOut/MemberSelfOut rows -- GET /members
+# and GET /member?id= -- were left ungated entirely, so an agent key
+# (reduced by the type-cap intersection to {post, read, ack_mentions})
+# could get 403 on the workspace-scoped listing but 200 + the full
+# directory (and, via /member, any target's role + capability list) on
+# the other two. All three are gated identically now. Every human role
+# holds Cap.VIEW_MEMBERS (app/capabilities.py's _MEMBER_CAPS), so gating
+# only ever bites the type-cap path. Checked every agent-key call site in
+# smac_mcp/ (the MCP bridge): it only ever calls /members/me,
+# /workspaces/{id}/{channels,unreads}, channel messages/read -- never any
+# of these three listing/lookup routes -- so gating them cannot regress
+# the bridge. These tests are that decision's regression coverage.
 
 
 def test_agent_key_cannot_list_members(client):
@@ -110,9 +115,58 @@ def test_agent_key_cannot_list_members(client):
     assert r.json()["error"]["code"] == "forbidden"
 
 
+def test_agent_key_cannot_search_members(client):
+    """Final review F2: GET /members (unscoped-path sibling of the
+    workspace-scoped listing above) used to be entirely ungated."""
+    founder = founder_auth(client, "w1")
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Ev"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    r = client.get("/members", headers={"X-API-Key": agent["api_key"]})
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "forbidden"
+
+
+def test_agent_key_cannot_get_member(client):
+    """Final review F2: GET /member?id= was the worse of the two ungated
+    siblings -- it hands out the target's role AND full capability list."""
+    founder = founder_auth(client, "w1")
+    agent = client.post(
+        "/members/agents",
+        json={"member_name": "Ev"},
+        headers=founder_headers(client, "w1"),
+    ).json()
+    r = client.get(
+        "/member",
+        params={"id": founder["member_id"]},
+        headers={"X-API-Key": agent["api_key"]},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "forbidden"
+
+
 def test_every_human_role_can_list_members(client):
     ws = founder_auth(client, "w1")["workspace_id"]
     for actor in ("member", "agent_admin", "admin"):
         headers = _actor_headers(client, ws, actor)
         r = client.get(f"/workspaces/{ws}/members", headers=headers)
+        assert r.status_code == 200, (actor, r.text)
+
+
+def test_every_human_role_can_search_members(client):
+    ws = founder_auth(client, "w1")["workspace_id"]
+    for actor in ("member", "agent_admin", "admin"):
+        headers = _actor_headers(client, ws, actor)
+        r = client.get("/members", headers=headers)
+        assert r.status_code == 200, (actor, r.text)
+
+
+def test_every_human_role_can_get_member(client):
+    founder = founder_auth(client, "w1")
+    ws = founder["workspace_id"]
+    for actor in ("member", "agent_admin", "admin"):
+        headers = _actor_headers(client, ws, actor)
+        r = client.get("/member", params={"id": founder["member_id"]}, headers=headers)
         assert r.status_code == 200, (actor, r.text)

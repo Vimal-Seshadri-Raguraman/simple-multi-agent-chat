@@ -270,6 +270,66 @@ def test_human_code_cannot_be_redeemed_as_agent(client):
     assert human_invite["invite_id"] in [i["invite_id"] for i in still_there]
 
 
+def _account_headers(client, email: str) -> dict[str, str]:
+    """Create a fresh account and return account-tier Bearer headers for
+    it -- POST /workspaces/join is account-authed (spec §3)."""
+    response = client.post(
+        "/accounts", json={"email": email, "password": "test-password-123"}
+    )
+    assert response.status_code == 200, response.text
+    return {"Authorization": f"Bearer {response.json()['tokens']['access_token']}"}
+
+
+def test_agent_code_cannot_be_redeemed_at_workspaces_join(client):
+    """Mirror of test_human_code_cannot_be_redeemed_as_agent -- final
+    review F1. Before the fix, `register_by_code` looked up
+    `WorkspaceInvite` by `code` alone (no `invite_type` filter), so an
+    `agent_code` minted by an `agent_admin` (deliberately denied
+    `Cap.MINT_HUMAN_INVITES`) redeemed here into a real, standing human
+    `Member` row -- bypassing both the capability split and (in a private
+    workspace) admission control -- and this door never consumed the
+    invite, making one agent_code an UNLIMITED human-membership faucet
+    that still worked at its real door (`/agents/join`) afterward.
+
+    Reproduces the review's failure scenario (workspace visibility is
+    orthogonal to this bug -- the review's private-workspace variant is
+    an aggravating factor, not the mechanism; a public workspace already
+    proves the type-confusion bypass, same as the sibling test above uses
+    a public workspace for the mirror direction): agent_admin-minted
+    code, an uninvited third account presenting it at /workspaces/join.
+    Asserts all three of: rejected with the uniform invalid_invite, the
+    code survives unburnt (still redeemable at its real door), and
+    exactly ONE membership was ever created from it (not two, as the
+    pre-fix bug produced).
+    """
+    founder = founder_auth(client, "w1")
+    ws = founder["workspace_id"]
+    agent_admin_headers = _promote_to_agent_admin(client, ws, "bob")
+    agent_code = _mint_agent_code(client, agent_admin_headers, ws)
+
+    intruder = client.post(
+        "/workspaces/join",
+        json={"code": agent_code, "first_name": "Eve", "last_name": "Intruder"},
+        headers=_account_headers(client, "eve@test.example"),
+    )
+    assert intruder.status_code == 404
+    assert intruder.json()["error"]["code"] == "invalid_invite"
+
+    # The code survives unburnt -- it still works at its real door.
+    joined = client.post("/agents/join", json={"code": agent_code, "name": "CI Bot"})
+    assert joined.status_code == 201
+
+    # Exactly one membership was ever created from this one agent_code:
+    # founder + bob (promoted to agent_admin) + the one agent from
+    # /agents/join. Eve's redemption attempt created no member anywhere.
+    members = client.get(
+        f"/workspaces/{ws}/members", headers=founder_headers(client, "w1")
+    ).json()
+    assert len(members) == 3
+    assert sum(1 for m in members if m["member_type"] == "agent") == 1
+    assert all(m["member_name"] != "Eve" for m in members)
+
+
 def test_concurrent_redemption_only_one_claim_succeeds(client):
     """Simulates two concurrent redemptions of the SAME code racing past
     the lookup/expiry/workspace checks before either has claimed it. Two

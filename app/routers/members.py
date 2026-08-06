@@ -158,7 +158,12 @@ def search_members(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
-    """Search members within the caller's own workspace (the wall applies implicitly)."""
+    """Search members within the caller's own workspace (the wall applies
+    implicitly). Gated on `Cap.VIEW_MEMBERS` (final review F2): this route
+    returns the same `MemberOut` rows as the already-gated
+    `GET /workspaces/{id}/members`, and was the ungated sibling an agent
+    key could use to enumerate the entire workspace directory instead."""
+    require_cap(member, Cap.VIEW_MEMBERS)
     query = db.query(Member).filter(Member.workspace_id == member.workspace_id)
     if search_name:
         query = query.filter(Member.member_name.contains(search_name))
@@ -186,7 +191,14 @@ def get_member(
     unrelated to the role-visibility change. Email is never included at
     all anymore (Identity v2, SMAC-79 Task 2, spec §7): it lives on the
     account now, not the member profile -- see `GET /accounts/me`.
+
+    Gated on `Cap.VIEW_MEMBERS` (final review F2): this was the worse of
+    the two ungated sibling routes -- it hands out the target's `role`
+    AND full derived capability list, exactly the recon an agent key
+    (reduced by its type-cap intersection to post/read/ack) should not be
+    able to run against the workspace directory.
     """
+    require_cap(current_member, Cap.VIEW_MEMBERS)
     member = (
         db.query(Member)
         .filter(

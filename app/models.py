@@ -279,13 +279,23 @@ class RefreshToken(Base):
 class WorkspaceInvite(Base):
     """A pending invitation into a workspace.
 
-    Two kinds, discriminated by invite_type:
+    Three kinds, discriminated by invite_type -- every query against
+    `code` MUST filter by `invite_type` too (see `app.routers.invites.
+    _invite_by_code`, the one place `code` is ever looked up; final
+    review F1 was exactly this discriminator being omitted at one call
+    site, letting an agent_code redeem as a full human membership):
     - "email": targets one address (lowercased); no expiry; deleted on
-      accept/decline/revoke.
-    - "code": shareable multi-use code stored in PLAINTEXT — a deliberate
-      deviation from the hash-everything pattern, because codes must be
-      re-viewable and listable by workspace members. Bounded exposure:
-      workspace membership only, revocable, 7-day expiry.
+      accept/decline/revoke. Redeemed at `POST /workspaces/join` (as a
+      seat consumed opportunistically) or `POST /workspaces/{id}/register`.
+    - "code": human-facing, shareable, multi-use code stored in PLAINTEXT
+      — a deliberate deviation from the hash-everything pattern, because
+      codes must be re-viewable and listable by workspace members.
+      Bounded exposure: workspace membership only, revocable, 7-day
+      expiry. Redeemed at `POST /workspaces/join`.
+    - "agent_code": agent-facing, single-use (burnt on redemption), same
+      plaintext/7-day-expiry shape as "code" but minted under a different
+      capability (`Cap.MINT_AGENT_INVITES`) and redeemed at the separate,
+      unauthenticated `POST /agents/join` door.
     """
 
     __tablename__ = "workspace_invites"
@@ -294,7 +304,9 @@ class WorkspaceInvite(Base):
     workspace_id: Mapped[str] = mapped_column(
         String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
     )
-    invite_type: Mapped[str] = mapped_column(String, nullable=False)  # email | code
+    invite_type: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # email | code | agent_code
     email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     code: Mapped[str | None] = mapped_column(
         String, nullable=True, unique=True, index=True

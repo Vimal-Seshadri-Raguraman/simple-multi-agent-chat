@@ -40,17 +40,21 @@ def test_token_for_deleted_member_rejected(db_session):
 
 
 def test_api_key_still_resolves_agent(client):
+    # /members/me (final review F2): /members itself is now gated on
+    # Cap.VIEW_MEMBERS, which an agent key does not hold -- /members/me
+    # is the credential-resolves-at-all probe that stays a live route for
+    # every caller type.
     agent = client.post(
         "/members/agents",
         json={"member_name": "Bot"},
         headers=founder_headers(client, "w1"),
     ).json()
-    response = client.get("/members", headers={"X-API-Key": agent["api_key"]})
+    response = client.get("/members/me", headers={"X-API-Key": agent["api_key"]})
     assert response.status_code == 200
 
 
 def test_unknown_api_key_is_401(client):
-    response = client.get("/members", headers={"X-API-Key": "nope"})
+    response = client.get("/members/me", headers={"X-API-Key": "nope"})
     assert response.status_code == 401
 
 

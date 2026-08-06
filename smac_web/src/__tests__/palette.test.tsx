@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import Palette from "../components/Palette";
-import { COMMANDS, type Command, type CommandContext } from "../lib/commands";
+import { COMMANDS, REQUIRED_CAP, type Command, type CommandContext } from "../lib/commands";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +41,20 @@ describe("Palette command registry drift guard (constitution §4, mandatory)", (
 
     const registry = COMMANDS.map((c) => ({ name: c.name, help: c.help }));
     expect(registry).toEqual(canonical);
+  });
+
+  // Final review F6 (MUST FIX, test-only): REQUIRED_CAP is keyed by raw
+  // command-name strings with no structural tie to COMMANDS, so a future
+  // rename of a gated command's `name` would silently orphan its
+  // REQUIRED_CAP entry -- the palette would then render that command as
+  // always-ungated instead of failing loudly. This closes that hole
+  // permanently: any REQUIRED_CAP key that doesn't name a real command
+  // fails the test rather than silently un-gating something.
+  it("every REQUIRED_CAP key names a real COMMANDS entry", () => {
+    const names = new Set(COMMANDS.map((c) => c.name));
+    for (const key of Object.keys(REQUIRED_CAP)) {
+      expect(names.has(key)).toBe(true);
+    }
   });
 });
 

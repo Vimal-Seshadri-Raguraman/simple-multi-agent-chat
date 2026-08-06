@@ -73,6 +73,29 @@ def _require_any_mint_cap(member: Member) -> None:
         raise CapabilityDeniedError(f"This action requires {joined}.")
 
 
+def _invite_by_code(db: Session, code: str, invite_type: str) -> WorkspaceInvite | None:
+    """The one place `WorkspaceInvite.code` is ever looked up -- always
+    paired with `invite_type`, so a future third code-shaped invite type
+    (or a copy-pasted call site) cannot omit the discriminator. Final
+    review F1: `register_by_code` used to query by `code` alone, so an
+    `agent_code` (mintable by `agent_admin`, who is denied
+    `Cap.MINT_HUMAN_INVITES`) redeemed there into a full human membership,
+    bypassing both the capability split and private-workspace admission
+    -- and since that door never consumes the invite, a single agent_code
+    became an unlimited human-membership faucet that still worked at
+    `/agents/join` afterward. `code` is globally unique, but the type
+    filter is what keeps each door honoring only the invite kind it was
+    built for.
+    """
+    return (
+        db.query(WorkspaceInvite)
+        .filter(
+            WorkspaceInvite.code == code, WorkspaceInvite.invite_type == invite_type
+        )
+        .first()
+    )
+
+
 def _delete_if_expired(db: Session, invite: WorkspaceInvite) -> bool:
     """Delete an expired code invite on sight; returns True if it was expired."""
     if invite.expires_at is not None and invite.expires_at < utcnow():
@@ -225,8 +248,13 @@ def register_by_code(
 
     Account-authed (spec §3, SMAC-79 Task 2): the caller already has an
     account, identified via the account token, not a body email/password.
+
+    Only a "code" invite (human, multi-use) is honored here -- an
+    "agent_code" presented at this door is indistinguishable from an
+    unknown code (final review F1; `join_as_agent` is the mirror door for
+    agent_code, filtered the same way).
     """
-    invite = db.query(WorkspaceInvite).filter(WorkspaceInvite.code == body.code).first()
+    invite = _invite_by_code(db, body.code, "code")
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     workspace = db.get(Workspace, invite.workspace_id)
@@ -333,14 +361,7 @@ def join_as_agent(
     if not rate_limit.agent_join_limiter.allow(_client_key(request)):
         raise RateLimitedError("Too many attempts -- wait a moment")
 
-    invite = (
-        db.query(WorkspaceInvite)
-        .filter(
-            WorkspaceInvite.code == body.code,
-            WorkspaceInvite.invite_type == "agent_code",
-        )
-        .first()
-    )
+    invite = _invite_by_code(db, body.code, "agent_code")
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
 

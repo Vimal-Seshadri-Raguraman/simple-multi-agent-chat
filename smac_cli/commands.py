@@ -160,12 +160,14 @@ def cmd_join(app: "SmacApp", args: str) -> None:
 @_register("invite", "mint a shareable join code")
 def cmd_invite(app: "SmacApp", args: str) -> None:
     """`/invite`: mint a shareable multi-use code (`POST /workspaces/
-    {id}/invites`, gated server-side to human members of the workspace --
-    `app/authorization.py:authorize_management_action`, unchanged by this
-    task) and print both the code AND the exact line to hand a
-    prospective member -- they need to `/register` an account first
-    (codes are redeemed by `/join`, which is account-authed), then
-    `/join` with it.
+    {id}/invites`, gated server-side on `Cap.MINT_HUMAN_INVITES` --
+    `app/capabilities.py:require_cap`, admin-only as of SMAC-92 Task 2)
+    and print both the code AND the exact line to hand a prospective
+    member -- they need to `/register` an account first (codes are
+    redeemed by `/join`, which is account-authed), then `/join` with it.
+    A non-admin (e.g. `agent_admin`, who holds `Cap.MINT_AGENT_INVITES`
+    instead) gets a real 403 here, surfaced via `SmacApp._run_command`'s
+    `except SmacError` -- no TUI code change needed for that.
     """
     invite = app.api.mint_invite_code()
     code = invite["code"]

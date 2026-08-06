@@ -170,11 +170,14 @@ def test_legacy_scopeless_token_is_rejected_on_workspace_endpoints(client):
 
 def test_api_key_auth_unaffected_by_token_tiers(client):
     """X-API-Key auth (agents/bots) doesn't go through the JWT-scope
-    machinery at all -- unchanged (spec §2)."""
+    machinery at all -- unchanged (spec §2). Probes /members/me (final
+    review F2): /members itself is now gated on Cap.VIEW_MEMBERS, which
+    an agent key doesn't hold -- /members/me is the route that stays live
+    for any authenticated caller type, agent keys included."""
     agent = client.post(
         "/members/agents",
         json={"member_name": "Tier Bot"},
         headers=founder_headers(client, "api-key-tier"),
     ).json()
-    response = client.get("/members", headers={"X-API-Key": agent["api_key"]})
+    response = client.get("/members/me", headers={"X-API-Key": agent["api_key"]})
     assert response.status_code == 200

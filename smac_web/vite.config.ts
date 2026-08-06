@@ -17,6 +17,7 @@ const API_PREFIXES = [
   "/workspaces",
   "/members",
   "/member",
+  "/agents",
   "/mentions",
   "/auth",
   "/meta",
