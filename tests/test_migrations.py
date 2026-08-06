@@ -659,3 +659,52 @@ def test_migration_b_downgrade_raises(tmp_path):
     command.upgrade(_alembic_config(url), "head")
     with pytest.raises(NotImplementedError, match="restore from backup"):
         command.downgrade(_alembic_config(url), "d379652f77fb")
+
+
+def test_roles_migration_backfills_is_admin_to_role(tmp_path):
+    """SMAC-92 (8b666c11cad4): seed pre-migration `is_admin` rows at the
+    revision right before roles lands, upgrade to head, and assert the
+    backfill -- `is_admin=1` -> `role='admin'`, `is_admin=0` -> `role='member'`,
+    and the `is_admin` column itself is gone."""
+    url = f"sqlite:///{tmp_path}/roles_backfill.db"
+    command.upgrade(_alembic_config(url), "cc9df896e9a9")  # pre-roles schema
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO accounts (account_id, account_type, email, email_key,"
+            " created_at) VALUES ('acc1', 'human', 'admin@test.example',"
+            " 'admin@test.example', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO accounts (account_id, account_type, email, email_key,"
+            " created_at) VALUES ('acc2', 'human', 'plain@test.example',"
+            " 'plain@test.example', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO workspaces (workspace_id, workspace_name,"
+            " workspace_name_key, visibility, created_at) VALUES"
+            " ('w1', 'Acme', 'acme', 'private', '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, account_id, is_admin, handle, created_at) VALUES"
+            " ('m1', 'Admin User', 'human', 'w1', 'acc1', 1, 'admin',"
+            " '2026-01-01 00:00:00')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO members (member_id, member_name, member_type,"
+            " workspace_id, account_id, is_admin, handle, created_at) VALUES"
+            " ('m2', 'Plain User', 'human', 'w1', 'acc2', 0, 'plain',"
+            " '2026-01-01 00:00:00')"
+        )
+    command.upgrade(_alembic_config(url), "head")
+    with engine.begin() as conn:
+        roles = dict(
+            conn.exec_driver_sql(
+                "SELECT member_id, role FROM members ORDER BY member_id"
+            ).fetchall()
+        )
+        columns = {c["name"] for c in inspect(engine).get_columns("members")}
+    assert roles == {"m1": "admin", "m2": "member"}
+    assert "is_admin" not in columns
+    assert "role" in columns

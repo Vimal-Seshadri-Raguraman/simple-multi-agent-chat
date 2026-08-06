@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -131,7 +130,7 @@ class Member(Base):
     account_id: Mapped[str] = mapped_column(
         String, ForeignKey("accounts.account_id"), nullable=False, index=True
     )
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="member", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
@@ -311,7 +310,7 @@ class WorkspaceRecord(Base):
     "deleted" + who/when). Never deleted — the workspaces row itself is
     hard-deleted so live queries need no status filtering; this tombstone
     carries the audit trail and is the single source of truth for nothing
-    at runtime except deletion history (admin checks use Member.is_admin).
+    at runtime except deletion history (admin checks use Member.role).
     """
 
     __tablename__ = "workspace_records"

@@ -80,9 +80,13 @@ class InvalidInviteError(AppError):
     code = "invalid_invite"
 
 
-class NotWorkspaceAdminError(AppError):
+class CapabilityDeniedError(AppError):
+    """The single 403 raised by `app.capabilities.require_cap` (SMAC-92,
+    spec §2) -- every privileged route funnels through this one class now,
+    replacing the old per-check `NotWorkspaceAdminError`."""
+
     status_code = 403
-    code = "not_workspace_admin"
+    code = "forbidden"
 
 
 class LastAdminError(AppError):

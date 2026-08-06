@@ -11,7 +11,22 @@ def test_whoami_reports_founder_admin_and_workspace_visibility(client):
     response = client.get("/members/me", headers=founder_headers(client, "w1"))
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is True
+    assert body["role"] == "admin"
+    assert body["is_admin"] is True  # deprecated wire-compat alias
+    assert set(body["capabilities"]) == {
+        "post",
+        "read",
+        "ack_mentions",
+        "create_channels",
+        "view_members",
+        "view_agents",
+        "mint_human_invites",
+        "mint_agent_invites",
+        "manage_agents",
+        "manage_workspace",
+        "assign_roles",
+        "remove_members",
+    }
     assert body["workspace_visibility"] == "private"
 
 
@@ -20,7 +35,16 @@ def test_whoami_reports_non_admin_member_and_public_workspace(client):
     response = client.get("/members/me", headers=member_headers(client, "m1"))
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is False
+    assert body["role"] == "member"
+    assert body["is_admin"] is False  # deprecated wire-compat alias
+    assert set(body["capabilities"]) == {
+        "post",
+        "read",
+        "ack_mentions",
+        "create_channels",
+        "view_members",
+        "view_agents",
+    }
     assert body["workspace_visibility"] == "public"
 
 
@@ -162,7 +186,7 @@ def test_get_own_profile_never_includes_email(client):
     assert body["first_name"] == "Test"
 
 
-def test_get_other_profile_hides_admin_and_visibility(client):
+def test_get_other_profile_shows_role_but_hides_visibility(client):
     other = member_auth(client, "m2", "w1")
     response = client.get(
         "/member",
@@ -173,10 +197,13 @@ def test_get_other_profile_hides_admin_and_visibility(client):
     body = response.json()
     assert "email" not in body
     assert body["first_name"] == "Test"  # profile fields still visible
-    # is_admin/workspace_visibility (SMAC-72 task 6) are SELF-view-only --
-    # looking up ANOTHER member must not leak either, even though the
-    # caller here (the founder) IS an admin themselves.
-    assert body["is_admin"] is None
+    # SMAC-92 (spec §3): roles are public transparency, visible for ANY
+    # member lookup -- this supersedes the old self-only `is_admin`
+    # nulling. `workspace_visibility` (SMAC-72 task 6) is unrelated and
+    # stays self-view-only, even though the caller here (the founder) IS
+    # an admin themselves.
+    assert body["role"] == "member"
+    assert body["is_admin"] is False  # deprecated wire-compat alias
     assert body["workspace_visibility"] is None
 
 
@@ -189,7 +216,8 @@ def test_get_own_profile_includes_admin_and_workspace_visibility(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is True
+    assert body["role"] == "admin"
+    assert body["is_admin"] is True  # deprecated wire-compat alias
     assert body["workspace_visibility"] == "private"
 
 

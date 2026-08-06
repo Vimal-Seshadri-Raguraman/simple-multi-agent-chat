@@ -21,6 +21,7 @@ is actually created.
 
 from sqlalchemy.orm import Session
 
+from app.capabilities import caps_for
 from app.errors import AlreadyAMemberError, EmailTakenError
 from app.handles import generate_unique_handle
 from app.models import Account, Member, Workspace
@@ -70,7 +71,7 @@ def create_member_account(
     company: str | None = None,
     occupation: str | None = None,
     job_role: str | None = None,
-    is_admin: bool = False,
+    role: str = "member",
 ) -> Member:
     """Link `account` into `workspace` as a new per-workspace profile.
     Flushes; caller commits.
@@ -105,7 +106,7 @@ def create_member_account(
         company=company,
         occupation=occupation,
         job_role=job_role,
-        is_admin=is_admin,
+        role=role,
     )
     db.add(member)
     db.flush()
@@ -121,10 +122,15 @@ def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
     `visibility` (not a `Member` attribute -- see the schema's own
     docstring for why that lookup lives here rather than on the ORM
     model). The one place every `/member*` route builds this response,
-    so `is_admin`/`workspace_visibility` can never drift out of sync
-    across the routes that return this shape (`GET /member`, `GET
+    so `role`/`capabilities`/`workspace_visibility` can never drift out of
+    sync across the routes that return this shape (`GET /member`, `GET
     /members/me`, `PATCH /members/me`, `POST /workspaces` and the
     register-into-workspace routes).
+
+    `capabilities` is derived live from `caps_for(member)` (SMAC-92) --
+    never stored, so it always reflects the member's CURRENT role.
+    `is_admin` is the deprecated wire-compat alias (`role == "admin"`),
+    see `MemberSelfOut`'s docstring.
     """
     workspace = (
         db.query(Workspace).filter(Workspace.workspace_id == member.workspace_id).one()
@@ -142,6 +148,8 @@ def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
         company=member.company,
         occupation=member.occupation,
         job_role=member.job_role,
-        is_admin=member.is_admin,
+        role=member.role,
+        capabilities=[c.value for c in caps_for(member)],
+        is_admin=member.role == "admin",
         workspace_visibility=workspace.visibility,
     )

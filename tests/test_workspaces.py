@@ -55,7 +55,7 @@ def test_founder_is_admin(client):
     member_id = response.json()["member"]["member_id"]
     with database_module.SessionLocal() as db:
         member = db.get(Member, member_id)
-        assert member.is_admin is True
+        assert member.role == "admin"
 
 
 def test_founding_creates_workspace_record(client):
@@ -148,7 +148,7 @@ def test_workspace_with_null_default_channel_supports_registration_and_listing(c
             member_name="Seed",
             member_type="human",
             account_id=seed_account.account_id,
-            is_admin=True,
+            role="admin",
             handle="seed",
         )
         db.add(seed)

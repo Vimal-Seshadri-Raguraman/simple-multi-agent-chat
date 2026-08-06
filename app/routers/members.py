@@ -160,10 +160,12 @@ def get_member(
     """A member's profile within the caller's own workspace.
 
     A member in a foreign workspace simply doesn't exist for you -> 404,
-    via the same not-found path as an unknown member_id. `is_admin` and
-    `workspace_visibility` are included only when fetching your own
-    profile -- nulled out for anyone else's (SMAC-72 task 6's addition is
-    scoped to the caller's own `/whoami` view). Email is never included at
+    via the same not-found path as an unknown member_id. `role` and
+    `capabilities` (SMAC-92, spec §3) are included for ANY lookup, self or
+    not -- roles are public, transparency by design (this supersedes the
+    old self-only `is_admin` nulling). `workspace_visibility` (SMAC-72
+    task 6) stays self-view-only -- nulled out for anyone else's profile,
+    unrelated to the role-visibility change. Email is never included at
     all anymore (Identity v2, SMAC-79 Task 2, spec §7): it lives on the
     account now, not the member profile -- see `GET /accounts/me`.
     """
@@ -179,7 +181,6 @@ def get_member(
         raise NotFoundError(f"Member '{member_id}' not found")
     profile = build_member_self_out(db, member)
     if member.member_id != current_member.member_id:
-        profile.is_admin = None
         profile.workspace_visibility = None
     return profile
 
