@@ -1,5 +1,11 @@
 import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
-import { COMMANDS, REQUIRED_CAP, type Command, type CommandContext, requiredCapHint } from "../lib/commands";
+import {
+  COMMANDS,
+  type Command,
+  type CommandContext,
+  requiredCapHint,
+  requiredCapsFor,
+} from "../lib/commands";
 
 /**
  * The Cmd-K command palette (web spec §2 / constitution §4): THE
@@ -84,11 +90,6 @@ function splitArgs(command: Command, query: string): string {
   return "";
 }
 
-/** The capability a command is gated on, or `undefined` if it's ungated. */
-function requiredCapFor(command: Command): string | undefined {
-  return REQUIRED_CAP[command.name];
-}
-
 export default function Palette({ open, initialQuery, onClose, buildContext, hasCap }: PaletteProps) {
   const [query, setQuery] = useState(initialQuery);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -123,12 +124,12 @@ export default function Palette({ open, initialQuery, onClose, buildContext, has
     return null;
   }
 
-  /** `true` if `command` is gated on a capability the caller doesn't
-   * currently hold -- Enter/click must both refuse to run it (task-4
-   * brief), matching the dimmed rendering below. */
+  /** `true` if `command` is gated and the caller holds NONE of its
+   * required capabilities -- Enter/click must both refuse to run it
+   * (task-4 brief), matching the dimmed rendering below. */
   function isGated(command: Command): boolean {
-    const cap = requiredCapFor(command);
-    return cap !== undefined && !hasCap(cap);
+    const caps = requiredCapsFor(command);
+    return caps.length > 0 && !caps.some((cap) => hasCap(cap));
   }
 
   function runCommand(command: Command) {
@@ -186,8 +187,8 @@ export default function Palette({ open, initialQuery, onClose, buildContext, has
         <ul className="palette__list" role="listbox">
           {filtered.length === 0 && <li className="palette__empty">No matching commands</li>}
           {filtered.map((command, index) => {
-            const requiredCap = requiredCapFor(command);
-            const gated = requiredCap !== undefined && !hasCap(requiredCap);
+            const requiredCaps = requiredCapsFor(command);
+            const gated = requiredCaps.length > 0 && !requiredCaps.some((cap) => hasCap(cap));
             const classNames = ["palette__item"];
             if (index === activeIndex) classNames.push("palette__item--active");
             if (gated) classNames.push("palette__item--gated");
@@ -210,7 +211,7 @@ export default function Palette({ open, initialQuery, onClose, buildContext, has
                 <span className="palette__item-help">
                   {command.help}
                   {gated && (
-                    <span className="palette__item-hint"> — {requiredCapHint(requiredCap)}</span>
+                    <span className="palette__item-hint"> — {requiredCapHint(requiredCaps)}</span>
                   )}
                 </span>
               </li>

@@ -662,6 +662,29 @@ export async function mintInvite(kind: "human" | "agent"): Promise<InviteOut> {
 }
 
 /**
+ * `GET /workspaces/{workspace_id}/invites` (either mint cap): every
+ * pending invite in the workspace (codes shown in full, so they can be
+ * re-shared) -- `app/routers/invites.py::list_invites`.
+ */
+export async function listInvites(): Promise<InviteOut[]> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<InviteOut[]>("GET", `/workspaces/${workspaceId}/invites`);
+}
+
+/**
+ * `DELETE /workspaces/{workspace_id}/invites/{invite_id}` (either mint
+ * cap): revoke a pending invite of either type
+ * (`app/routers/invites.py::revoke_invite`).
+ */
+export async function revokeInvite(inviteId: string): Promise<{ status: string }> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<{ status: string }>(
+    "DELETE",
+    `/workspaces/${workspaceId}/invites/${inviteId}`
+  );
+}
+
+/**
  * `PATCH /workspaces/{workspace_id}/members/{member_id}` (`Cap.
  * ASSIGN_ROLES`-gated): assign a workspace member's role. Returns the
  * updated `MemberOut` (`app/routers/workspaces.py::update_member_role`).

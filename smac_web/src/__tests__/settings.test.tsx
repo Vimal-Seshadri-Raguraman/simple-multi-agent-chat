@@ -301,6 +301,85 @@ describe("Invites panel (web spec §2)", () => {
     const codeBlock = await screen.findByTestId("invite-code-agent");
     expect(codeBlock).toHaveTextContent("AGENT123");
   });
+
+  it("an agent_admin (only mint_agent_invites) sees no Human/Agent kind selector at all", async () => {
+    renderSettings({ self: selfFixture({ role: "agent_admin" }), section: "invites" });
+    await screen.findByRole("heading", { name: "Invite an agent" });
+    expect(screen.queryByRole("button", { name: "Human" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agent" })).not.toBeInTheDocument();
+  });
+
+  it("an admin (both mint caps) gets a Human/Agent kind selector, defaulting to Human, switching sections on click", async () => {
+    renderSettings({ self: selfFixture({ role: "admin" }), section: "invites" });
+
+    await screen.findByRole("heading", { name: "Invite a person" });
+    expect(screen.queryByRole("heading", { name: "Invite an agent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Human" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agent" }));
+    await screen.findByRole("heading", { name: "Invite an agent" });
+    expect(screen.queryByRole("heading", { name: "Invite a person" })).not.toBeInTheDocument();
+  });
+
+  it("a minted agent invite shows the exact bootstrap line with the endpoint in mono", async () => {
+    vi.mocked(api.mintInvite).mockResolvedValue({
+      invite_id: "inv3",
+      workspace_id: "ws1",
+      invite_type: "agent_code",
+      email: null,
+      code: "BOOT123",
+      created_by: "m1",
+      created_at: "2026-01-01T00:00:00",
+      expires_at: "2026-01-08T00:00:00",
+    });
+
+    renderSettings({ self: selfFixture({ role: "agent_admin" }), section: "invites" });
+    fireEvent.click(await screen.findByRole("button", { name: "Mint agent invite code" }));
+
+    await screen.findByTestId("invite-code-agent");
+    expect(
+      screen.getByText(/Put this code in your agent's config; its first call is/i)
+    ).toBeInTheDocument();
+    expect(screen.getByText("POST /agents/join")).toHaveClass("mono");
+  });
+
+  it("lists pending invites with type labels and revokes one via the API", async () => {
+    vi.mocked(api.listInvites).mockResolvedValue([
+      {
+        invite_id: "inv-human",
+        workspace_id: "ws1",
+        invite_type: "code",
+        email: null,
+        code: "HUMANCODE",
+        created_by: "m1",
+        created_at: "2026-01-01T00:00:00",
+        expires_at: null,
+      },
+      {
+        invite_id: "inv-agent",
+        workspace_id: "ws1",
+        invite_type: "agent_code",
+        email: null,
+        code: "AGENTCODE",
+        created_by: "m1",
+        created_at: "2026-01-01T00:00:00",
+        expires_at: "2026-01-08T00:00:00",
+      },
+    ]);
+    vi.mocked(api.revokeInvite).mockResolvedValue({ status: "revoked" });
+
+    renderSettings({ self: selfFixture({ role: "admin" }), section: "invites" });
+    await screen.findByText("Human code");
+    expect(screen.getByText("Agent code")).toBeInTheDocument();
+    expect(screen.getByText("HUMANCODE")).toBeInTheDocument();
+    expect(screen.getByText("AGENTCODE")).toBeInTheDocument();
+
+    const revokeButtons = screen.getAllByRole("button", { name: "Revoke" });
+    fireEvent.click(revokeButtons[0]);
+
+    await waitFor(() => expect(api.revokeInvite).toHaveBeenCalledWith("inv-human"));
+    await waitFor(() => expect(api.listInvites).toHaveBeenCalledTimes(2)); // initial + post-revoke refresh
+  });
 });
 
 describe("Settings tab gating from capabilities (SMAC-92 task-4 brief, replaces is_admin gating)", () => {
@@ -339,9 +418,14 @@ describe("Settings tab gating from capabilities (SMAC-92 task-4 brief, replaces 
     expect(screen.queryByRole("button", { name: "Attach existing" })).not.toBeInTheDocument();
   });
 
-  it("the Members tab (visible to a caller with assign_roles/remove_members) shows a placeholder this task", async () => {
-    renderSettings({ self: selfFixture({ role: "admin" }), section: "members" });
-    await screen.findByText(/Members management arrives in the next task/i);
+  it("the Members tab (visible to a caller with assign_roles/remove_members) renders the real admin panel", async () => {
+    renderSettings({
+      self: selfFixture({ role: "admin" }),
+      section: "members",
+      members: [selfFixture({ role: "admin" }), AGENT_MEMBER],
+    });
+    await screen.findByText("Humans");
+    expect(screen.getByRole("heading", { name: "Agents", level: 3 })).toBeInTheDocument();
   });
 });
 

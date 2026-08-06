@@ -3,6 +3,7 @@ import { Cap } from "../lib/capabilities";
 import { useWorkspace } from "../state/workspace";
 import AgentsPanel from "./AgentsPanel";
 import InvitesPanel from "./InvitesPanel";
+import MembersAdminPanel from "./MembersAdminPanel";
 import WorkspacePanel from "./WorkspacePanel";
 
 /**
@@ -37,8 +38,10 @@ import WorkspacePanel from "./WorkspacePanel";
  *    itself re-checks per-section, since an `agent_admin` holds only the
  *    agent one.
  *  - Members: present if the caller holds `Cap.ASSIGN_ROLES` or `Cap.
- *    REMOVE_MEMBERS` -- a placeholder for THIS task (Task 5 builds the
- *    real panel per the task-4 brief's explicit scope note).
+ *    REMOVE_MEMBERS` -- `MembersAdminPanel` (SMAC-92 Task 5) re-checks
+ *    each capability independently, since a caller can hold just one of
+ *    the two (role `<select>`s need `assign_roles`; the Remove flow needs
+ *    `remove_members`).
  *  - Workspace: present only with `Cap.MANAGE_WORKSPACE`.
  */
 
@@ -127,10 +130,14 @@ export default function Settings({ onBack, workspaceName, initialSection = "agen
             <InvitesPanel canMintHuman={canMintHuman} canMintAgent={canMintAgent} />
           )}
           {activeSection === "members" && canManageMembers && (
-            <div className="members-settings-placeholder">
-              <h2>Members</h2>
-              <p>Members management arrives in the next task.</p>
-            </div>
+            <MembersAdminPanel
+              members={workspace.members}
+              self={workspace.self}
+              canAssignRoles={workspace.hasCap(Cap.ASSIGN_ROLES)}
+              canRemoveMembers={workspace.hasCap(Cap.REMOVE_MEMBERS)}
+              onRefresh={workspace.refreshMembers}
+              onRefreshSelf={workspace.refreshWhoami}
+            />
           )}
           {activeSection === "workspace" && canManageWorkspace && (
             <WorkspacePanel

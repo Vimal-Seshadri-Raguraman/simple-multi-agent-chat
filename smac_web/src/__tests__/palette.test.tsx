@@ -375,4 +375,35 @@ describe("Palette capability gating (task-4 brief, SMAC-92)", () => {
     const entry = screen.getByRole("option", { name: /\/whoami/ });
     expect(entry).not.toHaveAttribute("aria-disabled");
   });
+
+  // Task-5 brief fix round: `/invite` is gated on EITHER mint cap
+  // (`REQUIRED_CAP["/invite"]` is now an array), not `mint_human_invites`
+  // alone -- an agent_admin genuinely can mint an agent invite once landed
+  // on the Invites tab (`InvitesPanel`'s agent-only section), so the
+  // palette entry must not lock them out of running `/invite` at all.
+  it("an agent_admin (mint_agent_invites only, no mint_human_invites) can still run '/invite'", () => {
+    const run = vi.fn();
+    const originalRun = COMMANDS.find((c) => c.name === "/invite")!.run;
+    COMMANDS.find((c) => c.name === "/invite")!.run = run;
+    const hasCap = (cap: string) => cap === "mint_agent_invites";
+    try {
+      render(
+        <Palette
+          open
+          initialQuery="invite"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={hasCap}
+        />
+      );
+      const entry = screen.getByRole("option", { name: /\/invite/ });
+      expect(entry).not.toHaveAttribute("aria-disabled");
+      expect(entry).not.toHaveTextContent(/requires/i);
+
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(run).toHaveBeenCalled();
+    } finally {
+      COMMANDS.find((c) => c.name === "/invite")!.run = originalRun;
+    }
+  });
 });

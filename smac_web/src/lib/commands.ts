@@ -177,28 +177,54 @@ export const COMMANDS: Command[] = [
  * this addition). A command with no entry here is ungated -- runnable by
  * anyone who can open the palette at all (every role: `Cap.POST` etc. are
  * baseline caps every member has). `components/Palette.tsx` looks a
- * selected/rendered command up here and, if the caller's `hasCap(cap)` is
- * false, renders it dimmed with a "requires ..." hint and refuses to run
- * it -- the server's own `require_cap` wall is the REAL gate (constitution
- * §7.5); this is belt-and-suspenders UI hygiene, same posture as
- * `Settings.tsx`'s tab omission.
+ * selected/rendered command up here and, if the caller holds NONE of the
+ * listed capabilities, renders it dimmed with a "requires ..." hint and
+ * refuses to run it -- the server's own `require_cap` wall is the REAL
+ * gate (constitution §7.5); this is belt-and-suspenders UI hygiene, same
+ * posture as `Settings.tsx`'s tab omission.
+ *
+ * A value may be a single capability OR an array of alternatives ("gated
+ * unless the caller holds AT LEAST ONE of these"). `/invite` is the array
+ * case (task-5 brief, fix round): `InvitesPanel` mints a human code OR an
+ * agent code depending on which mint cap the caller holds, so gating the
+ * PALETTE entry on `mint_human_invites` alone locked an `agent_admin` --
+ * who genuinely can mint an agent invite once landed on the Invites tab --
+ * out of running `/invite` at all. Single-value entries (`/workspace
+ * delete`) are unaffected.
  */
-export const REQUIRED_CAP: Partial<Record<string, string>> = {
-  "/invite": "mint_human_invites",
+export const REQUIRED_CAP: Partial<Record<string, string | string[]>> = {
+  "/invite": ["mint_human_invites", "mint_agent_invites"],
   "/workspace delete": "manage_workspace",
 };
 
-/** Human-readable "requires ..." hint for a gated command's required
- * capability, per the task-4 brief's two named examples ("requires
- * Workspace Admin" for a workspace-wide cap, "requires Agent Admin" for
- * an agent-only one). Falls back to the raw capability name for any
- * future entry this map doesn't special-case. */
-export function requiredCapHint(cap: string): string {
+/** `REQUIRED_CAP[command.name]`, normalized to an array (`[]` if the
+ * command is ungated) -- the one place that normalization happens, so
+ * `Palette.tsx`'s gating check and hint rendering can't drift apart on
+ * how they read a single-vs-array entry. */
+export function requiredCapsFor(command: Command): string[] {
+  const cap = REQUIRED_CAP[command.name];
+  if (cap === undefined) return [];
+  return Array.isArray(cap) ? cap : [cap];
+}
+
+function capLabel(cap: string): string {
   if (cap === "manage_workspace" || cap === "mint_human_invites") {
-    return "requires Workspace Admin";
+    return "Workspace Admin";
   }
   if (cap === "manage_agents" || cap === "mint_agent_invites") {
-    return "requires Agent Admin";
+    return "Agent Admin";
   }
-  return `requires ${cap}`;
+  return cap;
+}
+
+/** Human-readable "requires ..." hint for a gated command's required
+ * capability/capabilities, per the task-4 brief's two named examples
+ * ("requires Workspace Admin" for a workspace-wide cap, "requires Agent
+ * Admin" for an agent-only one). An array joins with "or" (`/invite`:
+ * "requires Workspace Admin or Agent Admin" -- holding EITHER is enough
+ * to un-gate it, `requiredCapsFor`'s `.some()` check). Falls back to the
+ * raw capability name for any future entry this map doesn't special-case. */
+export function requiredCapHint(cap: string | string[]): string {
+  const caps = Array.isArray(cap) ? cap : [cap];
+  return `requires ${caps.map(capLabel).join(" or ")}`;
 }

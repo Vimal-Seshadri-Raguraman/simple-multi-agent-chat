@@ -229,6 +229,46 @@ describe("workspace-birth doors: field names verified against app/routers/worksp
     expect(invite.code).toBe("agentcode");
   });
 
+  it("listInvites GETs /workspaces/{id}/invites", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const mock = installFetchMock();
+    mock.queue({
+      status: 200,
+      body: [
+        {
+          invite_id: "inv1",
+          workspace_id: "ws1",
+          invite_type: "code",
+          email: null,
+          code: "xyz",
+          created_by: "m1",
+          created_at: "2026-01-01T00:00:00Z",
+          expires_at: null,
+        },
+      ],
+    });
+
+    const invites = await api.listInvites();
+
+    expect(mock.calls[0]).toMatchObject({ method: "GET", url: "/workspaces/ws1/invites" });
+    expect(invites).toHaveLength(1);
+    expect(invites[0].code).toBe("xyz");
+  });
+
+  it("revokeInvite DELETEs /workspaces/{id}/invites/{invite_id}", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const mock = installFetchMock();
+    mock.queue({ status: 200, body: { status: "revoked" } });
+
+    const result = await api.revokeInvite("inv1");
+
+    expect(mock.calls[0]).toMatchObject({
+      method: "DELETE",
+      url: "/workspaces/ws1/invites/inv1",
+    });
+    expect(result.status).toBe("revoked");
+  });
+
   it("updateMemberRole PATCHes {role} to /workspaces/{id}/members/{member_id}", async () => {
     api.setSession(WORKSPACE_SESSION);
     const mock = installFetchMock();
