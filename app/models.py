@@ -225,8 +225,13 @@ class Message(Base):
     channel_id: Mapped[str] = mapped_column(
         String, ForeignKey("channels.channel_id"), nullable=False
     )
-    sender_member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False
+    # Nullable as of SMAC-92 (migration `7a3b580f5d0c`): member removal nulls
+    # this out rather than deleting the message, so chat history survives a
+    # departed member (see app/routers/workspaces.py's remove_member and
+    # app/schemas.py's build_message_payload, which renders a placeholder
+    # sender when this is None).
+    sender_member_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=True
     )
     message_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -341,8 +346,10 @@ class Mention(Base):
     message_id: Mapped[str] = mapped_column(
         String, ForeignKey("messages.message_id"), nullable=False, index=True
     )
-    mentioned_member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False, index=True
+    # Nullable as of SMAC-92: same reasoning as Message.sender_member_id --
+    # a removed member's past mentions survive their row going away.
+    mentioned_member_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False

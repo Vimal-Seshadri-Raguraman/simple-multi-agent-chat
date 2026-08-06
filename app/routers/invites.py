@@ -9,9 +9,15 @@ from sqlalchemy.orm import Session
 
 from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_account, get_current_member
-from app.authorization import authorize_management_action, require_same_workspace
+from app.authorization import require_same_workspace
+from app.capabilities import Cap, caps_for, require_cap
 from app.database import get_db
-from app.errors import AlreadyAMemberError, InvalidInviteError, NotFoundError
+from app.errors import (
+    AlreadyAMemberError,
+    CapabilityDeniedError,
+    InvalidInviteError,
+    NotFoundError,
+)
 from app.models import Account, Member, Workspace, WorkspaceInvite, utcnow
 from app.routers.auth import _issue_workspace_token_pair
 from app.schemas import (
@@ -29,17 +35,36 @@ INVITE_CODE_TTL_DAYS: int = int(os.getenv("INVITE_CODE_TTL_DAYS", "7"))
 
 _INVALID_INVITE_MESSAGE = "Invite is invalid or expired"
 
+# Per-invite-type mint capability (SMAC-92): create_invite's required cap
+# depends on body.invite_type. Task 3 (agent invites) extends this dict
+# with one line -- "agent_code": Cap.MINT_AGENT_INVITES -- rather than
+# branching logic.
+_MINT_CAP_BY_TYPE: dict[str, Cap] = {
+    "email": Cap.MINT_HUMAN_INVITES,
+    "code": Cap.MINT_HUMAN_INVITES,
+}
 
-def _require_human_workspace_member(
-    db: Session, member: Member, workspace_id: str
-) -> Workspace:
-    """Shared gate for workspace-side invite operations: human + member + workspace exists."""
-    authorize_management_action(member)
+# list/revoke accept either mint capability: an agent_admin must be able to
+# see/revoke the agent-invite codes they mint (Task 3), same as an admin
+# manages human invites.
+_ANY_MINT_CAPS = (Cap.MINT_HUMAN_INVITES, Cap.MINT_AGENT_INVITES)
+
+
+def _require_workspace(db: Session, member: Member, workspace_id: str) -> Workspace:
+    """Shared gate for workspace-side invite operations: wall + workspace
+    exists. Capability checks happen at each call site -- create_invite's
+    cap depends on the invite type; list/revoke accept either mint cap."""
     require_same_workspace(member, workspace_id)
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace '{workspace_id}' not found")
     return workspace
+
+
+def _require_any_mint_cap(member: Member) -> None:
+    if not caps_for(member) & set(_ANY_MINT_CAPS):
+        joined = " or ".join(cap.value for cap in _ANY_MINT_CAPS)
+        raise CapabilityDeniedError(f"This action requires {joined}.")
 
 
 def _delete_if_expired(db: Session, invite: WorkspaceInvite) -> bool:
@@ -59,7 +84,8 @@ def create_invite(
     db: Session = Depends(get_db),
 ) -> WorkspaceInvite:
     """Create an email-targeted invite or a shareable multi-use code."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    require_cap(member, _MINT_CAP_BY_TYPE[body.invite_type])
 
     if body.invite_type == "email":
         if body.email is None:
@@ -124,7 +150,8 @@ def list_invites(
     db: Session = Depends(get_db),
 ) -> list[WorkspaceInvite]:
     """List pending invites (codes shown in full, so they can be re-shared)."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    _require_any_mint_cap(member)
     invites = (
         db.query(WorkspaceInvite)
         .filter(WorkspaceInvite.workspace_id == workspace_id)
@@ -141,7 +168,8 @@ def revoke_invite(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Revoke any pending invite (either type)."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    _require_any_mint_cap(member)
     invite = db.get(WorkspaceInvite, invite_id)
     if invite is None or invite.workspace_id != workspace_id:
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)

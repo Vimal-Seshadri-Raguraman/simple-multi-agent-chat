@@ -132,8 +132,13 @@ def build_mention_event(db: Session, mention: Mention) -> dict:
     assert channel is not None  # FK-guaranteed by messages.channel_id
     workspace = db.get(Workspace, channel.workspace_id)
     assert workspace is not None  # FK-guaranteed by channels.workspace_id
-    sender = db.get(Member, message.sender_member_id)
-    assert sender is not None  # FK-guaranteed by messages.sender_member_id
+    # sender_member_id is nullable (SMAC-92: a removed member's messages
+    # survive with it nulled) -- sender may legitimately be None here.
+    sender = (
+        db.get(Member, message.sender_member_id)
+        if message.sender_member_id is not None
+        else None
+    )
 
     return {
         "event": "mention",

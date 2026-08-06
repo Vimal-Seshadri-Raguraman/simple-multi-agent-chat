@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.accounts import build_member_self_out, create_agent_account
 from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.authorization import authorize_management_action
+from app.capabilities import Cap, require_cap
 from app.database import get_db
 from app.errors import AlreadyAMemberError, HandleTakenError, NotFoundError
 from app.handles import generate_unique_handle
@@ -112,7 +113,7 @@ def register_agent(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
-    authorize_management_action(member)
+    require_cap(member, Cap.MANAGE_AGENTS)
     if body.account_id is not None:
         return _attach(db, body.account_id, "agent", member.workspace_id)
     assert body.member_name is not None  # schema validator enforces the XOR
@@ -125,7 +126,7 @@ def register_bot(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
-    authorize_management_action(member)
+    require_cap(member, Cap.MANAGE_AGENTS)
     if body.account_id is not None:
         return _attach(db, body.account_id, "bot_app", member.workspace_id)
     assert body.member_name is not None  # schema validator enforces the XOR

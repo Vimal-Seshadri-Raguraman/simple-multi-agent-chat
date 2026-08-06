@@ -390,11 +390,14 @@ class MarkReadIn(BaseModel):
     last_read_message_id: str | None = None
 
 
+_REMOVED_SENDER_NAME = "(removed member)"
+
+
 def build_message_payload(
     message: Message,
     workspace: Workspace,
     channel: Channel,
-    sender: Member,
+    sender: Member | None,
     db: Session,
 ) -> dict:
     """The single source of truth for the wire schema shared by REST and WebSocket.
@@ -407,13 +410,26 @@ def build_message_payload(
     self-mention is already visible via `Sender` and never produced a
     `Mention` row at post time (see `canonicalize`), so it's a no-op here
     too, on both the POST response and every later GET.
+
+    `sender` is `None` when `message.sender_member_id` is null (SMAC-92:
+    the sender was removed from the workspace -- `remove_member` nulls it
+    rather than deleting the message, so history survives). The `Sender`
+    field then renders a placeholder rather than crashing; there is no
+    snapshot of the departed member's handle to fall back to, only the
+    generic label below.
     """
     mentioned_members, referenced_channels = resolve_payload_refs(
         db, workspace.workspace_id, message.message_text
     )
-    mentioned_members = [
-        m for m in mentioned_members if m.member_id != sender.member_id
-    ]
+    if sender is not None:
+        mentioned_members = [
+            m for m in mentioned_members if m.member_id != sender.member_id
+        ]
+    sender_out: dict[str, str | None] = (
+        {"member_id": sender.member_id, "member_name": sender.member_name}
+        if sender is not None
+        else {"member_id": None, "member_name": _REMOVED_SENDER_NAME}
+    )
     return {
         "timestamp": message.created_at.isoformat(),
         "workspace": {
@@ -424,7 +440,7 @@ def build_message_payload(
             "channel_id": channel.channel_id,
             "channel_name": channel.channel_name,
         },
-        "Sender": {"member_id": sender.member_id, "member_name": sender.member_name},
+        "Sender": sender_out,
         "Message": {
             "message_id": message.message_id,
             "message_text": message.message_text,

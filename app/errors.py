@@ -94,6 +94,15 @@ class LastAdminError(AppError):
     code = "last_admin"
 
 
+class SelfRemovalError(AppError):
+    """A member tried to remove themselves via `DELETE
+    /workspaces/{id}/members/{id}` (SMAC-92) -- use workspace deletion, or
+    a future 'leave', for that instead."""
+
+    status_code = 400
+    code = "self_removal"
+
+
 class ConfirmationRequiredError(AppError):
     status_code = 422
     code = "confirmation_required"
