@@ -4,7 +4,10 @@ returns the freshly minted agent's per-workspace API key directly."""
 
 from datetime import timedelta
 
+import pytest
+
 import app.database as database_module
+import app.routers.invites as invites_module
 from app import rate_limit as rate_limit_module
 from app.models import WorkspaceInvite, utcnow
 from tests.conftest import founder_auth, founder_headers, member_auth, member_headers
@@ -269,16 +272,22 @@ def test_human_code_cannot_be_redeemed_as_agent(client):
 
 def test_concurrent_redemption_only_one_claim_succeeds(client):
     """Simulates two concurrent redemptions of the SAME code racing past
-    the lookup/expiry/workspace checks before either has committed its
-    claim. Two independent DB sessions stand in for two concurrent
-    request handlers -- SQLite has exactly one writer at a time
-    regardless of thread count, so any truly concurrent attempt
-    resolves to exactly this ordering at the DB level (see the task
-    report for the full analysis of why a real multi-threaded test
+    the lookup/expiry/workspace checks before either has claimed it. Two
+    independent DB sessions stand in for two concurrent request
+    handlers -- SQLite acquires the write lock at the first write
+    statement of a transaction (not at commit) and allows exactly one
+    writer at a time regardless of thread count, so any truly concurrent
+    attempt resolves to exactly this ordering at the DB level (see the
+    task report for the full analysis of why a real multi-threaded test
     against this fixture's shared StaticPool connection wouldn't prove
-    anything stronger). Exercises the identical query shape
-    `join_as_agent` uses: a bulk DELETE keyed by invite_id, whose
-    rowcount is the single source of truth for who won the race."""
+    anything stronger).
+
+    `db_a.commit()` below stands in for the point where
+    `_register_member`'s own commit finalizes A's claim-DELETE together
+    with the new agent's INSERTs as ONE transaction (fix round 1: the
+    route no longer commits the DELETE on its own) -- B's DELETE cannot
+    even execute until A's whole transaction has committed, matching
+    production exactly."""
     founder = founder_auth(client, "w1")
     ws = founder["workspace_id"]
     code = _mint_agent_code(client, founder_headers(client, "w1"), ws)
@@ -308,7 +317,7 @@ def test_concurrent_redemption_only_one_claim_succeeds(client):
             .filter(WorkspaceInvite.invite_id == invite_a.invite_id)
             .delete(synchronize_session=False)
         )
-        db_a.commit()
+        db_a.commit()  # stands in for _register_member's commit, one txn later
         claimed_b = (
             db_b.query(WorkspaceInvite)
             .filter(WorkspaceInvite.invite_id == invite_b.invite_id)
@@ -317,6 +326,35 @@ def test_concurrent_redemption_only_one_claim_succeeds(client):
         db_b.commit()
 
     assert (claimed_a, claimed_b) == (1, 0)  # exactly one winner, never both/neither
+
+
+def test_registration_failure_does_not_burn_the_code(client, monkeypatch):
+    """Fix round 1: the claim-DELETE is left uncommitted and rides along
+    with `_register_member`'s own commit as ONE transaction, so a
+    failure in between rolls both back together -- the code must NOT be
+    burned with no agent created to show for it."""
+    founder = founder_auth(client, "w1")
+    ws = founder["workspace_id"]
+    code = _mint_agent_code(client, founder_headers(client, "w1"), ws)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated failure after the claim, before commit")
+
+    monkeypatch.setattr(invites_module, "_register_member", _boom)
+
+    with pytest.raises(RuntimeError):
+        client.post("/agents/join", json={"code": code, "name": "Trader Bot"})
+
+    with database_module.SessionLocal() as db:
+        still_there = (
+            db.query(WorkspaceInvite)
+            .filter(
+                WorkspaceInvite.code == code,
+                WorkspaceInvite.invite_type == "agent_code",
+            )
+            .first()
+        )
+        assert still_there is not None  # rolled back together, not burned
 
 
 def test_redeem_is_rate_limited(client, monkeypatch):

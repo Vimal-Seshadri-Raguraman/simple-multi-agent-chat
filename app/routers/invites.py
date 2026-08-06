@@ -353,19 +353,25 @@ def join_as_agent(
     workspace_out = WorkspaceOut.model_validate(workspace)
 
     # Atomic single-use claim: a bulk DELETE keyed by invite_id (not the
-    # SELECT above). Two concurrent redemptions of the same code both
-    # pass the lookup/expiry/workspace checks above -- but SQLite
-    # serializes the two DELETEs that follow (the loser's WHERE matches
-    # zero rows once the winner's has committed), so exactly one caller
-    # observes `claimed == 1` and only that one goes on to mint an
-    # account/key. The other gets the same uniform 404 a bogus code
-    # would, never a distinguishable "already used" response.
+    # SELECT above). `Query.delete()` executes the DELETE and returns its
+    # matched-row count immediately -- no commit needed to read `claimed`.
+    # Two concurrent redemptions of the same code both pass the
+    # lookup/expiry/workspace checks above, but SQLite acquires the write
+    # lock at this first write statement (not at commit), so the two
+    # DELETEs still serialize: the loser's WHERE matches zero rows once
+    # the winner's DELETE has run, so exactly one caller ever observes
+    # `claimed == 1`.
+    #
+    # Deliberately left UNCOMMITTED here: it rides along with
+    # `_register_member`'s own commit below as ONE transaction, so a
+    # crash (or any exception) between the claim and the member insert
+    # rolls both back together via `get_db`'s session close -- there is
+    # no window where the code is burned but no agent was created.
     claimed = (
         db.query(WorkspaceInvite)
         .filter(WorkspaceInvite.invite_id == invite.invite_id)
         .delete(synchronize_session=False)
     )
-    db.commit()
     if claimed == 0:
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
 
