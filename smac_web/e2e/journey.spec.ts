@@ -23,8 +23,18 @@
  */
 
 import { type APIRequestContext, type Page, expect, test } from "@playwright/test";
+import {
+  backToRoom,
+  baseURL,
+  createWorkspace,
+  gotoApp,
+  joinByCode,
+  loginExisting,
+  mintInviteCode,
+  readWorkspaceSession,
+  registerAccount,
+} from "./helpers";
 
-const PASSWORD = "correct-horse-battery-staple";
 const ALICE_EMAIL = "alice@example.com";
 const BOB_EMAIL = "bob@example.com";
 // Handles are deterministic: app/accounts.py::create_member_account derives
@@ -34,87 +44,6 @@ const BOB_EMAIL = "bob@example.com";
 const ALICE_HANDLE = "aanders";
 const BOB_HANDLE = "bbaker";
 const WORKSPACE_NAME = "Acme Research";
-
-function baseURL(): string {
-  const url = process.env.SMAC_E2E_BASE_URL;
-  if (!url) {
-    throw new Error(
-      "SMAC_E2E_BASE_URL is unset -- e2e/global-setup.ts should have set it " +
-        "before any test ran; are you running this file outside `npm run e2e`?"
-    );
-  }
-  return url;
-}
-
-async function gotoApp(page: Page): Promise<void> {
-  await page.goto(`${baseURL()}/`);
-}
-
-async function registerAccount(page: Page, email: string): Promise<void> {
-  await page.getByRole("button", { name: "Create an account" }).click();
-  await page.locator("#register-email").fill(email);
-  await page.locator("#register-password").fill(PASSWORD);
-  await page.locator("#register-confirm-password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("heading", { name: "Create or join a workspace" })).toBeVisible();
-}
-
-async function loginExisting(page: Page, email: string): Promise<void> {
-  await page.getByRole("button", { name: "Log in" }).click();
-  await page.locator("#login-email").fill(email);
-  await page.locator("#login-password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Log in", exact: true }).click();
-}
-
-async function createWorkspace(
-  page: Page,
-  opts: { workspaceName: string; firstName: string; lastName: string }
-): Promise<void> {
-  await page.getByRole("button", { name: "Create your own" }).click();
-  await page.locator("#create-workspace-name").fill(opts.workspaceName);
-  await page.locator("#create-workspace-first-name").fill(opts.firstName);
-  await page.locator("#create-workspace-last-name").fill(opts.lastName);
-  await page.getByRole("button", { name: "Create workspace" }).click();
-  await expect(page.locator(".room__title")).toHaveText("#general");
-}
-
-async function joinByCode(
-  page: Page,
-  opts: { firstName: string; lastName: string; code: string }
-): Promise<void> {
-  await page.getByRole("button", { name: "Join a workspace" }).click();
-  await page.locator("#join-first-name").fill(opts.firstName);
-  await page.locator("#join-last-name").fill(opts.lastName);
-  await page.locator("#join-code").fill(opts.code);
-  await page
-    .locator("form", { has: page.locator("#join-code") })
-    .getByRole("button", { name: "Join" })
-    .click();
-  await expect(page.locator(".room__title")).toHaveText("#general");
-}
-
-/** Reaches Settings' Invites panel via the composer's leading-`/` ->
- * palette hand-off (web spec §2's composer grammar), mints a fresh code,
- * and returns it -- the real UI path, not a shortcut through the API. */
-async function mintInviteCode(page: Page): Promise<string> {
-  await page.locator('textarea[aria-label="Message"]').fill("/invite");
-  // Query "invite" also fuzzy-matches "/join" (its help text mentions
-  // "invite code"), so this clicks the specific "/invite" entry by its
-  // own name rather than trusting activeIndex 0.
-  await page.locator(".palette__item").filter({ hasText: "/invite" }).click();
-  await page.getByRole("button", { name: "Mint invite code" }).click();
-  const codeLocator = page.getByTestId("invite-code");
-  await expect(codeLocator).toBeVisible();
-  const code = (await codeLocator.textContent())?.trim();
-  if (!code) {
-    throw new Error("invite code panel rendered but produced no code text");
-  }
-  return code;
-}
-
-async function backToRoom(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Back to the room" }).click();
-}
 
 /** Types `before` then `@` + the first two characters of `mentionHandle`
  * (enough for the composer's autocomplete filter to find exactly one
@@ -136,20 +65,6 @@ async function sendMentioning(
     await composer.pressSequentially(opts.after);
   }
   await composer.press("Enter");
-}
-
-async function readWorkspaceSession(
-  page: Page
-): Promise<{ workspaceId: string; token: string }> {
-  const raw = await page.evaluate(() => window.localStorage.getItem("smac.session"));
-  if (!raw) {
-    throw new Error("no smac.session in localStorage -- is this page logged in yet?");
-  }
-  const session = JSON.parse(raw) as { workspaceId?: string; workspaceAccess?: string };
-  if (!session.workspaceId || !session.workspaceAccess) {
-    throw new Error("smac.session has no workspace tier yet");
-  }
-  return { workspaceId: session.workspaceId, token: session.workspaceAccess };
 }
 
 /**

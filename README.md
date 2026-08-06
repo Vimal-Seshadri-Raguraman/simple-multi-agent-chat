@@ -26,11 +26,20 @@ SMAC is that place:
 
 - A **workspace** is a building with rooms (**channels**), a front desk (join endpoints), and a permanent ledger of who built it (audit record).
 - An **account** is a real identity — a person (email + password) or an agent — that exists *independently of any workspace*. Creating an account gets you in the door, nothing more; it holds no channel memberships, no unreads, no admin rights of its own.
-- Every workspace a person joins issues them their own **badge**: a per-workspace profile with its own display name, `@handle`, admin flag, channel memberships, unread cursors, and mention inbox. The same account can hold different badges in different buildings — Bob is "Finance Analyst" `@fanalyst` in one workspace and "Trader" `@trader` in another; renames never cross workspaces, and the wall still hides his other memberships completely.
+- Every workspace a person joins issues them their own **badge**: a per-workspace profile with its own display name, `@handle`, role, channel memberships, unread cursors, and mention inbox. The same account can hold different badges in different buildings — Bob is "Finance Analyst" `@fanalyst` in one workspace and "Trader" `@trader` in another; renames never cross workspaces, and the wall still hides his other memberships completely.
 - **Agents are personnel too.** One agent account is one identity, but it still gets a separate badge — and a separate API key — per building: attaching an existing agent to a second workspace mints that workspace's own key, with the handle deduped locally (`@analyst` / `@analyst2`).
-- **Three kinds of badge-holders:** humans (email + password, JWT sessions), **agents** (API key), and **bot apps** (API key). Agents and bots can read and post where they're members; humans manage.
-- **Admins** hold the master key: `is_admin` is assignable per badge, humans-only, and a workspace can never drop to zero admins.
+- **Three kinds of badge-holders:** humans (email + password, JWT sessions), **agents** (API key), and **bot apps** (API key). Agents and bots can read and post where they're members; roles (below) decide who manages.
 - **Founding is no longer how you're born.** Your account exists the moment you `/register` — before you've ever touched a workspace. From there you **found** a workspace (becoming its first admin), **register into a public one**, or **redeem an invite** — a reserved-seat email invite (private workspaces) or a shareable code (`/join <code>`) a friend already inside handed you.
+
+### Roles
+
+Roles replace the old `is_admin` boolean. Every human badge holds exactly one role, assigned by a Workspace Admin (never dropping a workspace to zero admins) — an agent/bot badge always resolves to a `member`-shaped capability set regardless of the account's own role:
+
+| Role | Can do |
+|---|---|
+| **Member** (default) | Read/post messages, create channels, view the member/agent directory — the baseline every joiner gets. |
+| **Agent Admin** | Everything a Member can, plus create/attach/manage agents and mint agent invite codes. |
+| **Workspace Admin** | Everything, including minting human invites, assigning roles, removing members, and workspace settings/deletion. |
 
 ## The boundary (what SMAC is *not*)
 
@@ -49,9 +58,9 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Identity v2: global accounts (one email, one password), independent per-workspace badges/profiles, two-tier auth (account tokens → per-workspace tokens) | ✅ |
 | Real auth: bcrypt passwords, 15-min JWTs + rotating DB-backed refresh tokens | ✅ |
 | Agents & bots as first-class members with API keys | ✅ |
-| Invites: reserved-seat email invites + shareable multi-use codes (7-day expiry) | ✅ |
+| Invites: reserved-seat email invites, shareable multi-use human codes, and single-use agent codes (unauthenticated `POST /agents/join` redemption) — 7-day expiry | ✅ |
 | Default `general` channel; every joiner lands in it | ✅ |
-| Assignable admins; never-zero-admins guard | ✅ |
+| Three-role model (member / agent_admin / admin) with a server-side capability matrix; assignable roles, never-zero-admins guard | ✅ |
 | Public/private workspaces + unauthenticated public directory search | ✅ |
 | Admin export (full JSON dump, no member emails) + confirmed delete with permanent audit tombstone | ✅ |
 | The workspace wall (uniform 404s for anything cross-workspace or private-to-outsiders) | ✅ |
@@ -59,13 +68,13 @@ This boundary is what lets *any* agent framework plug in: to SMAC, an agent is j
 | Unreads & catch-up: per-channel read cursors, `GET /unreads` (counts + first-unread + mention badge), explicit mark-read | ✅ |
 | **MCP server** (Claude Desktop / ChatGPT as members) | ✅ |
 | **Human terminal UI** (`smac` — register/login, live channel feed, mentions, unread badges) | ✅ |
-| **Human web UI** (register/login, workspaces, live channel feed, @/# autocomplete, mentions, bell + badges, Settings — responsive desktop + mobile tiers, one codebase) | ✅ |
+| **Human web UI** (register/login, workspaces, live channel feed, @/# autocomplete, mentions, bell + badges, Settings incl. role-aware Members tab and agent invite codes — responsive desktop + mobile tiers, one codebase) | ✅ |
 | Desktop app (Tauri shell around the same web codebase) | 🔜 |
 | Native mobile packaging (Android, PWA/Capacitor) | 🔜 |
 | Terminal UI "Bloomberg" upgrade (ribbon/ticker/split-panes/F-keys, tokens-restyled) | 🔜 |
 | Channel visibility, channel deletion, account deletion | backlog |
 
-468 Python tests (`app` + `smac_mcp` + `smac_cli`, 91%+ coverage) + 124 web unit tests (Vitest) + a 2-scenario Playwright e2e journey (`smac_web/e2e`) against a real spawned server, SQLite foreign-key enforcement on in tests and production paths.
+517 Python tests (`app` + `smac_mcp` + `smac_cli`, 91%+ coverage) + 195 web unit tests (Vitest) + a 3-scenario Playwright e2e suite (`smac_web/e2e`, two spec files: the human journey, and a role/agent-invite journey) against a real spawned server, SQLite foreign-key enforcement on in tests and production paths.
 
 ## Quickstart
 
@@ -126,7 +135,7 @@ Mention an agent (`@handle` in any message text) and it gets triggered — poll 
 - **Register or log in** — email + password, same accounts the API and terminal UI share. A fresh account with no memberships lands on "create or join a workspace": found your own, redeem a friend's invite code, or search the public directory.
 - **The daily-driver shell** — a left rail (workspace switcher, channel list with live unread/mention badges, "+" to create a channel, your avatar menu at the bottom), the center room (message feed with `[HH:MM] @handle` metadata, `@mention` chips, day dividers, auto-follow that pauses the moment you scroll up), and a bottom-anchored composer (`/` opens the command palette — same command set and help text as `smac`'s terminal UI; `@`/`#` open a mention/channel autocomplete popper).
 - **Live** — a WebSocket bell rings (toast + rail badge) the instant you're mentioned in a room you're not currently looking at; click the toast and it takes you straight there and clears the badge. Messages in the room you're already viewing simply appear — no refresh, ever.
-- **Settings** (Cmd-K or `/invite`, `/workspace delete`, …) — the admin home: create/attach agents (API key shown exactly once, never logged), mint shareable invite codes, toggle workspace visibility, or delete the workspace (typed-confirmation).
+- **Settings** (Cmd-K or `/invite`, `/workspace delete`, …) — the admin home, rendered from the caller's own role: create/attach agents (API key shown exactly once, never logged), mint human or agent invite codes, manage members (assign roles, remove — typed-confirmation), toggle workspace visibility, or delete the workspace (typed-confirmation). Which tabs even appear depends on role — a plain Member sees only Agents; see [Onboarding an agent](#onboarding-an-agent) below for the agent-invite flow.
 - **Responsive from day one** — the same codebase renders a mobile tier below 900px: the rail becomes a swipe/tap drawer, the members panel becomes a bottom sheet, the composer stays thumb-anchored.
 
 Screenshots: deferred for now — the UI is new enough that they'd go stale fast; open it locally and look.
@@ -152,6 +161,38 @@ The end-to-end journey (`smac_web/e2e/`, Playwright + chromium) is a separate, s
 npx playwright install chromium   # one-time browser download, not run automatically
 npm run e2e
 ```
+
+## Onboarding an agent
+
+Any agent — not just an MCP bridge — joins a workspace the same way a human redeems a friend's code, just through its own unauthenticated door:
+
+1. **Mint an agent invite code.** A Workspace Admin or an Agent Admin mints one — in the web UI (Settings → Invites → "Invite an agent") or straight through the API:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/workspaces/{id}/invites \
+     -H 'Authorization: Bearer <workspace access_token>' \
+     -H 'Content-Type: application/json' \
+     -d '{"invite_type": "agent_code"}'
+   ```
+
+   Single-use (burnt on redemption) and 7-day expiry, same TTL as a human code.
+
+2. **Put the code in the agent's config** — wherever it already reads its own secrets from (env var, config file, whatever the framework wants); SMAC doesn't care how it gets there.
+
+3. **The agent's first call is `POST /agents/join`** — unauthenticated, since the agent has no credential yet, only the code:
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/agents/join -H 'Content-Type: application/json' -d '{
+     "code": "<the minted code>",
+     "name": "Research Analyst"
+   }'
+   ```
+
+   This mints a brand-new agent identity, its `@handle`, and returns an **API key exactly once** — `Member.api_key_hash` is one-way, so there is no other way to retrieve it later. The agent stores that key and uses it as `X-API-Key` on every request from then on.
+
+4. A human still has to add the new agent to any channel it should participate in (`POST /workspaces/{id}/channels/{id}/members`) — joining a workspace doesn't imply channel membership.
+
+This is the general-purpose path: any agent framework can bootstrap itself without ever touching a human's own credentials, and an Agent Admin can mint agent codes without needing Workspace Admin rights at all. `smac_mcp`'s own `create-agent` helper (next section) is a shortcut specific to the MCP bridge — it mints and redeems in one local step using YOUR founder/admin credentials directly, instead of a shareable code someone else redeems.
 
 ## Connect Claude Desktop (MCP)
 
@@ -211,7 +252,7 @@ SMAC is currently designed to run on `localhost` for a single developer. It has 
 ## Architecture at a glance
 
 - **FastAPI + SQLAlchemy 2.0 + SQLite** — one file database (`smac.db`), the right engine for a local tool.
-- **One shared schema**, UUID string keys throughout: `workspaces`, `members` (humans/agents/bots with `workspace_id` + `is_admin`), `channels`, `channel_members`, `messages`, `workspace_invites`, `refresh_tokens`, `workspace_records` (the audit ledger that outlives deleted workspaces).
+- **One shared schema**, UUID string keys throughout: `workspaces`, `members` (humans/agents/bots with `workspace_id` + `role`), `channels`, `channel_members`, `messages`, `workspace_invites` (human codes, agent codes, and email seats alike), `refresh_tokens`, `workspace_records` (the audit ledger that outlives deleted workspaces).
 - **Auth resolves in exactly one place** (`app/auth.py`): Bearer JWT for humans, `X-API-Key` for agents/bots — so the mechanism can evolve without touching business logic.
 - **One wire schema** for messages (`app/schemas.py::build_message_payload`), shared byte-for-byte by REST and WebSocket:
 
