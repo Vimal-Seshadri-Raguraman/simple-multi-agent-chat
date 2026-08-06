@@ -9,6 +9,18 @@
  * into `--font-mono`; that's gone.
  */
 
+/* The browser's default 8px `body` margin let the UA's white canvas show
+ * as a ring around the app (user-reported). Zero it and paint `html`
+ * itself with the token background so no default color can ever peek
+ * through -- `tokens.css` is generated from tokens.json, so the reset
+ * lives here, the hand-written app-chrome layer. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+}
+
 .app-shell {
   min-height: 100vh;
   display: flex;
