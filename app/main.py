@@ -22,6 +22,7 @@ from app.routers import (
     workspaces,
 )
 from app.schemas import MetaOut
+from app.webui import mount_webui
 
 #: Bumped independently of `server_version` only when the wire contract
 #: itself changes; the TUI's /meta handshake (spec Decision 6) compares
@@ -108,3 +109,8 @@ def health_check() -> dict[str, str]:
 def get_meta() -> MetaOut:
     """Unauthenticated version handshake for TUI/client compatibility checks."""
     return MetaOut(server_version=__version__, api_version=API_VERSION)
+
+
+# Mounted LAST: every API router and the /health, /meta routes above must
+# keep routing priority over the web UI's catch-all SPA route (web spec §1).
+mount_webui(app)

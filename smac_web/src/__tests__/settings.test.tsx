@@ -1,0 +1,351 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import Settings from "../screens/Settings";
+import * as api from "../lib/api";
+import type { MemberOut, MemberSelfOut, Session } from "../lib/api";
+import { AuthProvider, useAuth } from "../state/auth";
+import { WorkspaceProvider } from "../state/workspace";
+import { setViewportWidth } from "../testing/viewportMock";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Task 5: Settings (agents/invites/workspace admin). Mirrors `auth-flows.
+ * test.tsx`'s convention of mocking the whole `lib/api` module and
+ * rendering real providers around the screen under test, rather than
+ * reaching into internals -- `Settings`/`WorkspacePanel` read `useWorkspace
+ * ()`/`useAuth()` directly (same pattern `CreateOrJoin`/`JoinScreen`
+ * already use), so both providers are real here, only `api.*` is mocked.
+ *
+ * The one-time-key test (mandatory per the task-5 brief) is the strictest
+ * one in this file: it spies on every `console.*` method and asserts the
+ * key string never appears in any call, AND that the key is gone from
+ * `document.body.innerHTML` after dismissal -- not just hidden.
+ */
+vi.mock("../lib/api");
+
+const ACCOUNT_ONLY_SESSION: Session = {
+  url: "http://localhost",
+  email: "alice@example.com",
+  accountAccess: "aat",
+  accountRefresh: "art",
+};
+
+const WORKSPACE_SESSION: Session = {
+  ...ACCOUNT_ONLY_SESSION,
+  workspaceId: "ws1",
+  workspaceAccess: "wat",
+  workspaceRefresh: "wrt",
+};
+
+function selfFixture(overrides: Partial<MemberSelfOut> = {}): MemberSelfOut {
+  return {
+    member_id: "m1",
+    member_name: "Alice Human",
+    member_type: "human",
+    handle: "alice",
+    workspace_id: "ws1",
+    account_id: "acc-1",
+    created_at: "2026-01-01T00:00:00",
+    first_name: null,
+    last_name: null,
+    company: null,
+    occupation: null,
+    job_role: null,
+    is_admin: true,
+    workspace_visibility: "private",
+    ...overrides,
+  };
+}
+
+const AGENT_MEMBER: MemberOut = {
+  member_id: "m2",
+  member_name: "Analyst",
+  member_type: "agent",
+  handle: "analyst",
+  created_at: "2026-01-01T00:00:00",
+  account_id: "acc-agent-1",
+};
+
+function ScreenProbe() {
+  const { screen: authScreen } = useAuth();
+  return <div data-testid="auth-screen">{authScreen}</div>;
+}
+
+type RenderOpts = {
+  self?: MemberSelfOut;
+  section?: "agents" | "invites" | "workspace";
+  members?: MemberOut[];
+  withProbe?: boolean;
+};
+
+function renderSettings(opts: RenderOpts = {}) {
+  vi.mocked(api.getSession).mockReturnValue(WORKSPACE_SESSION);
+  vi.mocked(api.channels).mockResolvedValue([]);
+  vi.mocked(api.unreads).mockResolvedValue({ unreads: [] });
+  vi.mocked(api.members).mockResolvedValue(opts.members ?? [AGENT_MEMBER]);
+  vi.mocked(api.whoami).mockResolvedValue(opts.self ?? selfFixture());
+
+  render(
+    <AuthProvider>
+      <WorkspaceProvider>
+        <Settings onBack={vi.fn()} workspaceName="Acme" initialSection={opts.section} />
+      </WorkspaceProvider>
+      {opts.withProbe && <ScreenProbe />}
+    </AuthProvider>
+  );
+}
+
+function stubClipboard(): ReturnType<typeof vi.fn> {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  return writeText;
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+  // Test-only cleanup of the stubbed clipboard property (`stubClipboard`
+  // defines it with `configurable: true` specifically so this can undo it).
+  delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+});
+
+describe("Agents panel (web spec §2, constitution §6)", () => {
+  it("lists agents with name, handle, and account_id", async () => {
+    renderSettings();
+
+    await screen.findByText("Analyst");
+    expect(screen.getByText("@analyst")).toBeInTheDocument();
+    expect(screen.getByText("acc-agent-1")).toBeInTheDocument();
+  });
+
+  it(
+    "creating an agent reveals the key exactly once (mono block, 'shown exactly once' " +
+      "warning), then removes it from the DOM on dismiss and never logs it to console",
+    async () => {
+      const spiedMethods = ["log", "info", "warn", "error", "debug"] as const;
+      const consoleSpies = spiedMethods.map((method) =>
+        vi.spyOn(console, method).mockImplementation(() => undefined)
+      );
+      const SECRET = "SECRET-KEY-VALUE-abc123XYZ";
+      vi.mocked(api.createAgent).mockResolvedValue({
+        member_id: "m3",
+        member_name: "NewAgent",
+        member_type: "agent",
+        handle: "newagent",
+        api_key: SECRET,
+      });
+
+      renderSettings();
+      await screen.findByText("Analyst");
+
+      fireEvent.click(screen.getByRole("button", { name: "+ Create agent" }));
+      fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "NewAgent" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+      await screen.findByText(SECRET);
+      expect(screen.getByText(/shown exactly once/i)).toBeInTheDocument();
+      expect(api.createAgent).toHaveBeenCalledWith("NewAgent");
+
+      fireEvent.click(screen.getByRole("button", { name: /done/i }));
+
+      // Gone from the DOM -- not just visually hidden.
+      expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+      expect(document.body.innerHTML).not.toContain(SECRET);
+
+      // Never logged, on any console method, at any point (create, reveal,
+      // dismiss, or the refresh in between).
+      for (const spy of consoleSpies) {
+        for (const call of spy.mock.calls) {
+          for (const arg of call) {
+            expect(String(arg)).not.toContain(SECRET);
+          }
+        }
+        spy.mockRestore();
+      }
+    }
+  );
+
+  it("copying the key uses the clipboard API with the exact key string", async () => {
+    const writeText = stubClipboard();
+    const SECRET = "COPY-ME-KEY-999";
+    vi.mocked(api.createAgent).mockResolvedValue({
+      member_id: "m3",
+      member_name: "NewAgent",
+      member_type: "agent",
+      handle: "newagent",
+      api_key: SECRET,
+    });
+
+    renderSettings();
+    await screen.findByText("Analyst");
+    fireEvent.click(screen.getByRole("button", { name: "+ Create agent" }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "NewAgent" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await screen.findByText(SECRET);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy key" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(SECRET));
+    await screen.findByRole("button", { name: "Copied!" });
+  });
+
+  it("attaching an existing agent account also mints and reveals a fresh key", async () => {
+    vi.mocked(api.attachAgent).mockResolvedValue({
+      member_id: "m4",
+      member_name: "Analyst",
+      member_type: "agent",
+      handle: "analyst2",
+      api_key: "ATTACHED-KEY-999",
+    });
+
+    renderSettings();
+    await screen.findByText("Analyst");
+    fireEvent.click(screen.getByRole("button", { name: "Attach existing" }));
+    fireEvent.change(screen.getByLabelText("Account ID"), { target: { value: "acc-existing" } });
+    fireEvent.click(screen.getByRole("button", { name: "Attach" }));
+
+    await screen.findByText("ATTACHED-KEY-999");
+    expect(api.attachAgent).toHaveBeenCalledWith("acc-existing");
+  });
+});
+
+describe("Invites panel (web spec §2)", () => {
+  it("mints an invite code, offers a copy button, and shows the Bob instructions line", async () => {
+    vi.mocked(api.mintInviteCode).mockResolvedValue({
+      invite_id: "inv1",
+      workspace_id: "ws1",
+      invite_type: "code",
+      email: null,
+      code: "ABC123",
+      created_by: "m1",
+      created_at: "2026-01-01T00:00:00",
+      expires_at: null,
+    });
+
+    renderSettings({ section: "invites" });
+    fireEvent.click(screen.getByRole("button", { name: "Mint invite code" }));
+
+    const codeBlock = await screen.findByTestId("invite-code");
+    expect(codeBlock).toHaveTextContent("ABC123");
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+    expect(screen.getByText(/tell them/i)).toBeInTheDocument();
+  });
+});
+
+describe("Workspace panel: admin gating (web spec §2, task-5 brief)", () => {
+  it("hides the Workspace tab entirely for a non-admin (not merely disabling its controls)", async () => {
+    renderSettings({ self: selfFixture({ is_admin: false }) });
+
+    await screen.findByText("Analyst");
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+  });
+
+  it("shows the Workspace tab for an admin", async () => {
+    renderSettings({ self: selfFixture({ is_admin: true }), section: "workspace" });
+
+    await screen.findByRole("heading", { name: "Visibility" });
+  });
+});
+
+describe("Workspace panel: visibility toggle (admin)", () => {
+  it("flips private -> public via the API and reflects the server's response", async () => {
+    vi.mocked(api.updateWorkspaceVisibility).mockResolvedValue({
+      workspace_id: "ws1",
+      workspace_name: "Acme",
+      visibility: "public",
+    });
+
+    renderSettings({ section: "workspace" });
+    await screen.findByRole("heading", { name: "Visibility" });
+    expect(screen.getByText("private", { exact: false })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /make public/i }));
+
+    await waitFor(() => expect(api.updateWorkspaceVisibility).toHaveBeenCalledWith("public"));
+    await screen.findByRole("button", { name: /make private/i });
+  });
+});
+
+describe("Workspace panel: typed-confirmation delete (constitution §3)", () => {
+  it("only enables the delete button once BOTH the exact workspace name and the word 'delete' are typed", async () => {
+    renderSettings({ section: "workspace" });
+    await screen.findByRole("heading", { name: "Delete workspace" });
+
+    const deleteButton = screen.getByRole("button", { name: "Delete Acme" });
+    expect(deleteButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/type the workspace name/i), {
+      target: { value: "Acme" },
+    });
+    expect(deleteButton).toBeDisabled(); // name alone isn't enough
+
+    fireEvent.change(screen.getByLabelText(/then type/i), { target: { value: "wrong" } });
+    expect(deleteButton).toBeDisabled(); // wrong confirmation word
+
+    fireEvent.change(screen.getByLabelText(/then type/i), { target: { value: "delete" } });
+    expect(deleteButton).not.toBeDisabled();
+  });
+
+  it("deletes the workspace, clears only the workspace-tier session, and lands back on create-or-join (account intact)", async () => {
+    vi.mocked(api.deleteWorkspace).mockResolvedValue({ status: "deleted" });
+    vi.mocked(api.clearWorkspaceTier).mockReturnValue(ACCOUNT_ONLY_SESSION);
+
+    renderSettings({ section: "workspace", withProbe: true });
+    await screen.findByRole("heading", { name: "Delete workspace" });
+    await waitFor(() => expect(screen.getByTestId("auth-screen")).toHaveTextContent("authed"));
+
+    fireEvent.change(screen.getByLabelText(/type the workspace name/i), {
+      target: { value: "Acme" },
+    });
+    fireEvent.change(screen.getByLabelText(/then type/i), { target: { value: "delete" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete Acme" }));
+
+    await waitFor(() => expect(api.deleteWorkspace).toHaveBeenCalled());
+    expect(api.clearWorkspaceTier).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("auth-screen")).toHaveTextContent("create-or-join")
+    );
+  });
+});
+
+describe("Settings' mobile tier (final review Finding 4, MINOR: the T4 responsive pass missed T5)", () => {
+  it("renders the same .settings__body/.settings__tabs structure the mobile media query below targets, at a 390px width", async () => {
+    // `Settings.tsx` itself is pure CSS-driven here (no `useViewportTier()`
+    // read, unlike Rail/Drawer/Room in `responsive.test.tsx`) -- the fix is
+    // a `shell.css` media query keying off these SAME class names, so this
+    // just documents the hook points exist and stay stable at the phone
+    // width the review's failure scenario used (390px), rather than
+    // asserting jsdom-uncomputable `@media` behavior.
+    setViewportWidth(390);
+    renderSettings();
+    await screen.findByRole("heading", { name: "Settings" });
+
+    const tabs = document.querySelector(".settings__tabs");
+    const body = document.querySelector(".settings__body");
+    expect(tabs).toBeInTheDocument();
+    expect(body).toBeInTheDocument();
+    expect(tabs?.parentElement).toBe(body);
+  });
+
+  it("shell.css has a <900px rule collapsing .settings__tabs to a horizontal row inside a stacked .settings__body (regression guard)", () => {
+    const css = readFileSync(resolve(__dirname, "../styles/shell.css"), "utf-8");
+    // Isolate just the Settings-specific mobile block by its own comment
+    // markers (there's more than one `@media (max-width: 899px)` block in
+    // the file) rather than assuming it's the first/last one.
+    const start = css.indexOf("Final review Finding 4");
+    expect(start).toBeGreaterThan(-1); // sanity: the block's own doc comment is still there
+    const end = css.indexOf("/* -- Agents panel", start);
+    expect(end).toBeGreaterThan(start);
+    const settingsBlock = css.slice(start, end);
+
+    expect(settingsBlock).toContain("@media (max-width: 899px)");
+    expect(settingsBlock).toMatch(/\.settings__body\s*\{[^}]*flex-direction:\s*column/);
+    expect(settingsBlock).toMatch(/\.settings__tabs\s*\{[^}]*flex-direction:\s*row/);
+  });
+});

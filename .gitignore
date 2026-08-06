@@ -227,3 +227,23 @@ project.json
 docs/
 rough.*
 rough*
+
+# SMAC web UI (SMAC-85): node_modules is a dev-only dependency (Node is
+# never required by `pip install`); smac_web/dist is the intermediate Vite
+# build output. The bundle itself is COMMITTED at app/static/webui/ (design
+# system constitution §8's trade), so that path is deliberately NOT ignored.
+smac_web/node_modules/
+smac_web/dist/
+
+# Playwright's own run artifacts (SMAC-85 Task 6): downloaded browsers live
+# outside the repo (~/.cache/ms-playwright), but a local `npm run e2e` run
+# still writes a report/trace directory here on failure.
+smac_web/test-results/
+smac_web/playwright-report/
+smac_web/blob-report/
+
+# The generic `lib/` rule above (Python packaging boilerplate) also
+# matches smac_web/src/lib/ -- the TS API client module task-2's brief
+# pins that exact path for (api.ts/errors.ts/session.ts/types.ts). Un-
+# ignore it explicitly rather than renaming the directory.
+!smac_web/src/lib/

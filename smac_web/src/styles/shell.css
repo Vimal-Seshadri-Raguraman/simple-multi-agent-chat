@@ -1,0 +1,1265 @@
+/* The authed daily-driver shell (web spec §2, §5's layout grammar; design
+ * system constitution §2 tokens). Every color/space/radius/font value
+ * below comes from `tokens.css`'s custom properties -- NO hardcoded
+ * colors anywhere in this file (constitution rule; task-3 brief). Mono
+ * is used for message metadata and identity/handle material per the
+ * constitution's "monospace is a first-class citizen" rule; the `agent`
+ * token tints agent handles/rings everywhere a member's type is known,
+ * so a reader can always tell humans from agents at a glance.
+ */
+
+.shell {
+  display: flex;
+  /* Fills whatever's left of `.app-shell` (App.tsx's `min-height: 100vh`
+   * flex column, which also stacks `VersionBanner` above this) rather
+   * than claiming a fixed 100vh of its own -- avoids double-100vh
+   * overflow when a version banner/toast is also on screen. */
+  flex: 1;
+  min-height: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+}
+
+/* Initial-load loading/error states (final review Finding 2b): shown in
+ * place of the Rail/Room/Drawer layout while `state/workspace.tsx`'s
+ * initial fetch is in flight, or if it failed non-fatally (a
+ * `SessionExpired` failure never reaches this -- Finding 2a routes the
+ * app out of the authed screen first). */
+.shell--status {
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-4);
+  text-align: center;
+  padding: var(--space-6);
+}
+
+.shell__status-message {
+  font-size: var(--font-size-base);
+  color: var(--color-text-dim);
+}
+
+.shell__status-message--error {
+  color: var(--color-danger);
+}
+
+/* -- Rail --------------------------------------------------------- */
+
+.rail {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  padding: var(--space-4) 0;
+  overflow-y: auto;
+}
+
+.rail__workspace {
+  position: relative;
+  padding: 0 var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-3);
+}
+
+.rail__workspace-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rail__workspace-name {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  text-align: left;
+  font-weight: 700;
+  font-size: var(--font-size-lg);
+  color: var(--color-text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-2) 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Settings entry point (SMAC-85): a quiet, dim icon-button that brightens
+ * on hover -- constitution §2's "one confident accent" rule reserves
+ * `--color-accent` for the product's single accent use, not a plain
+ * administration affordance, so this deliberately never touches it. */
+.rail__settings-button {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  font-size: var(--font-size-base);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail__settings-button:hover {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+}
+
+.rail__switcher {
+  position: absolute;
+  z-index: 20;
+  top: 100%;
+  left: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  gap: var(--space-1);
+}
+
+.rail__switcher-item {
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.rail__switcher-item:hover {
+  background: var(--color-surface);
+}
+
+.rail__switcher-item--current {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.rail__switcher-item--action {
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+  color: var(--color-text-dim);
+}
+
+.rail__channels-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-4);
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-2);
+}
+
+.rail__create-channel-toggle {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  width: 20px;
+  height: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.rail__create-channel-toggle:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.rail__create-channel-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4) var(--space-3);
+}
+
+.rail__create-channel-form label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+}
+
+.rail__create-channel-form input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.rail__create-channel-form button {
+  align-self: flex-start;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.rail__channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 1;
+}
+
+.rail__channel {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.rail__channel:hover {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.rail__channel--active {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.rail__channel-name {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail__channel-bell {
+  color: var(--color-bell);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+}
+
+.rail__channel-badge {
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 0 var(--space-2);
+  min-width: 1.5em;
+  text-align: center;
+}
+
+.rail__you {
+  position: relative;
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.rail__you-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--color-text);
+  cursor: pointer;
+  padding: var(--space-2) 0;
+}
+
+.rail__you-avatar {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.rail__you-handle {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.rail__you-menu {
+  position: absolute;
+  z-index: 20;
+  bottom: 100%;
+  left: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+}
+
+.rail__you-menu button {
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.rail__you-menu button:hover {
+  background: var(--color-surface);
+}
+
+.rail__whoami-card {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-1);
+}
+
+.rail__whoami-name {
+  font-weight: 600;
+  margin: 0;
+}
+
+.rail__whoami-handle {
+  font-family: var(--font-mono);
+  color: var(--color-accent);
+  margin: 0;
+}
+
+.rail__whoami-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+  margin: 0;
+}
+
+/* -- Room ----------------------------------------------------------- */
+
+.room {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.room__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.room__title {
+  flex: 1;
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+.room__hamburger {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.room__member-count {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-dim);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.room__member-count:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.room__empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dim);
+}
+
+/* -- Feed ------------------------------------------------------------ */
+
+.feed {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.feed__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+}
+
+.feed__loading-older {
+  text-align: center;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+  padding: var(--space-2);
+}
+
+.feed__empty {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.feed__day-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+  margin: var(--space-5) 0 var(--space-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.feed__day-divider::before,
+.feed__day-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.feed__new-below-pill {
+  position: absolute;
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+/* -- Message line ----------------------------------------------------- */
+
+.message-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  margin: 0 calc(var(--space-3) * -1);
+  border-radius: var(--radius-sm);
+  line-height: 1.5;
+}
+
+.message-line:hover {
+  background: var(--color-surface-raised);
+}
+
+.message-line--mention {
+  background: var(--color-mention-bg);
+}
+
+.message-line--mention:hover {
+  /* Stays on its own highlight -- a row hover shouldn't wash out the
+   * "this mentions you" signal the mention background exists to give. */
+  background: var(--color-mention-bg);
+}
+
+/* Avatar chip (SMAC-85 work item 3): initials on a surface-raised
+ * circle; agents get an `agent`-color ring so a reader can always tell
+ * humans from agents at a glance (constitution §2), even scanning the
+ * feed by eye rather than reading each handle. */
+.message-line__avatar {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-raised);
+  border: 2px solid var(--color-border);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.message-line__avatar--agent {
+  border-color: var(--color-agent);
+  color: var(--color-agent);
+}
+
+.message-line__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.message-line__meta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-dim);
+}
+
+.message-line__time {
+  color: var(--color-text-dim);
+}
+
+.message-line__handle {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.message-line__handle--agent {
+  color: var(--color-agent);
+}
+
+.message-line__text {
+  font-size: var(--font-size-base);
+}
+
+.message-line__mention-chip {
+  font-family: var(--font-mono);
+  background: var(--color-surface-raised);
+  color: var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+
+/* -- Composer --------------------------------------------------------- */
+
+.composer {
+  position: relative;
+  border-top: 1px solid var(--color-border);
+  padding: var(--space-3) var(--space-5);
+}
+
+.composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.composer__input {
+  flex: 1;
+  resize: none;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  padding: var(--space-2) var(--space-3);
+  min-height: 2.5em;
+}
+
+.composer__input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.composer__send {
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.composer__send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composer__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--space-2);
+}
+
+/* -- Autocomplete ------------------------------------------------------ */
+
+.autocomplete {
+  position: absolute;
+  bottom: 100%;
+  left: var(--space-5);
+  right: var(--space-5);
+  margin-bottom: var(--space-1);
+  list-style: none;
+  padding: var(--space-1);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+.autocomplete__item {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.autocomplete__item--active {
+  background: var(--color-accent);
+  color: var(--color-bg);
+}
+
+/* -- Command palette ---------------------------------------------------- */
+
+.palette__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--color-bg);
+  opacity: 0.6;
+}
+
+.palette {
+  position: fixed;
+  z-index: 101;
+  top: 15vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 90vw);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.palette__input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-surface-raised);
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: var(--font-size-base);
+  padding: var(--space-3) var(--space-4);
+}
+
+.palette__input:focus {
+  outline: none;
+}
+
+.palette__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.palette__item {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.palette__item--active {
+  background: var(--color-accent);
+}
+
+.palette__item--active .palette__item-name,
+.palette__item--active .palette__item-help {
+  color: var(--color-bg);
+}
+
+.palette__item-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.palette__item-args {
+  font-weight: 400;
+  color: var(--color-text-dim);
+}
+
+.palette__item-help {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-dim);
+}
+
+.palette__empty {
+  padding: var(--space-3);
+  color: var(--color-text-dim);
+  text-align: center;
+}
+
+/* -- Drawer ------------------------------------------------------------- */
+
+.drawer {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+}
+
+.drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.drawer__title {
+  font-weight: 600;
+}
+
+.drawer__close {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-lg);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.drawer__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+/* -- Members panel -------------------------------------------------------- */
+
+.members-panel__group {
+  margin-bottom: var(--space-4);
+}
+
+.members-panel__group-label {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dim);
+  margin: 0 0 var(--space-2);
+}
+
+.members-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.members-panel__member {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.members-panel__avatar-ring {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.members-panel__member--agent .members-panel__avatar-ring {
+  border-color: var(--color-agent);
+}
+
+.members-panel__member--agent .members-panel__handle {
+  color: var(--color-agent);
+}
+
+.members-panel__handle {
+  font-family: var(--font-mono);
+}
+
+.members-panel__admin-mark {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+
+.members-panel__empty {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+}
+
+/* -- Mobile tier (web spec §1: <900px) ----------------------------------
+ * Rail becomes a swipe/tap drawer, the right Drawer becomes a bottom
+ * sheet -- both driven by the `mobile`/`open` props `AuthedShell.tsx`
+ * computes from `state/viewport.tsx`'s `useViewportTier()`, not by a CSS
+ * `@media` query, so the JS-driven tier and the styling can never
+ * disagree about which one is active. The `@media` block further below
+ * covers the few purely-cosmetic mobile tweaks (composer touch targets,
+ * safe-area insets) that don't need any JS state of their own.
+ */
+
+.rail--drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 90;
+  width: min(80vw, 300px);
+  box-shadow: 0 0 24px var(--color-border);
+  transition: transform 0.2s ease;
+}
+
+.rail--drawer-open {
+  transform: translateX(0);
+}
+
+.rail--drawer-closed {
+  transform: translateX(-100%);
+}
+
+.rail__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--color-bg);
+  opacity: 0.6;
+}
+
+.drawer--sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  z-index: 90;
+  max-height: 70vh;
+  border-left: none;
+  border-top: 1px solid var(--color-border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.drawer__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--color-bg);
+  opacity: 0.6;
+}
+
+@media (max-width: 899px) {
+  /* Thumb-anchored composer: bigger tap targets, safe-area-aware bottom
+   * padding (the on-screen keyboard/home-indicator strip on a phone). */
+  .composer {
+    padding-bottom: max(var(--space-3), env(safe-area-inset-bottom));
+  }
+
+  .composer__send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .toast-stack {
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+    max-width: none;
+  }
+}
+
+/* -- Toast (task-4 brief: bell -> toast, VersionBanner's update nudge) --- */
+
+.toast-stack {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(360px, 90vw);
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  box-shadow: 0 4px 16px var(--color-border);
+}
+
+.toast__body {
+  flex: 1;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  padding: 0;
+}
+
+.toast__dismiss {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  line-height: 1;
+  padding: 0;
+}
+
+/* -- Settings (web spec §2, constitution §6: the administration home) --- */
+
+.settings {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: var(--font-ui);
+}
+
+.settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings__header h1 {
+  margin: 0;
+  font-size: var(--font-size-xl);
+}
+
+.settings__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.settings__tabs {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.settings__tab {
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-dim);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--font-size-sm);
+}
+
+.settings__tab:hover {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.settings__tab--active {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.settings__panel {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.settings__panel h2 {
+  margin-top: 0;
+}
+
+/* Shared mono treatment for identity/key material anywhere in Settings
+ * (constitution §2: "monospace is a first-class citizen"). */
+.settings__panel .mono,
+.settings__panel input.mono {
+  font-family: var(--font-mono);
+}
+
+.settings__panel form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 28rem;
+  margin-top: var(--space-3);
+}
+
+.settings__panel form label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+}
+
+.settings__panel form input,
+.settings__panel form select {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.settings__panel form input:focus,
+.settings__panel form select:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+
+/* Submit/action buttons in Settings forms render through the shared
+ * `.btn` system (`styles/buttons.css`, SMAC-85) directly in JSX -- no
+ * bespoke `button[type="submit"]` rule needed here anymore. */
+.settings__panel form button[type="submit"] {
+  align-self: flex-start;
+  margin-top: var(--space-2);
+}
+
+/* Final review Finding 4 (MINOR): Settings was the one T5-era screen the
+ * T4 responsive pass missed -- `.settings__tabs`'s fixed 200px column ate
+ * half of a 390px phone's width, squeezing the Agents/Invites/Workspace
+ * panels (one-time key reveal, typed-delete confirm form) into a ~180px
+ * strip. Same breakpoint as every other mobile-tier rule in this file
+ * (web spec §1: <900px); the tab rail collapses from a left column to a
+ * horizontal top bar, matching the fix direction ("stack `.settings__body`
+ * vertically, make `.settings__tabs` a horizontal row").
+ */
+@media (max-width: 899px) {
+  .settings__body {
+    flex-direction: column;
+  }
+
+  .settings__tabs {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: visible;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .settings__tab--active {
+    /* The active-tab accent was a left inset border for the vertical rail
+     * (`box-shadow: inset 3px 0 0 ...`) -- a bottom inset reads correctly
+     * once the rail is a horizontal row. */
+    box-shadow: inset 0 -3px 0 var(--color-accent);
+  }
+}
+
+/* -- Agents panel --------------------------------------------------------- */
+
+.agents-panel__list {
+  list-style: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.agents-panel__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.agents-panel__handle {
+  color: var(--color-agent);
+}
+
+.agents-panel__account-id {
+  margin-left: auto;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+}
+
+.agents-panel__empty {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+}
+
+.agents-panel__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.agents-panel__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.agents-panel__reveal {
+  max-width: 32rem;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-lg);
+}
+
+.agents-panel__reveal-warning {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.agents-panel__key {
+  font-family: var(--font-mono);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.agents-panel__reveal-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* -- Invites panel ---------------------------------------------------------- */
+
+.invites-panel > .btn {
+  margin-top: var(--space-2);
+}
+
+.invites-panel__hint {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+  max-width: 32rem;
+}
+
+.invites-panel__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.invites-panel__result {
+  margin-top: var(--space-4);
+  max-width: 28rem;
+}
+
+.invites-panel__code {
+  font-family: var(--font-mono);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-size: var(--font-size-lg);
+  text-align: center;
+}
+
+.invites-panel__bob {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+  margin-top: var(--space-2);
+}
+
+/* -- Workspace panel -------------------------------------------------------- */
+
+.workspace-panel__section {
+  max-width: 32rem;
+  padding-bottom: var(--space-5);
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.workspace-panel__section:last-child {
+  border-bottom: none;
+}
+
+.workspace-panel__section--danger h2 {
+  color: var(--color-danger);
+}
+
+.workspace-panel__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}

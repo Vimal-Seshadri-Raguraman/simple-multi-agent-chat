@@ -1,0 +1,52 @@
+/* GENERATED FILE -- do not edit by hand.
+ * Source of truth: design/tokens.json (design system constitution §2).
+ * Regenerate with `npm run tokens` after changing that file.
+ */
+
+:root {
+  --color-accent: #4F46E5;
+  --color-bg: #FAFAF9;
+  --color-surface: #FFFFFF;
+  --color-surface-raised: #F4F4F5;
+  --color-border: #E4E4E7;
+  --color-text: #18181B;
+  --color-text-dim: #71717A;
+  --color-mention-bg: #FEF3C7;
+  --color-bell: #D97706;
+  --color-danger: #DC2626;
+  --color-success: #16A34A;
+  --color-agent: #7C3AED;
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --font-ui: Inter, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 15px;
+  --font-size-lg: 18px;
+  --font-size-xl: 24px;
+}
+
+[data-theme="dark"] {
+  --color-accent: #818CF8;
+  --color-bg: #101014;
+  --color-surface: #17171C;
+  --color-surface-raised: #1E1E24;
+  --color-border: #2A2A32;
+  --color-text: #E7E7EA;
+  --color-text-dim: #8B8B93;
+  --color-mention-bg: #3A2E12;
+  --color-bell: #F59E0B;
+  --color-danger: #F87171;
+  --color-success: #4ADE80;
+  --color-agent: #A78BFA;
+}

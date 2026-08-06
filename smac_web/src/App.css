@@ -1,0 +1,315 @@
+/* App-level chrome (root shell header/body) + the pre-authed auth screens
+ * (SMAC-85 polish pass, web spec §2): a centered single-column card on
+ * the page background, wordmark + theme toggle in the persistent top bar
+ * above it. Every color/space/radius/font value below is a `tokens.css`
+ * custom property -- zero hex/rgb literals anywhere in this file
+ * (constitution rule). Headings render in `--font-ui`, never mono
+ * (constitution §2: mono is reserved for message metadata + code/key
+ * material) -- `.app-shell__body` used to force the whole pre-auth tree
+ * into `--font-mono`; that's gone.
+ */
+
+/* The browser's default 8px `body` margin let the UA's white canvas show
+ * as a ring around the app (user-reported). Zero it and paint `html`
+ * itself with the token background so no default color can ever peek
+ * through -- `tokens.css` is generated from tokens.json, so the reset
+ * lives here, the hand-written app-chrome layer. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+}
+
+.app-shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-shell__wordmark {
+  font-weight: 700;
+  font-size: var(--font-size-lg);
+  color: var(--color-accent);
+}
+
+.app-shell__theme-toggle {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.app-shell__theme-toggle:hover {
+  background: var(--color-surface-raised);
+  border-color: var(--color-accent);
+}
+
+.app-shell__body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-4);
+}
+
+/* -- Auth screens (Welcome/Login/Register/CreateOrJoin/JoinScreen/
+ * WorkspacePicker) -- the shared "card" every one of them roots itself
+ * in via `className="auth-screen ..."`. ------------------------------- */
+
+.auth-screen {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: 0 1px 2px var(--color-border);
+}
+
+/* The join/create-workspace directory screens run noticeably longer than
+ * a plain login/register card (search results, two sections) -- a wider
+ * cap keeps them from feeling cramped without abandoning the "single
+ * card" shape. */
+.auth-screen--join,
+.auth-screen--create-or-join,
+.auth-screen--create-workspace,
+.auth-screen--workspace-picker {
+  max-width: 480px;
+}
+
+.auth-screen h1 {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.auth-screen h2 {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.auth-screen__tagline {
+  margin: 0;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-base);
+}
+
+.auth-screen__actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.auth-screen__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+  margin: 0;
+}
+
+.auth-screen__back-to-workspace {
+  align-self: flex-start;
+  margin-bottom: calc(var(--space-2) * -1);
+}
+
+/* Forms: vertically stacked labeled inputs. A `label` immediately
+ * followed by its `input`/`select` sits close to it; the gap to the
+ * NEXT field's label is the flex `gap` below plus the label's own
+ * `margin-top` -- a tight label/control pair, a looser field/field
+ * rhythm, with no extra wrapper element needed per field. */
+.auth-screen form,
+.join-screen__display-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.auth-screen label,
+.join-screen__display-name label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-dim);
+  margin-top: var(--space-3);
+}
+
+.auth-screen form label:first-child,
+.join-screen__display-name label:first-child {
+  margin-top: 0;
+}
+
+.auth-screen input,
+.auth-screen select,
+.join-screen__display-name input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  padding: var(--space-2) var(--space-3);
+}
+
+.auth-screen input:focus,
+.auth-screen select:focus,
+.join-screen__display-name input:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+
+.auth-screen form > button[type="submit"] {
+  margin-top: var(--space-2);
+}
+
+/* -- Join screen: public-workspace directory + invite-code sections --- */
+
+.join-screen__directory,
+.join-screen__code {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.join-screen__directory input[type="search"] {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  padding: var(--space-2) var(--space-3);
+}
+
+.join-screen__directory input[type="search"]:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+
+.join-screen__directory ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.join-screen__directory li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.join-screen__directory li:hover {
+  border-color: var(--color-accent);
+}
+
+/* -- Workspace picker: card rows, one per membership ------------------- */
+
+.workspace-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.workspace-picker__list button {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-picker__list button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+}
+
+.workspace-picker__list button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.workspace-picker__name {
+  font-weight: 600;
+}
+
+.workspace-picker__handle {
+  font-family: var(--font-mono);
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
+}
+
+/* -- Version banner (client/server version mismatch notice) ------------ */
+
+.version-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-mention-bg);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.version-banner button {
+  background: none;
+  border: none;
+  color: var(--color-text-dim);
+  cursor: pointer;
+  font-size: var(--font-size-lg);
+  line-height: 1;
+  padding: 0;
+}
+
+.version-banner button:hover {
+  color: var(--color-text);
+}

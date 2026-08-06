@@ -1,0 +1,294 @@
+/**
+ * Hand-rolled auth/screen-state machine: React context + reducer, no
+ * `react-router` (YAGNI, task-2 brief -- the app only ever has two top-
+ * level shapes: the unauthenticated auth screens below, or the authed
+ * shell Task 3 owns). Every auth screen (`screens/*.tsx`) reads/dispatches
+ * through `useAuth()` rather than holding its own copy of session state.
+ */
+
+import {
+  type ReactNode,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+} from "react";
+import * as api from "../lib/api";
+import type { Membership, Session } from "../lib/api";
+
+/**
+ * Every screen the unauthenticated (or not-yet-in-a-workspace) app can
+ * be in, plus the terminal `"authed"` state Task 3's shell renders.
+ */
+export type Screen =
+  | "welcome"
+  | "login"
+  | "register"
+  | "workspace-picker"
+  | "create-or-join"
+  | "join"
+  | "authed";
+
+export type AuthState = {
+  screen: Screen;
+  session: Session | null;
+  /** Populated after a `login()` whose account has >1 workspace membership. */
+  memberships: Membership[];
+  /** Set while an async auth action (login/signup/join/...) is in flight. */
+  pending: boolean;
+  /** The last auth action's error message, if any -- cleared on the next attempt. */
+  error: string | null;
+};
+
+type Action =
+  | { type: "NAVIGATE"; screen: Screen }
+  | { type: "PENDING" }
+  | { type: "ERROR"; message: string }
+  | { type: "ACCOUNT_READY"; session: Session }
+  | { type: "LOGIN_SUCCESS"; session: Session; workspaces: Membership[] }
+  | { type: "WORKSPACE_ENTERED"; session: Session }
+  | { type: "WORKSPACE_LEFT"; session: Session }
+  | { type: "LOGGED_OUT" }
+  | { type: "SESSION_EXPIRED"; message: string };
+
+function initialState(): AuthState {
+  const session = api.getSession();
+  // Three cases on a fresh page load: no saved session -> "welcome"; a
+  // saved session with a workspace tier already minted -> straight to
+  // "authed"; a saved ACCOUNT-ONLY session (e.g. refreshed mid register-
+  // step-1, or between logging in and picking/creating a workspace) ->
+  // "create-or-join", NOT "welcome" -- the account is real and already
+  // logged in, it just hasn't entered a workspace yet, so sending it
+  // back to the logged-out welcome screen would be wrong (task-3 brief's
+  // deferred T2 fix).
+  let screen: Screen = "welcome";
+  if (session) {
+    screen = session.workspaceId ? "authed" : "create-or-join";
+  }
+  return {
+    screen,
+    session,
+    memberships: [],
+    pending: false,
+    error: null,
+  };
+}
+
+function reducer(state: AuthState, action: Action): AuthState {
+  switch (action.type) {
+    case "NAVIGATE":
+      return { ...state, screen: action.screen, error: null };
+    case "PENDING":
+      return { ...state, pending: true, error: null };
+    case "ERROR":
+      return { ...state, pending: false, error: action.message };
+    case "ACCOUNT_READY":
+      // signup() success: an account with no workspace yet -> the
+      // create-or-join step (register's "two-step", brief-pinned order:
+      // account fields land BEFORE the workspace step is ever shown).
+      return {
+        ...state,
+        pending: false,
+        error: null,
+        session: action.session,
+        screen: "create-or-join",
+      };
+    case "LOGIN_SUCCESS": {
+      if (action.workspaces.length === 0) {
+        return {
+          ...state,
+          pending: false,
+          error: null,
+          session: action.session,
+          memberships: [],
+          screen: "create-or-join",
+        };
+      }
+      if (action.workspaces.length === 1) {
+        // Single-membership auto-enter is driven by the Login screen
+        // (it needs to await enterWorkspace() and dispatch
+        // WORKSPACE_ENTERED itself) -- this branch just records the
+        // pending state; Login.tsx handles the follow-up call.
+        return {
+          ...state,
+          pending: true,
+          error: null,
+          session: action.session,
+          memberships: action.workspaces,
+        };
+      }
+      return {
+        ...state,
+        pending: false,
+        error: null,
+        session: action.session,
+        memberships: action.workspaces,
+        screen: "workspace-picker",
+      };
+    }
+    case "WORKSPACE_ENTERED":
+      return {
+        ...state,
+        pending: false,
+        error: null,
+        session: action.session,
+        memberships: [],
+        screen: "authed",
+      };
+    case "WORKSPACE_LEFT":
+      // Settings' typed-confirmation workspace delete (web spec §2, task-5
+      // brief, binding): the account stays logged in -- this is NOT
+      // `LOGGED_OUT` -- it just no longer has a workspace, so it lands on
+      // the SAME "create-or-join" state a 0-membership login reaches
+      // above, with the (now workspace-tier-cleared) session `api.
+      // clearWorkspaceTier()` produced.
+      return {
+        ...state,
+        pending: false,
+        error: null,
+        session: action.session,
+        memberships: [],
+        screen: "create-or-join",
+      };
+    case "LOGGED_OUT":
+      return {
+        screen: "welcome",
+        session: null,
+        memberships: [],
+        pending: false,
+        error: null,
+      };
+    case "SESSION_EXPIRED":
+      // Final review Finding 2 (IMPORTANT): an expiry-driven invalidation
+      // (a failed refresh chain -- `lib/api.ts`'s `raiseSessionExpired()`),
+      // NOT an explicit `logout()`. Lands on "login" (not "welcome") with
+      // the server-envelope/SessionExpired message on display -- the
+      // reader typed real credentials into a real session a moment ago,
+      // so re-entering them is the next step, not re-reading the wordmark
+      // landing page. This is also what tears the dead shell down: `App.
+      // tsx` only renders `AuthedShell` (and the sockets/`WorkspaceProvider`
+      // it owns) while `screen === "authed"`, so leaving that screen
+      // unmounts them, running every socket's own close-on-unmount cleanup
+      // -- no separate "close sockets" call needed here.
+      return {
+        screen: "login",
+        session: null,
+        memberships: [],
+        pending: false,
+        error: action.message,
+      };
+    default:
+      return state;
+  }
+}
+
+export type AuthContextValue = AuthState & {
+  navigate: (screen: Screen) => void;
+  setPending: () => void;
+  setError: (message: string) => void;
+  /** Record a freshly-created account-only session (register step 1). */
+  accountReady: (session: Session) => void;
+  /** Record a successful login's session + memberships. */
+  loginSuccess: (session: Session, workspaces: Membership[]) => void;
+  /** Record a session that just gained (or switched) a workspace. */
+  workspaceEntered: (session: Session) => void;
+  /** Record that the current workspace is gone (Settings' delete flow,
+   * after `api.deleteWorkspace()` + `api.clearWorkspaceTier()` succeed) --
+   * lands on "create-or-join" with the account tier still intact. */
+  workspaceLeft: (session: Session) => void;
+  /** Log out locally (and best-effort server-side via `api.logout()`). */
+  logout: () => Promise<void>;
+};
+
+const AuthContext = createContext<AuthContextValue | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, undefined, initialState);
+
+  // Final review Finding 2 (IMPORTANT): the one place `SessionExpired`
+  // raised by an expiry-driven `lib/api.ts` call site gets consumed --
+  // registered for the lifetime of the whole app (this provider never
+  // unmounts), deregistered defensively on unmount so a stray late call
+  // can never dispatch into a gone component.
+  useEffect(() => {
+    api.setSessionInvalidatedHandler((message) => {
+      dispatch({ type: "SESSION_EXPIRED", message });
+    });
+    return () => api.setSessionInvalidatedHandler(null);
+  }, []);
+
+  const navigate = useCallback((screen: Screen) => dispatch({ type: "NAVIGATE", screen }), []);
+  const setPending = useCallback(() => dispatch({ type: "PENDING" }), []);
+  const setError = useCallback((message: string) => dispatch({ type: "ERROR", message }), []);
+  const accountReady = useCallback(
+    (session: Session) => dispatch({ type: "ACCOUNT_READY", session }),
+    []
+  );
+  const loginSuccess = useCallback(
+    (session: Session, workspaces: Membership[]) =>
+      dispatch({ type: "LOGIN_SUCCESS", session, workspaces }),
+    []
+  );
+  const workspaceEntered = useCallback(
+    (session: Session) => dispatch({ type: "WORKSPACE_ENTERED", session }),
+    []
+  );
+  const workspaceLeft = useCallback(
+    (session: Session) => dispatch({ type: "WORKSPACE_LEFT", session }),
+    []
+  );
+  const logout = useCallback(async () => {
+    await api.logout();
+    dispatch({ type: "LOGGED_OUT" });
+  }, []);
+
+  const value = useMemo<AuthContextValue>(
+    () => ({
+      ...state,
+      navigate,
+      setPending,
+      setError,
+      accountReady,
+      loginSuccess,
+      workspaceEntered,
+      workspaceLeft,
+      logout,
+    }),
+    [
+      state,
+      navigate,
+      setPending,
+      setError,
+      accountReady,
+      loginSuccess,
+      workspaceEntered,
+      workspaceLeft,
+      logout,
+    ]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth(): AuthContextValue {
+  const ctx = useContext(AuthContext);
+  if (ctx === null) {
+    throw new Error("useAuth() must be called within an <AuthProvider>");
+  }
+  return ctx;
+}
+
+/**
+ * Convenience hook for the app root (Task 3's shell composes this):
+ * `true` once the auth store has landed on `"authed"`.
+ */
+export function useIsAuthed(): boolean {
+  const { screen } = useAuth();
+  return screen === "authed";
+}
+
+// Re-exported so screens/tests importing from "../state/auth" don't also
+// need a separate import from "../lib/api" just for the type.
+export type { Membership, Session };

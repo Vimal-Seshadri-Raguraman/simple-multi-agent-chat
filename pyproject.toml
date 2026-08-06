@@ -38,3 +38,10 @@ packages = ["app", "app.routers", "smac_cli", "smac_mcp"]
 
 [tool.setuptools.dynamic]
 version = { attr = "app.__version__" }
+
+[tool.black]
+# smac_web/ is a Node/TypeScript project (SMAC-85) -- black has no business
+# formatting it, and without this it will happily "fix" vendored Python
+# fixtures living inside smac_web/node_modules (e.g. flatted's python/
+# subpackage), which is both pointless and slow.
+extend-exclude = "smac_web/"

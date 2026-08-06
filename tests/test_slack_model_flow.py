@@ -103,9 +103,15 @@ def test_retired_endpoints_are_gone(client):
     assert client.post("/auth/login", json={}).status_code in (404, 405)
     assert client.post("/auth/discover", json={}).status_code in (404, 405)
     headers = founder_headers(client, "w1")
-    assert client.get("/invites", headers=headers).status_code in (404, 405)
-    assert client.post("/invites/x/accept", headers=headers).status_code in (404, 405)
-    assert client.post("/invites/x/decline", headers=headers).status_code in (404, 405)
+    # The bare /invites/* path was retired entirely (invites now live under
+    # /workspaces/{id}/invites) -- it isn't one of the web UI's own API
+    # prefixes (app/webui.py's API_PREFIXES, SMAC-85), so it's no longer
+    # API territory at all: GET falls to the SPA's client-route catch-all
+    # (200, index.html) and POST 405s (the catch-all route is GET-only).
+    # Either way, no retired API behavior survives at this path.
+    assert client.get("/invites", headers=headers).status_code == 200
+    assert client.post("/invites/x/accept", headers=headers).status_code == 405
+    assert client.post("/invites/x/decline", headers=headers).status_code == 405
     assert client.get("/workspaces", headers=headers).status_code in (404, 405)
     ws = founder_auth(client, "w1")["workspace_id"]
     assert client.post(
