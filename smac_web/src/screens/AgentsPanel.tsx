@@ -24,6 +24,16 @@ import { errorMessage } from "../lib/errors";
  * Do not add a `console.log`/`console.debug` anywhere in this file,
  * including "temporary" debugging -- `__tests__/settings.test.tsx` spies
  * on every console method for exactly this reason.
+ *
+ * **Read-only mode (SMAC-92 Task 4):** a caller with only `Cap.
+ * VIEW_AGENTS` (the baseline `member` role) reaches this same panel --
+ * the agent list stays visible (`Cap.VIEW_AGENTS`, everyone), but every
+ * mutation control (create/attach forms, and by extension the one-time
+ * key reveal they lead to) is entirely absent when `readOnly` is true,
+ * not merely disabled -- same "omit, don't disable" posture `Settings.
+ * tsx` already uses for whole tabs (constitution §7.5). The server's own
+ * `Cap.MANAGE_AGENTS` wall on `POST /members/agents` is still the real
+ * gate; this is belt-and-suspenders UI hygiene.
  */
 
 export type AgentsPanelProps = {
@@ -32,11 +42,14 @@ export type AgentsPanelProps = {
    * `refreshMembers`) -- called after a successful create/attach so the
    * new agent shows up in the list immediately. */
   onRefresh: () => Promise<void>;
+  /** `true` for a caller who only holds `Cap.VIEW_AGENTS` (not `Cap.
+   * MANAGE_AGENTS`) -- hides create/attach/key controls, list stays. */
+  readOnly: boolean;
 };
 
 type Mode = "create" | "attach" | null;
 
-export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
+export default function AgentsPanel({ members, onRefresh, readOnly }: AgentsPanelProps) {
   const agents = members.filter((m) => m.member_type === "agent");
   const [mode, setMode] = useState<Mode>(null);
   const [name, setName] = useState("");
@@ -144,24 +157,26 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
         </ul>
       )}
 
-      <div className="agents-panel__actions">
-        <button
-          type="button"
-          className="btn btn--quiet"
-          onClick={() => setMode(mode === "create" ? null : "create")}
-        >
-          + Create agent
-        </button>
-        <button
-          type="button"
-          className="btn btn--quiet"
-          onClick={() => setMode(mode === "attach" ? null : "attach")}
-        >
-          Attach existing
-        </button>
-      </div>
+      {!readOnly && (
+        <div className="agents-panel__actions">
+          <button
+            type="button"
+            className="btn btn--quiet"
+            onClick={() => setMode(mode === "create" ? null : "create")}
+          >
+            + Create agent
+          </button>
+          <button
+            type="button"
+            className="btn btn--quiet"
+            onClick={() => setMode(mode === "attach" ? null : "attach")}
+          >
+            Attach existing
+          </button>
+        </div>
+      )}
 
-      {mode === "create" && (
+      {!readOnly && mode === "create" && (
         <form onSubmit={handleCreate} className="agents-panel__form">
           <label htmlFor="agent-create-name">Agent name</label>
           <input
@@ -182,7 +197,7 @@ export default function AgentsPanel({ members, onRefresh }: AgentsPanelProps) {
         </form>
       )}
 
-      {mode === "attach" && (
+      {!readOnly && mode === "attach" && (
         <form onSubmit={handleAttach} className="agents-panel__form">
           <label htmlFor="agent-attach-account-id">Account ID</label>
           <input

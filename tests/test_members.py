@@ -12,7 +12,7 @@ def test_whoami_reports_founder_admin_and_workspace_visibility(client):
     assert response.status_code == 200
     body = response.json()
     assert body["role"] == "admin"
-    assert body["is_admin"] is True  # deprecated wire-compat alias
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert set(body["capabilities"]) == {
         "post",
         "read",
@@ -36,7 +36,7 @@ def test_whoami_reports_non_admin_member_and_public_workspace(client):
     assert response.status_code == 200
     body = response.json()
     assert body["role"] == "member"
-    assert body["is_admin"] is False  # deprecated wire-compat alias
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert set(body["capabilities"]) == {
         "post",
         "read",
@@ -203,7 +203,7 @@ def test_get_other_profile_shows_role_but_hides_visibility(client):
     # stays self-view-only, even though the caller here (the founder) IS
     # an admin themselves.
     assert body["role"] == "member"
-    assert body["is_admin"] is False  # deprecated wire-compat alias
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert body["workspace_visibility"] is None
 
 
@@ -217,7 +217,7 @@ def test_get_own_profile_includes_admin_and_workspace_visibility(client):
     assert response.status_code == 200
     body = response.json()
     assert body["role"] == "admin"
-    assert body["is_admin"] is True  # deprecated wire-compat alias
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert body["workspace_visibility"] == "private"
 
 

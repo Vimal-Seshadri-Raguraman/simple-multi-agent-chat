@@ -52,6 +52,7 @@ import type {
   MessagePayload,
   UnreadsRowOut,
 } from "../lib/api";
+import { hasCap as hasCapability } from "../lib/capabilities";
 
 export type WorkspaceState = {
   channels: ChannelOut[];
@@ -86,6 +87,7 @@ type Action =
   | { type: "UNREADS"; unreads: UnreadsRowOut[] }
   | { type: "UNREAD_ROW"; row: UnreadsRowOut }
   | { type: "MEMBERS"; members: MemberOut[] }
+  | { type: "SELF"; self: MemberSelfOut }
   | { type: "CHANNELS"; channels: ChannelOut[] }
   | { type: "SELECT_CHANNEL"; channelId: string }
   | { type: "HISTORY_START" }
@@ -130,6 +132,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "MEMBERS":
       return { ...state, members: action.members };
+    case "SELF":
+      return { ...state, self: action.self };
     case "CHANNELS": {
       // Final review Finding 3 (MINOR, same bug class as T6's unreads
       // epoch fix): `refreshChannels` is fired unprompted by the bell
@@ -284,6 +288,16 @@ export type WorkspaceContextValue = WorkspaceState & {
   refreshChannels: () => Promise<void>;
   /** Re-fetch the member directory. */
   refreshMembers: () => Promise<void>;
+  /** Re-fetch the caller's own profile (`GET /members/me`), refreshing
+   * `role`/`capabilities` -- a role change (or demotion) made by someone
+   * else takes effect live the moment this lands, without a full page
+   * reload (task-4 brief: same refresh seams `refreshUnreads` already
+   * uses -- window focus + socket reconnect gap). */
+  refreshWhoami: () => Promise<void>;
+  /** `true` if the caller's CURRENT capabilities (from the last `whoami`)
+   * include `cap` (a `Cap.*` value from `lib/capabilities.ts`). `false`
+   * before `self` has ever loaded -- never throws. */
+  hasCap: (cap: string) => boolean;
   /** Re-load the CURRENT channel's most recent message window from
    * scratch (task-3 brief: the seam Task 4 re-runs on socket reconnect). */
   refreshHistory: () => Promise<void>;
@@ -381,6 +395,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const members = await api.members();
     dispatch({ type: "MEMBERS", members });
   }, []);
+
+  const refreshWhoami = useCallback(async () => {
+    const self = await api.whoami();
+    dispatch({ type: "SELF", self });
+  }, []);
+
+  const hasCap = useCallback(
+    (cap: string) => hasCapability(state.self?.capabilities, cap),
+    [state.self]
+  );
 
   const selectChannel = useCallback((channelId: string) => {
     dispatch({ type: "SELECT_CHANNEL", channelId });
@@ -490,6 +514,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       refreshUnreads,
       refreshChannels,
       refreshMembers,
+      refreshWhoami,
+      hasCap,
       refreshHistory,
       loadOlderMessages,
       createChannel,
@@ -504,6 +530,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       refreshUnreads,
       refreshChannels,
       refreshMembers,
+      refreshWhoami,
+      hasCap,
       refreshHistory,
       loadOlderMessages,
       createChannel,

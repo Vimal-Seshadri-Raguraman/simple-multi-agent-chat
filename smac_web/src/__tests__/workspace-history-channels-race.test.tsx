@@ -37,7 +37,8 @@ const SELF: MemberSelfOut = {
   company: null,
   occupation: null,
   job_role: null,
-  is_admin: null,
+  role: "member",
+  capabilities: [],
   workspace_visibility: null,
 };
 const MEMBERS: MemberOut[] = [];

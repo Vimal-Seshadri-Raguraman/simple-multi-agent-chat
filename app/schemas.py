@@ -108,12 +108,6 @@ class MemberSelfOut(BaseModel):
     them is gated) -- see `app.accounts.build_member_self_out`, the one
     place that assembles this schema.
 
-    `is_admin: bool` is a DEPRECATED, wire-compat-only computed field
-    (`role == "admin"`) kept solely because the committed web bundle and
-    `smac_cli`'s `/whoami` still read it (pre-SMAC-92 clients). Task 4
-    (web) should remove it once the web client is migrated to
-    `role`/`capabilities`; do not add new readers of it.
-
     `workspace_visibility` (SMAC-72 task 6) isn't a member attribute at
     all (no GET-your-own-workspace endpoint exists), so it's carried here
     instead. It stays SELF-view-only: `GET /member` (looking up ANOTHER
@@ -138,7 +132,6 @@ class MemberSelfOut(BaseModel):
     job_role: str | None
     role: str
     capabilities: list[str]
-    is_admin: bool
     workspace_visibility: str | None
 
 

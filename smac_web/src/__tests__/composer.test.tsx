@@ -12,6 +12,7 @@ const MEMBERS: MemberOut[] = [
     handle: "alice",
     created_at: "2026-01-01T00:00:00",
     account_id: "acc-1",
+    role: "member",
   },
   {
     member_id: "m2",
@@ -20,6 +21,7 @@ const MEMBERS: MemberOut[] = [
     handle: "reportbot",
     created_at: "2026-01-01T00:00:00",
     account_id: "acc-2",
+    role: "member",
   },
 ];
 
@@ -82,6 +84,7 @@ describe("Composer contract (web spec §2)", () => {
         handle: "aliciab",
         created_at: "2026-01-01T00:00:00",
         account_id: "acc-3",
+        role: "member",
       },
     ];
     render(

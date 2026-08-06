@@ -293,10 +293,13 @@ def cmd_channel(app: "SmacApp", args: str) -> None:
 def cmd_whoami(app: "SmacApp", args: str) -> None:
     """`/whoami`: your identity + this workspace, as system lines (spec §0.2).
 
-    `GET /members/me` carries `is_admin` and `workspace_visibility`
-    (SMAC-72 task 6 addition -- see `app.schemas.MemberSelfOut`'s
-    docstring) precisely so this command has somewhere to get both from;
-    neither was on any response before this task.
+    `GET /members/me` carries `role` and `workspace_visibility` (SMAC-72
+    task 6 added the latter; SMAC-92 replaced the old boolean `is_admin`
+    with `role`/`capabilities` -- see `app.schemas.MemberSelfOut`'s
+    docstring) precisely so this command has somewhere to get both from.
+    The role suffix is omitted for the baseline `member` role (the old
+    `is_admin=False` case showed no suffix either) and rendered verbatim
+    for anything else (`admin`, `agent_admin`, ...).
     """
     profile = app.api.whoami()
     first_name = profile.get("first_name") or ""
@@ -305,8 +308,9 @@ def cmd_whoami(app: "SmacApp", args: str) -> None:
         profile.get("member_name", "")
     )
     handle = profile.get("handle", "")
-    admin_suffix = " · admin" if profile.get("is_admin") else ""
-    app.system_line(f"you: {full_name} (@{handle}){admin_suffix}")
+    role = profile.get("role") or "member"
+    role_suffix = f" · {role}" if role != "member" else ""
+    app.system_line(f"you: {full_name} (@{handle}){role_suffix}")
     workspace_name = app.workspace_name or ""
     visibility = profile.get("workspace_visibility", "")
     app.system_line(f"workspace: {workspace_name} ({visibility})")

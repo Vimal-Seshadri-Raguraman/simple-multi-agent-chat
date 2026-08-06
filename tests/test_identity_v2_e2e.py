@@ -63,7 +63,7 @@ def test_bob_one_account_two_workspace_badges_diagram(client: Any) -> None:
     bob_token_a = founded["access_token"]
     bob_member_a = founded["member"]
     assert bob_member_a["role"] == "admin"
-    assert bob_member_a["is_admin"] is True  # deprecated wire-compat alias
+    assert "is_admin" not in bob_member_a  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert bob_member_a["member_name"] == "Finance Analyst"
     handle_a = bob_member_a["handle"]
 
@@ -108,7 +108,7 @@ def test_bob_one_account_two_workspace_badges_diagram(client: Any) -> None:
     bob_token_b = joined["access_token"]
     bob_member_b = joined["member"]
     assert bob_member_b["role"] == "member"
-    assert bob_member_b["is_admin"] is False  # deprecated wire-compat alias
+    assert "is_admin" not in bob_member_b  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert bob_member_b["member_name"] == "Trader Bob"
     handle_b = bob_member_b["handle"]
 

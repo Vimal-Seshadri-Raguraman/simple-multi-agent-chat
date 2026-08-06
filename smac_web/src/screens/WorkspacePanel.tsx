@@ -6,10 +6,11 @@ import { useAuth } from "../state/auth";
 /**
  * Settings' Workspace panel (web spec §2: "visibility toggle (admin),
  * delete (typed name + `delete`, admin) -> back to auth state").
- * `Settings.tsx` only mounts this for an admin (the Workspace tab is
- * absent from the tab list otherwise) -- this component doesn't
- * re-check `is_admin` itself, matching `MembersPanel`'s existing "the
- * caller already gated this" convention.
+ * `Settings.tsx` only mounts this for a caller with `Cap.MANAGE_WORKSPACE`
+ * (the Workspace tab is absent from the tab list otherwise) -- this
+ * component doesn't re-check the capability itself, matching
+ * `AgentsPanel`'s "the caller already gated this" convention for its
+ * mutation controls.
  *
  * **Visibility toggle:** kept as this component's own local state
  * (seeded from `initialVisibility`, updated from the `PATCH` response) --

@@ -105,7 +105,8 @@ beforeEach(() => {
     company: null,
     occupation: null,
     job_role: null,
-    is_admin: null,
+    role: "member",
+    capabilities: [],
     workspace_visibility: null,
   });
   vi.mocked(api.accountMe).mockResolvedValue({
@@ -184,6 +185,22 @@ describe("AuthedShell's room socket wiring", () => {
     await screen.findByRole("heading", { name: "#general" }); // let the re-fetch effects settle
     expect(vi.mocked(api.unreads).mock.calls.length).toBeGreaterThan(unreadsCallsBefore);
     expect(vi.mocked(api.messages).mock.calls.length).toBeGreaterThan(messagesCallsBefore);
+  });
+
+  // SMAC-92 Task 4: whoami refreshes on the SAME seam unreads/history
+  // already do -- a role change made elsewhere takes effect the next
+  // time this client catches up from a reconnect gap.
+  it("onGap also re-runs refreshWhoami", async () => {
+    await goToAuthedShell();
+    const whoamiCallsBefore = vi.mocked(api.whoami).mock.calls.length;
+
+    act(() => {
+      capturedOnGap?.();
+    });
+
+    await waitFor(() =>
+      expect(vi.mocked(api.whoami).mock.calls.length).toBeGreaterThan(whoamiCallsBefore)
+    );
   });
 });
 
@@ -322,6 +339,21 @@ describe("AuthedShell's window-focus unreads refetch (fix round 1: web spec §2'
     // synchronously off this same dispatch; asserting immediately (no
     // new call landed) is exactly what proves the teardown ran.
     expect(vi.mocked(api.unreads).mock.calls.length).toBe(unreadsCallsAfterUnmount);
+  });
+
+  // SMAC-92 Task 4: same seam as unreads (task-4 brief, "verify which
+  // handlers exist ... and extend them, don't duplicate listeners").
+  it("also refetches whoami when the window regains focus", async () => {
+    await goToAuthedShell();
+    const whoamiCallsBefore = vi.mocked(api.whoami).mock.calls.length;
+
+    act(() => {
+      fireEvent(window, new Event("focus"));
+    });
+
+    await waitFor(() =>
+      expect(vi.mocked(api.whoami).mock.calls.length).toBeGreaterThan(whoamiCallsBefore)
+    );
   });
 });
 

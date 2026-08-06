@@ -25,6 +25,7 @@ const HUMAN: MemberOut = {
   handle: "alice",
   created_at: "2026-01-01T00:00:00",
   account_id: "acc-1",
+  role: "member",
 };
 
 const AGENT: MemberOut = {
@@ -34,6 +35,7 @@ const AGENT: MemberOut = {
   handle: "reportbot",
   created_at: "2026-01-01T00:00:00",
   account_id: "acc-2",
+  role: "member",
 };
 
 describe("MessageLine (web spec §2 Room bullet)", () => {

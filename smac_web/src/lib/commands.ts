@@ -51,6 +51,10 @@ export type CommandContext = {
    * of its panels (default: Agents, Settings' own first tab) -- the
    * administration home for the CURRENT workspace (web spec §2). */
   goToSettings: (section?: "agents" | "invites" | "workspace") => void;
+  /** `true` if the caller's CURRENT capabilities (`state/workspace.tsx`'s
+   * `hasCap`) include `cap` -- what `REQUIRED_CAP` below is checked
+   * against to decide whether a gated command is runnable. */
+  hasCap: (cap: string) => boolean;
 };
 
 export type Command = {
@@ -164,3 +168,37 @@ export const COMMANDS: Command[] = [
     run: (ctx) => void ctx.logout(),
   },
 ];
+
+/**
+ * Display-only capability gate, keyed by `Command.name` -- lives BESIDE
+ * `COMMANDS` rather than as a field ON each entry (task-4 brief: "registry
+ * entries themselves untouched", keeping `palette.test.tsx`'s drift-guard
+ * diffing `COMMANDS`' `name`/`help` against `design/commands.md` blind to
+ * this addition). A command with no entry here is ungated -- runnable by
+ * anyone who can open the palette at all (every role: `Cap.POST` etc. are
+ * baseline caps every member has). `components/Palette.tsx` looks a
+ * selected/rendered command up here and, if the caller's `hasCap(cap)` is
+ * false, renders it dimmed with a "requires ..." hint and refuses to run
+ * it -- the server's own `require_cap` wall is the REAL gate (constitution
+ * §7.5); this is belt-and-suspenders UI hygiene, same posture as
+ * `Settings.tsx`'s tab omission.
+ */
+export const REQUIRED_CAP: Partial<Record<string, string>> = {
+  "/invite": "mint_human_invites",
+  "/workspace delete": "manage_workspace",
+};
+
+/** Human-readable "requires ..." hint for a gated command's required
+ * capability, per the task-4 brief's two named examples ("requires
+ * Workspace Admin" for a workspace-wide cap, "requires Agent Admin" for
+ * an agent-only one). Falls back to the raw capability name for any
+ * future entry this map doesn't special-case. */
+export function requiredCapHint(cap: string): string {
+  if (cap === "manage_workspace" || cap === "mint_human_invites") {
+    return "requires Workspace Admin";
+  }
+  if (cap === "manage_agents" || cap === "mint_agent_invites") {
+    return "requires Agent Admin";
+  }
+  return `requires ${cap}`;
+}

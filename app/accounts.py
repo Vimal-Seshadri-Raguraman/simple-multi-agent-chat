@@ -128,9 +128,9 @@ def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
     register-into-workspace routes).
 
     `capabilities` is derived live from `caps_for(member)` (SMAC-92) --
-    never stored, so it always reflects the member's CURRENT role.
-    `is_admin` is the deprecated wire-compat alias (`role == "admin"`),
-    see `MemberSelfOut`'s docstring.
+    never stored, so it always reflects the member's CURRENT role. The
+    formerly-deprecated `is_admin` wire-compat alias is gone as of Task 4
+    (web/TUI both migrated to `role`/`capabilities`); do not re-add it.
     """
     workspace = (
         db.query(Workspace).filter(Workspace.workspace_id == member.workspace_id).one()
@@ -150,6 +150,5 @@ def build_member_self_out(db: Session, member: Member) -> MemberSelfOut:
         job_role=member.job_role,
         role=member.role,
         capabilities=[c.value for c in caps_for(member)],
-        is_admin=member.role == "admin",
         workspace_visibility=workspace.visibility,
     )

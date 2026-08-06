@@ -14,8 +14,9 @@ Two layers, matching the pattern `test_tui_shell.py` (task 4) and
 2. Real-`smac-server` + `Pilot` tests (`real_smac_server`, the
    module-scoped fixture `tests/conftest.py` already shares across the
    TUI test modules) for everything that needs authentic server behavior:
-   `/whoami`'s `is_admin`/workspace-visibility (SMAC-72 task 6 added both
-   to `GET /members/me` -- see `app.schemas.MemberSelfOut`'s docstring),
+   `/whoami`'s `role`/workspace-visibility (SMAC-72 task 6 added the
+   latter; SMAC-92 replaced the old boolean `is_admin` with `role` -- see
+   `app.schemas.MemberSelfOut`'s docstring),
    `/channels`' real unread/mention counts, `/channel create`'s real
    switch and its real 409 envelope (verbatim), and `/workspace
    delete` actually exercising `SmacApi.delete_workspace()` end to end --
@@ -124,7 +125,7 @@ async def test_whoami_shows_name_handle_admin_and_workspace() -> None:
 @pytest.mark.anyio
 async def test_whoami_non_admin_has_no_admin_suffix() -> None:
     fake = _logged_in_fake()
-    fake.whoami_result["is_admin"] = False
+    fake.whoami_result["role"] = "member"
     fake.whoami_result["workspace_visibility"] = "public"
     app = _app_with(fake)
     async with app.run_test() as pilot:
@@ -135,6 +136,20 @@ async def test_whoami_non_admin_has_no_admin_suffix() -> None:
         assert "you: Vimal Raguraman (@vraguraman)" in text
         assert "· admin" not in text
         assert "workspace: AI Finance Co (public)" in text
+
+
+@pytest.mark.anyio
+async def test_whoami_agent_admin_shows_role_suffix() -> None:
+    """SMAC-92: any non-`member` role renders verbatim, not just `admin`."""
+    fake = _logged_in_fake()
+    fake.whoami_result["role"] = "agent_admin"
+    app = _app_with(fake)
+    async with app.run_test() as pilot:
+        await _wait_until(pilot, lambda: app.current_channel_id is not None)
+        await _run_command(pilot, "/whoami")
+        await _wait_until(pilot, lambda: "you:" in _body_text(app))
+        text = _body_text(app)
+        assert "you: Vimal Raguraman (@vraguraman) · agent_admin" in text
 
 
 # --------------------------------------------------------------------------

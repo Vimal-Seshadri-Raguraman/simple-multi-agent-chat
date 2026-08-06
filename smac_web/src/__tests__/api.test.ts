@@ -175,7 +175,7 @@ describe("workspace-birth doors: field names verified against app/routers/worksp
     });
   });
 
-  it("mintInviteCode POSTs {invite_type: 'code'} to /workspaces/{id}/invites", async () => {
+  it("mintInvite('human') POSTs {invite_type: 'code'} to /workspaces/{id}/invites", async () => {
     api.setSession(WORKSPACE_SESSION);
     const mock = installFetchMock();
     mock.queue({
@@ -192,7 +192,7 @@ describe("workspace-birth doors: field names verified against app/routers/worksp
       },
     });
 
-    const invite = await api.mintInviteCode();
+    const invite = await api.mintInvite("human");
 
     expect(mock.calls[0]).toMatchObject({
       method: "POST",
@@ -200,6 +200,73 @@ describe("workspace-birth doors: field names verified against app/routers/worksp
       body: { invite_type: "code" },
     });
     expect(invite.code).toBe("xyz");
+  });
+
+  it("mintInvite('agent') POSTs {invite_type: 'agent_code'} to /workspaces/{id}/invites", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const mock = installFetchMock();
+    mock.queue({
+      status: 200,
+      body: {
+        invite_id: "inv2",
+        workspace_id: "ws1",
+        invite_type: "agent_code",
+        email: null,
+        code: "agentcode",
+        created_by: "m1",
+        created_at: "2026-01-01T00:00:00Z",
+        expires_at: null,
+      },
+    });
+
+    const invite = await api.mintInvite("agent");
+
+    expect(mock.calls[0]).toMatchObject({
+      method: "POST",
+      url: "/workspaces/ws1/invites",
+      body: { invite_type: "agent_code" },
+    });
+    expect(invite.code).toBe("agentcode");
+  });
+
+  it("updateMemberRole PATCHes {role} to /workspaces/{id}/members/{member_id}", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const mock = installFetchMock();
+    mock.queue({
+      status: 200,
+      body: {
+        member_id: "m2",
+        member_name: "Bob",
+        member_type: "human",
+        handle: "bob",
+        created_at: "2026-01-01T00:00:00Z",
+        account_id: "acc2",
+        role: "agent_admin",
+      },
+    });
+
+    const member = await api.updateMemberRole("m2", "agent_admin");
+
+    expect(mock.calls[0]).toMatchObject({
+      method: "PATCH",
+      url: "/workspaces/ws1/members/m2",
+      body: { role: "agent_admin" },
+    });
+    expect(member.role).toBe("agent_admin");
+  });
+
+  it("removeMember DELETEs /workspaces/{id}/members/{member_id}", async () => {
+    api.setSession(WORKSPACE_SESSION);
+    const mock = installFetchMock();
+    mock.queue({ status: 200, body: { status: "removed" } });
+
+    const result = await api.removeMember("m2");
+
+    expect(mock.calls[0]).toMatchObject({
+      method: "DELETE",
+      url: "/workspaces/ws1/members/m2",
+    });
+    expect(result.status).toBe("removed");
   });
 });
 

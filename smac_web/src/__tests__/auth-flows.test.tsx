@@ -61,7 +61,8 @@ beforeEach(() => {
     company: null,
     occupation: null,
     job_role: null,
-    is_admin: null,
+    role: "member",
+    capabilities: [],
     workspace_visibility: null,
   });
   vi.mocked(api.accountMe).mockResolvedValue({

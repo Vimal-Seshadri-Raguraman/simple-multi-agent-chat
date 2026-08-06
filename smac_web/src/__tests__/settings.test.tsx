@@ -41,7 +41,43 @@ const WORKSPACE_SESSION: Session = {
   workspaceRefresh: "wrt",
 };
 
-function selfFixture(overrides: Partial<MemberSelfOut> = {}): MemberSelfOut {
+/**
+ * Mirrors `app/capabilities.py`'s `ROLE_CAPS` table (SMAC-92) for a
+ * `member_type: "human"` member -- the exact set every role grants,
+ * kept here rather than imported so this test file independently proves
+ * the fixture matches the contract, not just whatever the app happens to
+ * compute.
+ */
+const CAPS_BY_ROLE: Record<string, string[]> = {
+  member: ["post", "read", "ack_mentions", "create_channels", "view_members", "view_agents"],
+  agent_admin: [
+    "post",
+    "read",
+    "ack_mentions",
+    "create_channels",
+    "view_members",
+    "view_agents",
+    "manage_agents",
+    "mint_agent_invites",
+  ],
+  admin: [
+    "post",
+    "read",
+    "ack_mentions",
+    "create_channels",
+    "view_members",
+    "view_agents",
+    "mint_human_invites",
+    "mint_agent_invites",
+    "manage_agents",
+    "manage_workspace",
+    "assign_roles",
+    "remove_members",
+  ],
+};
+
+function selfFixture(overrides: Partial<MemberSelfOut> & { role?: string } = {}): MemberSelfOut {
+  const role = overrides.role ?? "admin";
   return {
     member_id: "m1",
     member_name: "Alice Human",
@@ -55,7 +91,8 @@ function selfFixture(overrides: Partial<MemberSelfOut> = {}): MemberSelfOut {
     company: null,
     occupation: null,
     job_role: null,
-    is_admin: true,
+    role,
+    capabilities: CAPS_BY_ROLE[role] ?? [],
     workspace_visibility: "private",
     ...overrides,
   };
@@ -68,6 +105,7 @@ const AGENT_MEMBER: MemberOut = {
   handle: "analyst",
   created_at: "2026-01-01T00:00:00",
   account_id: "acc-agent-1",
+  role: "member",
 };
 
 function ScreenProbe() {
@@ -77,7 +115,7 @@ function ScreenProbe() {
 
 type RenderOpts = {
   self?: MemberSelfOut;
-  section?: "agents" | "invites" | "workspace";
+  section?: "agents" | "invites" | "members" | "workspace";
   members?: MemberOut[];
   withProbe?: boolean;
 };
@@ -216,8 +254,8 @@ describe("Agents panel (web spec §2, constitution §6)", () => {
 });
 
 describe("Invites panel (web spec §2)", () => {
-  it("mints an invite code, offers a copy button, and shows the Bob instructions line", async () => {
-    vi.mocked(api.mintInviteCode).mockResolvedValue({
+  it("mints a human invite code, offers a copy button, and shows the Bob instructions line", async () => {
+    vi.mocked(api.mintInvite).mockResolvedValue({
       invite_id: "inv1",
       workspace_id: "ws1",
       invite_type: "code",
@@ -229,25 +267,94 @@ describe("Invites panel (web spec §2)", () => {
     });
 
     renderSettings({ section: "invites" });
-    fireEvent.click(screen.getByRole("button", { name: "Mint invite code" }));
+    // Invites is gated on whoami's capabilities (SMAC-92) -- the initial
+    // fetch is async, so the tab (and this button) aren't there yet on
+    // the very first render.
+    fireEvent.click(await screen.findByRole("button", { name: "Mint invite code" }));
 
-    const codeBlock = await screen.findByTestId("invite-code");
+    expect(api.mintInvite).toHaveBeenCalledWith("human");
+    const codeBlock = await screen.findByTestId("invite-code-human");
     expect(codeBlock).toHaveTextContent("ABC123");
     expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
     expect(screen.getByText(/tell them/i)).toBeInTheDocument();
   });
+
+  it("mints an agent invite code for an agent_admin (no human-invite section)", async () => {
+    vi.mocked(api.mintInvite).mockResolvedValue({
+      invite_id: "inv2",
+      workspace_id: "ws1",
+      invite_type: "agent_code",
+      email: null,
+      code: "AGENT123",
+      created_by: "m1",
+      created_at: "2026-01-01T00:00:00",
+      expires_at: null,
+    });
+
+    renderSettings({ self: selfFixture({ role: "agent_admin" }), section: "invites" });
+    await screen.findByRole("heading", { name: "Invite an agent" });
+    expect(screen.queryByRole("heading", { name: "Invite a person" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Mint agent invite code" }));
+
+    expect(api.mintInvite).toHaveBeenCalledWith("agent");
+    const codeBlock = await screen.findByTestId("invite-code-agent");
+    expect(codeBlock).toHaveTextContent("AGENT123");
+  });
 });
 
-describe("Workspace panel: admin gating (web spec §2, task-5 brief)", () => {
+describe("Settings tab gating from capabilities (SMAC-92 task-4 brief, replaces is_admin gating)", () => {
+  it("admin sees all four tabs: Agents, Invites, Members, Workspace", async () => {
+    renderSettings({ self: selfFixture({ role: "admin" }) });
+
+    await screen.findByText("Analyst");
+    expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Invites" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Members" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Workspace" })).toBeInTheDocument();
+  });
+
+  it("agent_admin sees Agents (full) + Invites, but NOT Workspace or Members", async () => {
+    renderSettings({ self: selfFixture({ role: "agent_admin" }) });
+
+    await screen.findByText("Analyst");
+    expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Invites" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Members" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+    // "full" Agents -- mutation controls present.
+    expect(screen.getByRole("button", { name: "+ Create agent" })).toBeInTheDocument();
+  });
+
+  it("member sees ONLY Agents (read-only) -- no Invites, Members, or Workspace tabs", async () => {
+    renderSettings({ self: selfFixture({ role: "member" }) });
+
+    await screen.findByText("Analyst");
+    expect(screen.getByRole("button", { name: "Agents" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Invites" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Members" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
+    // Read-only -- list visible, mutation controls absent.
+    expect(screen.queryByRole("button", { name: "+ Create agent" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Attach existing" })).not.toBeInTheDocument();
+  });
+
+  it("the Members tab (visible to a caller with assign_roles/remove_members) shows a placeholder this task", async () => {
+    renderSettings({ self: selfFixture({ role: "admin" }), section: "members" });
+    await screen.findByText(/Members management arrives in the next task/i);
+  });
+});
+
+describe("Workspace panel: admin gating (web spec §2, task-5 brief; SMAC-92 task-4: now manage_workspace-gated)", () => {
   it("hides the Workspace tab entirely for a non-admin (not merely disabling its controls)", async () => {
-    renderSettings({ self: selfFixture({ is_admin: false }) });
+    renderSettings({ self: selfFixture({ role: "member" }) });
 
     await screen.findByText("Analyst");
     expect(screen.queryByRole("button", { name: "Workspace" })).not.toBeInTheDocument();
   });
 
   it("shows the Workspace tab for an admin", async () => {
-    renderSettings({ self: selfFixture({ is_admin: true }), section: "workspace" });
+    renderSettings({ self: selfFixture({ role: "admin" }), section: "workspace" });
 
     await screen.findByRole("heading", { name: "Visibility" });
   });

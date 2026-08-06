@@ -737,6 +737,18 @@
   color: var(--color-text-dim);
 }
 
+/* Gated entries (task-4 brief, SMAC-92): visible but not runnable for a
+   caller lacking the required capability -- dimmed, cursor signals it,
+   never fully hidden (the entry stays discoverable via /help browsing). */
+.palette__item--gated {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.palette__item-hint {
+  font-style: italic;
+}
+
 .palette__empty {
   padding: var(--space-3);
   color: var(--color-text-dim);
@@ -839,7 +851,12 @@
   font-family: var(--font-mono);
 }
 
-.members-panel__admin-mark {
+.members-panel__you-mark {
+  color: var(--color-text-dim);
+  font-weight: 400;
+}
+
+.members-panel__role-badge {
   font-size: var(--font-size-xs);
   color: var(--color-text-dim);
   border: 1px solid var(--color-border);
@@ -1206,8 +1223,17 @@
 
 /* -- Invites panel ---------------------------------------------------------- */
 
-.invites-panel > .btn {
+.invites-panel__section {
+  margin-top: var(--space-4);
+}
+
+.invites-panel__section .btn {
   margin-top: var(--space-2);
+}
+
+.invites-panel__empty {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
 }
 
 .invites-panel__hint {

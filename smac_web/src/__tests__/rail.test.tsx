@@ -32,7 +32,8 @@ const SELF: MemberSelfOut = {
   company: null,
   occupation: null,
   job_role: null,
-  is_admin: true,
+  role: "admin",
+  capabilities: [],
   workspace_visibility: "private",
 };
 
@@ -123,6 +124,26 @@ describe("Rail (web spec §2)", () => {
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Log out" }));
     expect(props.onLogout).toHaveBeenCalled();
+  });
+
+  // SMAC-92 Task 4: the whoami card's role suffix now comes from
+  // `MemberSelfOut.role` (via `lib/capabilities.ts`'s `ROLE_LABELS`)
+  // instead of the removed boolean `is_admin` flag.
+  it("the whoami card shows the UI role label for an admin", () => {
+    renderRail({ youMenuOpen: true, self: { ...SELF, role: "admin" } });
+    expect(screen.getByTestId("whoami-card")).toHaveTextContent("Workspace Admin");
+  });
+
+  it("the whoami card shows the UI role label for an agent_admin", () => {
+    renderRail({ youMenuOpen: true, self: { ...SELF, role: "agent_admin" } });
+    expect(screen.getByTestId("whoami-card")).toHaveTextContent("Agent Admin");
+  });
+
+  it("the whoami card shows no role suffix for a plain member", () => {
+    renderRail({ youMenuOpen: true, self: { ...SELF, role: "member" } });
+    const card = screen.getByTestId("whoami-card");
+    expect(card).not.toHaveTextContent("Workspace Admin");
+    expect(card).not.toHaveTextContent("Agent Admin");
   });
 
   // SMAC-85: Settings (agents/invites/workspace admin, including workspace
