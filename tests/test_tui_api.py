@@ -730,14 +730,14 @@ def test_join_code_redeems_shareable_invite(
     assert joiner_api.whoami()["handle"]
 
 
-def test_mint_invite_code_any_human_member_not_admin_only(
+def test_mint_invite_code_requires_mint_human_invites_cap(
     real_smac_server: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`POST /workspaces/{id}/invites` is gated to human members of the
-    workspace (`app/authorization.py:authorize_management_action`), not
-    specifically admins -- unchanged by this task (`app/routers/
-    invites.py` wasn't touched). A non-admin member can mint a code just
-    like the founder can."""
+    """`POST /workspaces/{id}/invites` is `Cap.MINT_HUMAN_INVITES`-gated as
+    of SMAC-92 (`app/routers/invites.py`'s `_MINT_CAP_BY_TYPE`), which only
+    the `admin` role holds -- superseding this test's pre-SMAC-92 name and
+    behavior (any human member, not just admin, used to be able to mint).
+    A plain member now 403s; the same member can mint once promoted."""
     url, home_dir = real_smac_server
     monkeypatch.setattr(Path, "home", lambda: home_dir)
 
@@ -750,6 +750,23 @@ def test_mint_invite_code_any_human_member_not_admin_only(
     member_api = SmacApi(url)
     member_api.signup(f"{_unique('member')}@test.example", _TEST_PASSWORD)
     member_api.join_public(workspace_id, "Alan", "Turing")
+    member_id = member_api.whoami()["member_id"]
+    assert member_api.session is not None
+
+    forbidden = httpx.post(
+        f"{url}/workspaces/{workspace_id}/invites",
+        json={"invite_type": "code"},
+        headers={"Authorization": f"Bearer {member_api.session.access_token}"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "forbidden"
+
+    promote = httpx.patch(
+        f"{url}/workspaces/{workspace_id}/members/{member_id}",
+        json={"role": "admin"},
+        headers={"Authorization": f"Bearer {founder_api.session.access_token}"},
+    )
+    assert promote.status_code == 200
 
     invite = member_api.mint_invite_code()
     assert invite["code"]

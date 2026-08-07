@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import Palette from "../components/Palette";
-import { COMMANDS, type Command, type CommandContext } from "../lib/commands";
+import { COMMANDS, REQUIRED_CAP, type Command, type CommandContext } from "../lib/commands";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +42,20 @@ describe("Palette command registry drift guard (constitution §4, mandatory)", (
     const registry = COMMANDS.map((c) => ({ name: c.name, help: c.help }));
     expect(registry).toEqual(canonical);
   });
+
+  // Final review F6 (MUST FIX, test-only): REQUIRED_CAP is keyed by raw
+  // command-name strings with no structural tie to COMMANDS, so a future
+  // rename of a gated command's `name` would silently orphan its
+  // REQUIRED_CAP entry -- the palette would then render that command as
+  // always-ungated instead of failing loudly. This closes that hole
+  // permanently: any REQUIRED_CAP key that doesn't name a real command
+  // fails the test rather than silently un-gating something.
+  it("every REQUIRED_CAP key names a real COMMANDS entry", () => {
+    const names = new Set(COMMANDS.map((c) => c.name));
+    for (const key of Object.keys(REQUIRED_CAP)) {
+      expect(names.has(key)).toBe(true);
+    }
+  });
 });
 
 function buildContext(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -54,20 +68,43 @@ function buildContext(overrides: Partial<CommandContext> = {}): CommandContext {
     refreshUnreads: vi.fn().mockResolvedValue(undefined),
     showWhoami: vi.fn(),
     goToSettings: vi.fn(),
+    hasCap: () => true,
     ...overrides,
   };
 }
 
+/** Everyone can run everything -- the default for tests not exercising
+ * the gating behavior itself. */
+const ALLOW_ALL = () => true;
+/** Nobody can run anything gated -- a plain `member`. */
+const DENY_ALL = () => false;
+
 describe("Palette (Cmd-K, web spec §2)", () => {
   it("shows every command when the query is empty (the palette empty-state IS /help)", () => {
-    render(<Palette open initialQuery="" onClose={vi.fn()} buildContext={(args) => buildContext({ args })} />);
+    render(
+      <Palette
+        open
+        initialQuery=""
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={ALLOW_ALL}
+      />
+    );
     for (const command of COMMANDS) {
       expect(screen.getByText(command.name)).toBeInTheDocument();
     }
   });
 
   it("opens prefiltered by whatever followed the composer's leading '/'", () => {
-    render(<Palette open initialQuery="chan" onClose={vi.fn()} buildContext={(args) => buildContext({ args })} />);
+    render(
+      <Palette
+        open
+        initialQuery="chan"
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={ALLOW_ALL}
+      />
+    );
     expect(screen.getByText("/channel")).toBeInTheDocument();
     expect(screen.getByText("/channel create")).toBeInTheDocument();
     expect(screen.getByText("/channels")).toBeInTheDocument();
@@ -75,12 +112,28 @@ describe("Palette (Cmd-K, web spec §2)", () => {
   });
 
   it("renders nothing when closed", () => {
-    render(<Palette open={false} initialQuery="" onClose={vi.fn()} buildContext={(args) => buildContext({ args })} />);
+    render(
+      <Palette
+        open={false}
+        initialQuery=""
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={ALLOW_ALL}
+      />
+    );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("filters as the user types in the palette's own input", () => {
-    render(<Palette open initialQuery="" onClose={vi.fn()} buildContext={(args) => buildContext({ args })} />);
+    render(
+      <Palette
+        open
+        initialQuery=""
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={ALLOW_ALL}
+      />
+    );
     fireEvent.change(screen.getByLabelText("Command palette"), { target: { value: "whoami" } });
     expect(screen.getByText("/whoami")).toBeInTheDocument();
     expect(screen.queryByText("/quit")).not.toBeInTheDocument();
@@ -88,7 +141,15 @@ describe("Palette (Cmd-K, web spec §2)", () => {
 
   it("Escape closes the palette", () => {
     const onClose = vi.fn();
-    render(<Palette open initialQuery="" onClose={onClose} buildContext={(args) => buildContext({ args })} />);
+    render(
+      <Palette
+        open
+        initialQuery=""
+        onClose={onClose}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={ALLOW_ALL}
+      />
+    );
     fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
   });
@@ -105,6 +166,7 @@ describe("Palette (Cmd-K, web spec §2)", () => {
           capturedArgs = args;
           return buildContext();
         }}
+        hasCap={ALLOW_ALL}
       />
     );
     const input = screen.getByLabelText("Command palette");
@@ -147,6 +209,7 @@ describe("Palette (Cmd-K, web spec §2)", () => {
           initialQuery="channels"
           onClose={vi.fn()}
           buildContext={(args) => buildContext({ args })}
+          hasCap={ALLOW_ALL}
         />
       );
       fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
@@ -168,6 +231,7 @@ describe("Palette (Cmd-K, web spec §2)", () => {
             capturedArgs = args;
             return buildContext({ args });
           }}
+          hasCap={ALLOW_ALL}
         />
       );
       fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
@@ -185,6 +249,7 @@ describe("Palette (Cmd-K, web spec §2)", () => {
           initialQuery="channel"
           onClose={vi.fn()}
           buildContext={(args) => buildContext({ args })}
+          hasCap={ALLOW_ALL}
         />
       );
       fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
@@ -201,13 +266,158 @@ describe("Palette (Cmd-K, web spec §2)", () => {
     try {
       const onClose = vi.fn();
       render(
-        <Palette open initialQuery="whoami" onClose={onClose} buildContext={(args) => buildContext({ args })} />
+        <Palette
+          open
+          initialQuery="whoami"
+          onClose={onClose}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={ALLOW_ALL}
+        />
       );
       fireEvent.mouseDown(screen.getByText("/whoami"));
       expect(run).toHaveBeenCalled();
       expect(onClose).toHaveBeenCalled();
     } finally {
       COMMANDS.find((c) => c.name === "/whoami")!.run = originalRun;
+    }
+  });
+});
+
+// SMAC-92 Task 4: `/invite` (requires `mint_human_invites`) and
+// `/workspace delete` (requires `manage_workspace`) are gated via `lib/
+// commands.ts`'s `REQUIRED_CAP` map, kept BESIDE `COMMANDS` rather than on
+// each entry -- the drift-guard test at the top of this file (which diffs
+// `COMMANDS`' `name`/`help` against `design/commands.md`) stays green
+// because `REQUIRED_CAP` never touches those fields.
+describe("Palette capability gating (task-4 brief, SMAC-92)", () => {
+  it("as a member (no mint_human_invites), '/invite' renders dimmed with the Workspace Admin hint, and does not run on Enter", () => {
+    const run = vi.fn();
+    const originalRun = COMMANDS.find((c) => c.name === "/invite")!.run;
+    COMMANDS.find((c) => c.name === "/invite")!.run = run;
+    try {
+      render(
+        <Palette
+          open
+          initialQuery="invite"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={DENY_ALL}
+        />
+      );
+      const entry = screen.getByRole("option", { name: /\/invite/ });
+      expect(entry).toHaveAttribute("aria-disabled", "true");
+      expect(entry).toHaveTextContent(/requires Workspace Admin/i);
+
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      COMMANDS.find((c) => c.name === "/invite")!.run = originalRun;
+    }
+  });
+
+  it("as a member, clicking a gated '/invite' entry also does not run it", () => {
+    const run = vi.fn();
+    const originalRun = COMMANDS.find((c) => c.name === "/invite")!.run;
+    COMMANDS.find((c) => c.name === "/invite")!.run = run;
+    try {
+      render(
+        <Palette
+          open
+          initialQuery="invite"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={DENY_ALL}
+        />
+      );
+      fireEvent.mouseDown(screen.getByRole("option", { name: /\/invite/ }));
+      expect(run).not.toHaveBeenCalled();
+    } finally {
+      COMMANDS.find((c) => c.name === "/invite")!.run = originalRun;
+    }
+  });
+
+  it("as an admin (holds mint_human_invites), '/invite' is NOT dimmed and Enter runs it", () => {
+    const run = vi.fn();
+    const originalRun = COMMANDS.find((c) => c.name === "/invite")!.run;
+    COMMANDS.find((c) => c.name === "/invite")!.run = run;
+    try {
+      render(
+        <Palette
+          open
+          initialQuery="invite"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={ALLOW_ALL}
+        />
+      );
+      const entry = screen.getByRole("option", { name: /\/invite/ });
+      expect(entry).not.toHaveAttribute("aria-disabled");
+      expect(entry).not.toHaveTextContent(/requires/i);
+
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(run).toHaveBeenCalled();
+    } finally {
+      COMMANDS.find((c) => c.name === "/invite")!.run = originalRun;
+    }
+  });
+
+  it("'/workspace delete' is gated on manage_workspace with the Workspace Admin hint", () => {
+    render(
+      <Palette
+        open
+        initialQuery="workspace delete"
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={DENY_ALL}
+      />
+    );
+    const entry = screen.getByRole("option", { name: /\/workspace delete/ });
+    expect(entry).toHaveAttribute("aria-disabled", "true");
+    expect(entry).toHaveTextContent(/requires Workspace Admin/i);
+  });
+
+  it("ungated commands (e.g. '/whoami') are never dimmed regardless of hasCap", () => {
+    render(
+      <Palette
+        open
+        initialQuery="whoami"
+        onClose={vi.fn()}
+        buildContext={(args) => buildContext({ args })}
+        hasCap={DENY_ALL}
+      />
+    );
+    const entry = screen.getByRole("option", { name: /\/whoami/ });
+    expect(entry).not.toHaveAttribute("aria-disabled");
+  });
+
+  // Task-5 brief fix round: `/invite` is gated on EITHER mint cap
+  // (`REQUIRED_CAP["/invite"]` is now an array), not `mint_human_invites`
+  // alone -- an agent_admin genuinely can mint an agent invite once landed
+  // on the Invites tab (`InvitesPanel`'s agent-only section), so the
+  // palette entry must not lock them out of running `/invite` at all.
+  it("an agent_admin (mint_agent_invites only, no mint_human_invites) can still run '/invite'", () => {
+    const run = vi.fn();
+    const originalRun = COMMANDS.find((c) => c.name === "/invite")!.run;
+    COMMANDS.find((c) => c.name === "/invite")!.run = run;
+    const hasCap = (cap: string) => cap === "mint_agent_invites";
+    try {
+      render(
+        <Palette
+          open
+          initialQuery="invite"
+          onClose={vi.fn()}
+          buildContext={(args) => buildContext({ args })}
+          hasCap={hasCap}
+        />
+      );
+      const entry = screen.getByRole("option", { name: /\/invite/ });
+      expect(entry).not.toHaveAttribute("aria-disabled");
+      expect(entry).not.toHaveTextContent(/requires/i);
+
+      fireEvent.keyDown(screen.getByLabelText("Command palette"), { key: "Enter" });
+      expect(run).toHaveBeenCalled();
+    } finally {
+      COMMANDS.find((c) => c.name === "/invite")!.run = originalRun;
     }
   });
 });

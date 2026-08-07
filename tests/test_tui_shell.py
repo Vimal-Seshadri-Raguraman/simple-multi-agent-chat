@@ -119,7 +119,7 @@ class FakeApi:
             "first_name": "Vimal",
             "last_name": "Raguraman",
             "member_name": "Vimal Raguraman",
-            "is_admin": True,
+            "role": "admin",
             "workspace_visibility": "private",
         }
         self.unreads_result: dict[str, Any] = {"unreads": []}

@@ -646,14 +646,68 @@ export async function attachAgent(accountId: string): Promise<MemberRegisterOut>
 }
 
 /**
- * `POST /workspaces/{workspace_id}/invites` (admin): mint a fresh
- * shareable multi-use join code.
+ * `POST /workspaces/{workspace_id}/invites`: mint a fresh shareable
+ * invite code -- `kind: "human"` (`Cap.MINT_HUMAN_INVITES`-gated) sends
+ * `invite_type: "code"` exactly as before this method took a `kind`
+ * (SMAC-92 Task 4 renamed it from `mintInviteCode`); `kind: "agent"`
+ * (`Cap.MINT_AGENT_INVITES`-gated) sends `invite_type: "agent_code"`,
+ * redeemable only via the unauthenticated `POST /agents/join`
+ * (`app/schemas.py::InviteCreateIn`).
  */
-export async function mintInviteCode(): Promise<InviteOut> {
+export async function mintInvite(kind: "human" | "agent"): Promise<InviteOut> {
   const workspaceId = requireWorkspaceId();
   return authedRequest<InviteOut>("POST", `/workspaces/${workspaceId}/invites`, {
-    jsonBody: { invite_type: "code" },
+    jsonBody: { invite_type: kind === "agent" ? "agent_code" : "code" },
   });
+}
+
+/**
+ * `GET /workspaces/{workspace_id}/invites` (either mint cap): every
+ * pending invite in the workspace (codes shown in full, so they can be
+ * re-shared) -- `app/routers/invites.py::list_invites`.
+ */
+export async function listInvites(): Promise<InviteOut[]> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<InviteOut[]>("GET", `/workspaces/${workspaceId}/invites`);
+}
+
+/**
+ * `DELETE /workspaces/{workspace_id}/invites/{invite_id}` (either mint
+ * cap): revoke a pending invite of either type
+ * (`app/routers/invites.py::revoke_invite`).
+ */
+export async function revokeInvite(inviteId: string): Promise<{ status: string }> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<{ status: string }>(
+    "DELETE",
+    `/workspaces/${workspaceId}/invites/${inviteId}`
+  );
+}
+
+/**
+ * `PATCH /workspaces/{workspace_id}/members/{member_id}` (`Cap.
+ * ASSIGN_ROLES`-gated): assign a workspace member's role. Returns the
+ * updated `MemberOut` (`app/routers/workspaces.py::update_member_role`).
+ */
+export async function updateMemberRole(memberId: string, role: string): Promise<MemberOut> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<MemberOut>("PATCH", `/workspaces/${workspaceId}/members/${memberId}`, {
+    jsonBody: { role },
+  });
+}
+
+/**
+ * `DELETE /workspaces/{workspace_id}/members/{member_id}` (`Cap.
+ * REMOVE_MEMBERS`-gated): remove a member from the workspace
+ * (`app/routers/workspaces.py::remove_member`'s docstring covers what
+ * happens to their history/tokens/sockets).
+ */
+export async function removeMember(memberId: string): Promise<{ status: string }> {
+  const workspaceId = requireWorkspaceId();
+  return authedRequest<{ status: string }>(
+    "DELETE",
+    `/workspaces/${workspaceId}/members/${memberId}`
+  );
 }
 
 /** `DELETE /workspaces/{workspace_id}?confirm=delete`: destroy the workspace. */

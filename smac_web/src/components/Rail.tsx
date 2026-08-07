@@ -1,6 +1,7 @@
 import { type FormEvent, type TouchEvent, useRef, useState } from "react";
 import type { ChannelOut, MemberSelfOut, Membership, UnreadsRowOut } from "../lib/api";
 import { initialsFor } from "../lib/avatar";
+import { ROLE_LABELS } from "../lib/capabilities";
 
 /**
  * The left rail (web spec §2): workspace name + switcher (memberships +
@@ -289,7 +290,7 @@ export default function Rail({
                   <p className="rail__whoami-handle">@{self.handle}</p>
                   <p className="rail__whoami-meta">
                     {workspaceName}
-                    {self.is_admin ? " · admin" : ""}
+                    {ROLE_LABELS[self.role] ? ` · ${ROLE_LABELS[self.role]}` : ""}
                   </p>
                 </div>
               )}

@@ -737,6 +737,18 @@
   color: var(--color-text-dim);
 }
 
+/* Gated entries (task-4 brief, SMAC-92): visible but not runnable for a
+   caller lacking the required capability -- dimmed, cursor signals it,
+   never fully hidden (the entry stays discoverable via /help browsing). */
+.palette__item--gated {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.palette__item-hint {
+  font-style: italic;
+}
+
 .palette__empty {
   padding: var(--space-3);
   color: var(--color-text-dim);
@@ -839,7 +851,12 @@
   font-family: var(--font-mono);
 }
 
-.members-panel__admin-mark {
+.members-panel__you-mark {
+  color: var(--color-text-dim);
+  font-weight: 400;
+}
+
+.members-panel__role-badge {
   font-size: var(--font-size-xs);
   color: var(--color-text-dim);
   border: 1px solid var(--color-border);
@@ -1206,8 +1223,17 @@
 
 /* -- Invites panel ---------------------------------------------------------- */
 
-.invites-panel > .btn {
+.invites-panel__section {
+  margin-top: var(--space-4);
+}
+
+.invites-panel__section .btn {
   margin-top: var(--space-2);
+}
+
+.invites-panel__empty {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
 }
 
 .invites-panel__hint {
@@ -1240,6 +1266,220 @@
   color: var(--color-text-dim);
   font-size: var(--font-size-sm);
   margin-top: var(--space-2);
+}
+
+.invites-panel__expiry {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+  margin: var(--space-1) 0 0;
+  text-align: center;
+}
+
+.invites-panel__kind-selector {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.invites-panel__kind-btn {
+  background: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.invites-panel__kind-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.invites-panel__kind-btn--active {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+  font-weight: 600;
+}
+
+.invites-panel__pending {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.invites-panel__pending-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 32rem;
+}
+
+.invites-panel__pending-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.invites-panel__pending-type {
+  flex: 0 0 auto;
+  color: var(--color-text-dim);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.invites-panel__pending-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* -- Members admin panel (SMAC-92 Task 5) -----------------------------------
+ * The mutation-capable twin of the Drawer's read-only `.members-panel__*`
+ * (`components/MembersPanel.tsx`) -- same grouping/avatar-ring/handle/
+ * badge look (intentionally duplicated rather than shared classes, since
+ * this row also carries a role `<select>` and a Remove control the
+ * read-only drawer never does). */
+
+.members-admin__group {
+  margin-bottom: var(--space-4);
+}
+
+.members-admin__group-label {
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-dim);
+  margin: 0 0 var(--space-2);
+}
+
+.members-admin__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.members-admin__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+}
+
+.members-admin__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 10rem;
+}
+
+.members-admin__avatar-ring {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.members-admin__handle {
+  font-family: var(--font-mono);
+}
+
+.members-admin__you-mark {
+  color: var(--color-text-dim);
+  font-weight: 400;
+}
+
+.members-admin__role {
+  flex: 0 0 auto;
+}
+
+.members-admin__role-select {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.members-admin__role-badge {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+
+.members-admin__error {
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+  margin: var(--space-1) 0 0;
+  width: 100%;
+}
+
+.members-admin__remove {
+  flex: 0 0 auto;
+}
+
+.members-admin__remove-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 16rem;
+}
+
+.members-admin__remove-form label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+}
+
+.members-admin__remove-form input {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.members-admin__remove-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.members-admin__empty {
+  color: var(--color-text-dim);
+  font-size: var(--font-size-sm);
 }
 
 /* -- Workspace panel -------------------------------------------------------- */

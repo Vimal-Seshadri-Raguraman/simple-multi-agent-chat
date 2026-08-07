@@ -67,6 +67,9 @@ export type MemberOut = {
   handle: string;
   created_at: string;
   account_id: string;
+  /** `Member.role` (SMAC-92) -- public for ANY member lookup, not just
+   * the caller's own (`app/schemas.py::MemberOut`'s docstring). */
+  role: string;
   first_name?: string | null;
   last_name?: string | null;
   company?: string | null;
@@ -87,7 +90,15 @@ export type MemberSelfOut = {
   company: string | null;
   occupation: string | null;
   job_role: string | null;
-  is_admin: boolean | null;
+  /** `Member.role` (`"member" | "agent_admin" | "admin"`, SMAC-92). */
+  role: string;
+  /** `[c.value for c in caps_for(member)]` -- the derived capability
+   * list every client should render from instead of re-implementing the
+   * role -> capability table (`app/capabilities.py`'s single source of
+   * truth). Render gating via `lib/capabilities.ts`'s `hasCap` helper,
+   * never by comparing `role` directly. The deprecated `is_admin` wire
+   * field is gone as of SMAC-92 Task 4 -- do not re-add it. */
+  capabilities: string[];
   workspace_visibility: string | null;
 };
 

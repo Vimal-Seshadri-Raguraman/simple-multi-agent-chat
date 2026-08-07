@@ -80,14 +80,27 @@ class InvalidInviteError(AppError):
     code = "invalid_invite"
 
 
-class NotWorkspaceAdminError(AppError):
+class CapabilityDeniedError(AppError):
+    """The single 403 raised by `app.capabilities.require_cap` (SMAC-92,
+    spec §2) -- every privileged route funnels through this one class now,
+    replacing the old per-check `NotWorkspaceAdminError`."""
+
     status_code = 403
-    code = "not_workspace_admin"
+    code = "forbidden"
 
 
 class LastAdminError(AppError):
     status_code = 409
     code = "last_admin"
+
+
+class SelfRemovalError(AppError):
+    """A member tried to remove themselves via `DELETE
+    /workspaces/{id}/members/{id}` (SMAC-92) -- use workspace deletion, or
+    a future 'leave', for that instead."""
+
+    status_code = 400
+    code = "self_removal"
 
 
 class ConfirmationRequiredError(AppError):

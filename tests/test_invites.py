@@ -117,6 +117,10 @@ def test_foreign_workspace_member_cannot_create_invite(client):
 
 
 def test_agent_cannot_create_invite(client):
+    """SMAC-92: create_invite is now capability-gated (`Cap.MINT_HUMAN_INVITES`
+    for email/code), not just human-type-gated -- an agent's type cap
+    intersects it away regardless of role, so this is now the generic
+    `forbidden` envelope, not `forbidden_member_type`."""
     founder = founder_auth(client, "w1")
     agent = client.post(
         "/members/agents",
@@ -129,7 +133,7 @@ def test_agent_cannot_create_invite(client):
         headers={"X-API-Key": agent["api_key"]},
     )
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "forbidden_member_type"
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 def _code_invite(client, workspace_id, key="w1"):

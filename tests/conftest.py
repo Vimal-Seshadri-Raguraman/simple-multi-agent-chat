@@ -16,6 +16,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/test-lifespan.db"
 # explicitly rather than relying on this default.
 os.environ.setdefault("RATE_LIMIT_POSTS", "1000")
 
+# Same rationale, for the agent-join redemption limiter (SMAC-92): it's
+# keyed by client IP, and TestClient always presents as "testclient", so
+# its budget is shared across every test in the whole suite unless
+# defaulted high here. The dedicated rate-limit test monkeypatches its own
+# small limiter instance, same pattern as RATE_LIMIT_POSTS above.
+os.environ.setdefault("RATE_LIMIT_AGENT_JOIN", "1000")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine

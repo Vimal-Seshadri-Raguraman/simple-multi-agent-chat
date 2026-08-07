@@ -47,17 +47,21 @@ def test_same_agent_account_two_workspaces_two_keys(client):
     assert attached_body["api_key"] != created_body["api_key"]
     assert attached_body["member_type"] == "agent"
 
-    # Each key only works in its own workspace.
-    a_only = client.get("/members", headers={"X-API-Key": created_body["api_key"]})
+    # Each key only works in its own workspace -- re-expressed via
+    # /members/me (final review F2): /members is now gated on
+    # Cap.VIEW_MEMBERS, which an agent key doesn't hold, so it can no
+    # longer serve as this isolation probe. /members/me reports the
+    # caller's own member_id and workspace_id under either key, which is
+    # exactly what cross-workspace isolation needs to assert.
+    a_only = client.get("/members/me", headers={"X-API-Key": created_body["api_key"]})
     assert a_only.status_code == 200
-    b_only = client.get("/members", headers={"X-API-Key": attached_body["api_key"]})
+    b_only = client.get("/members/me", headers={"X-API-Key": attached_body["api_key"]})
     assert b_only.status_code == 200
-    a_member_ids = {m["member_id"] for m in a_only.json()}
-    b_member_ids = {m["member_id"] for m in b_only.json()}
-    assert created_body["member_id"] in a_member_ids
-    assert created_body["member_id"] not in b_member_ids
-    assert attached_body["member_id"] in b_member_ids
-    assert attached_body["member_id"] not in a_member_ids
+    a_self = a_only.json()
+    b_self = b_only.json()
+    assert a_self["member_id"] == created_body["member_id"]
+    assert b_self["member_id"] == attached_body["member_id"]
+    assert a_self["workspace_id"] != b_self["workspace_id"]
 
 
 def test_attach_dedupes_handle_locally(client):

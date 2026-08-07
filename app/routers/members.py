@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.accounts import build_member_self_out, create_agent_account
 from app.auth import generate_api_key, get_current_member, hash_api_key
 from app.authorization import authorize_management_action
+from app.capabilities import Cap, require_cap
 from app.database import get_db
 from app.errors import AlreadyAMemberError, HandleTakenError, NotFoundError
 from app.handles import generate_unique_handle
@@ -19,12 +20,20 @@ from app.schemas import (
 router = APIRouter()
 
 
-def _register(
+def _register_member(
     db: Session, member_name: str, member_type: str, workspace_id: str
-) -> MemberRegisterOut:
+) -> tuple[Member, str]:
     """Create a brand-new agent/bot_app: a brand-new identity-only global
     Account (no email/password; the API key stays right here on Member,
-    per-workspace, spec Decision 2) plus its first membership profile."""
+    per-workspace, spec Decision 2) plus its first membership profile.
+
+    Returns the persisted `Member` ORM row and the raw (unhashed) API
+    key -- shown to the caller exactly once. Caller-agnostic: takes no
+    `member`/auth dependency, so it's shared by `_register` below (the
+    authed `/members/agents` and `/members/bots` doors) and the
+    unauthenticated `/agents/join` invite-redemption door (SMAC-92)
+    without either one assuming the other's caller shape.
+    """
     raw_key = generate_api_key()
     account = create_agent_account(db, member_type)
     member = Member(
@@ -38,6 +47,15 @@ def _register(
     db.add(member)
     db.commit()
     db.refresh(member)
+    return member, raw_key
+
+
+def _register(
+    db: Session, member_name: str, member_type: str, workspace_id: str
+) -> MemberRegisterOut:
+    """Thin wrapper of `_register_member` for the two authed doors below,
+    shaping the result into `MemberRegisterOut` (unchanged wire contract)."""
+    member, raw_key = _register_member(db, member_name, member_type, workspace_id)
     return MemberRegisterOut(
         member_id=member.member_id,
         member_name=member.member_name,
@@ -112,7 +130,7 @@ def register_agent(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
-    authorize_management_action(member)
+    require_cap(member, Cap.MANAGE_AGENTS)
     if body.account_id is not None:
         return _attach(db, body.account_id, "agent", member.workspace_id)
     assert body.member_name is not None  # schema validator enforces the XOR
@@ -125,7 +143,7 @@ def register_bot(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> MemberRegisterOut:
-    authorize_management_action(member)
+    require_cap(member, Cap.MANAGE_AGENTS)
     if body.account_id is not None:
         return _attach(db, body.account_id, "bot_app", member.workspace_id)
     assert body.member_name is not None  # schema validator enforces the XOR
@@ -140,7 +158,12 @@ def search_members(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
-    """Search members within the caller's own workspace (the wall applies implicitly)."""
+    """Search members within the caller's own workspace (the wall applies
+    implicitly). Gated on `Cap.VIEW_MEMBERS` (final review F2): this route
+    returns the same `MemberOut` rows as the already-gated
+    `GET /workspaces/{id}/members`, and was the ungated sibling an agent
+    key could use to enumerate the entire workspace directory instead."""
+    require_cap(member, Cap.VIEW_MEMBERS)
     query = db.query(Member).filter(Member.workspace_id == member.workspace_id)
     if search_name:
         query = query.filter(Member.member_name.contains(search_name))
@@ -160,13 +183,22 @@ def get_member(
     """A member's profile within the caller's own workspace.
 
     A member in a foreign workspace simply doesn't exist for you -> 404,
-    via the same not-found path as an unknown member_id. `is_admin` and
-    `workspace_visibility` are included only when fetching your own
-    profile -- nulled out for anyone else's (SMAC-72 task 6's addition is
-    scoped to the caller's own `/whoami` view). Email is never included at
+    via the same not-found path as an unknown member_id. `role` and
+    `capabilities` (SMAC-92, spec §3) are included for ANY lookup, self or
+    not -- roles are public, transparency by design (this supersedes the
+    old self-only `is_admin` nulling). `workspace_visibility` (SMAC-72
+    task 6) stays self-view-only -- nulled out for anyone else's profile,
+    unrelated to the role-visibility change. Email is never included at
     all anymore (Identity v2, SMAC-79 Task 2, spec §7): it lives on the
     account now, not the member profile -- see `GET /accounts/me`.
+
+    Gated on `Cap.VIEW_MEMBERS` (final review F2): this was the worse of
+    the two ungated sibling routes -- it hands out the target's `role`
+    AND full derived capability list, exactly the recon an agent key
+    (reduced by its type-cap intersection to post/read/ack) should not be
+    able to run against the workspace directory.
     """
+    require_cap(current_member, Cap.VIEW_MEMBERS)
     member = (
         db.query(Member)
         .filter(
@@ -179,7 +211,6 @@ def get_member(
         raise NotFoundError(f"Member '{member_id}' not found")
     profile = build_member_self_out(db, member)
     if member.member_id != current_member.member_id:
-        profile.is_admin = None
         profile.workspace_visibility = None
     return profile
 

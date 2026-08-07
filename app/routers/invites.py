@@ -1,20 +1,32 @@
 """Workspace invitations: create/list/revoke (workspace-side) + registration (invitee-side)."""
 
+import logging
 import os
 import secrets
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
+from app import rate_limit
 from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_account, get_current_member
-from app.authorization import authorize_management_action, require_same_workspace
+from app.authorization import require_same_workspace
+from app.capabilities import Cap, caps_for, require_cap
 from app.database import get_db
-from app.errors import AlreadyAMemberError, InvalidInviteError, NotFoundError
+from app.errors import (
+    AlreadyAMemberError,
+    CapabilityDeniedError,
+    InvalidInviteError,
+    NotFoundError,
+    RateLimitedError,
+)
 from app.models import Account, Member, Workspace, WorkspaceInvite, utcnow
 from app.routers.auth import _issue_workspace_token_pair
+from app.routers.members import _register_member
 from app.schemas import (
+    AgentJoinIn,
+    AgentJoinOut,
     CodeRegisterIn,
     InviteCreateIn,
     InviteOut,
@@ -24,22 +36,64 @@ from app.schemas import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 INVITE_CODE_TTL_DAYS: int = int(os.getenv("INVITE_CODE_TTL_DAYS", "7"))
 
 _INVALID_INVITE_MESSAGE = "Invite is invalid or expired"
 
+# Per-invite-type mint capability (SMAC-92): create_invite's required cap
+# depends on body.invite_type.
+_MINT_CAP_BY_TYPE: dict[str, Cap] = {
+    "email": Cap.MINT_HUMAN_INVITES,
+    "code": Cap.MINT_HUMAN_INVITES,
+    "agent_code": Cap.MINT_AGENT_INVITES,
+}
 
-def _require_human_workspace_member(
-    db: Session, member: Member, workspace_id: str
-) -> Workspace:
-    """Shared gate for workspace-side invite operations: human + member + workspace exists."""
-    authorize_management_action(member)
+# list/revoke accept either mint capability: an agent_admin must be able to
+# see/revoke the agent-invite codes they mint (Task 3), same as an admin
+# manages human invites.
+_ANY_MINT_CAPS = (Cap.MINT_HUMAN_INVITES, Cap.MINT_AGENT_INVITES)
+
+
+def _require_workspace(db: Session, member: Member, workspace_id: str) -> Workspace:
+    """Shared gate for workspace-side invite operations: wall + workspace
+    exists. Capability checks happen at each call site -- create_invite's
+    cap depends on the invite type; list/revoke accept either mint cap."""
     require_same_workspace(member, workspace_id)
     workspace = db.get(Workspace, workspace_id)
     if workspace is None:
         raise NotFoundError(f"Workspace '{workspace_id}' not found")
     return workspace
+
+
+def _require_any_mint_cap(member: Member) -> None:
+    if not caps_for(member) & set(_ANY_MINT_CAPS):
+        joined = " or ".join(cap.value for cap in _ANY_MINT_CAPS)
+        raise CapabilityDeniedError(f"This action requires {joined}.")
+
+
+def _invite_by_code(db: Session, code: str, invite_type: str) -> WorkspaceInvite | None:
+    """The one place `WorkspaceInvite.code` is ever looked up -- always
+    paired with `invite_type`, so a future third code-shaped invite type
+    (or a copy-pasted call site) cannot omit the discriminator. Final
+    review F1: `register_by_code` used to query by `code` alone, so an
+    `agent_code` (mintable by `agent_admin`, who is denied
+    `Cap.MINT_HUMAN_INVITES`) redeemed there into a full human membership,
+    bypassing both the capability split and private-workspace admission
+    -- and since that door never consumes the invite, a single agent_code
+    became an unlimited human-membership faucet that still worked at
+    `/agents/join` afterward. `code` is globally unique, but the type
+    filter is what keeps each door honoring only the invite kind it was
+    built for.
+    """
+    return (
+        db.query(WorkspaceInvite)
+        .filter(
+            WorkspaceInvite.code == code, WorkspaceInvite.invite_type == invite_type
+        )
+        .first()
+    )
 
 
 def _delete_if_expired(db: Session, invite: WorkspaceInvite) -> bool:
@@ -59,7 +113,8 @@ def create_invite(
     db: Session = Depends(get_db),
 ) -> WorkspaceInvite:
     """Create an email-targeted invite or a shareable multi-use code."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    require_cap(member, _MINT_CAP_BY_TYPE[body.invite_type])
 
     if body.invite_type == "email":
         if body.email is None:
@@ -103,9 +158,13 @@ def create_invite(
             created_by=member.member_id,
         )
     else:
+        # "code" (human, multi-use) and "agent_code" (SMAC-92, single-use --
+        # burnt on redemption by `join_as_agent`) are minted identically:
+        # same token shape/TTL/cleanup, differing only in invite_type and
+        # which door will accept them later.
         invite = WorkspaceInvite(
             workspace_id=workspace_id,
-            invite_type="code",
+            invite_type=body.invite_type,
             code=secrets.token_urlsafe(9),
             created_by=member.member_id,
             expires_at=utcnow() + timedelta(days=INVITE_CODE_TTL_DAYS),
@@ -124,7 +183,8 @@ def list_invites(
     db: Session = Depends(get_db),
 ) -> list[WorkspaceInvite]:
     """List pending invites (codes shown in full, so they can be re-shared)."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    _require_any_mint_cap(member)
     invites = (
         db.query(WorkspaceInvite)
         .filter(WorkspaceInvite.workspace_id == workspace_id)
@@ -141,7 +201,8 @@ def revoke_invite(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     """Revoke any pending invite (either type)."""
-    _require_human_workspace_member(db, member, workspace_id)
+    _require_workspace(db, member, workspace_id)
+    _require_any_mint_cap(member)
     invite = db.get(WorkspaceInvite, invite_id)
     if invite is None or invite.workspace_id != workspace_id:
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
@@ -187,8 +248,13 @@ def register_by_code(
 
     Account-authed (spec §3, SMAC-79 Task 2): the caller already has an
     account, identified via the account token, not a body email/password.
+
+    Only a "code" invite (human, multi-use) is honored here -- an
+    "agent_code" presented at this door is indistinguishable from an
+    unknown code (final review F1; `join_as_agent` is the mirror door for
+    agent_code, filtered the same way).
     """
-    invite = db.query(WorkspaceInvite).filter(WorkspaceInvite.code == body.code).first()
+    invite = _invite_by_code(db, body.code, "code")
     if invite is None or _delete_if_expired(db, invite):
         raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
     workspace = db.get(Workspace, invite.workspace_id)
@@ -257,3 +323,91 @@ def register_into_workspace(
         db.delete(seat)
         return _register_account(db, workspace, account, body)
     return _register_account(db, workspace, account, body)
+
+
+def _client_key(request: Request) -> str:
+    """Best-effort caller identity for `agent_join_limiter`, keyed by
+    client IP since `join_as_agent` has no credential/member_id to key
+    a budget by. `request.client` is only unset for certain non-HTTP
+    transports (never real HTTP traffic); the fallback just shares one
+    bucket across those rather than crashing."""
+    return request.client.host if request.client is not None else "unknown"
+
+
+@router.post("/agents/join", response_model=AgentJoinOut, status_code=201)
+def join_as_agent(
+    body: AgentJoinIn,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> AgentJoinOut:
+    """Redeem a single-use agent invite code (SMAC-92) -- UNAUTHENTICATED:
+    the caller has no account/credential yet, only the code. Mints a
+    brand-new agent account + per-workspace member + API key and returns
+    the key here, exactly once -- `Member.api_key_hash` is one-way, so
+    there is no other way to retrieve it later.
+
+    Every failure mode -- unknown code, expired, already-redeemed,
+    revoked, a human ('email'/'code') invite presented at this door, or
+    an orphaned invite whose workspace no longer exists -- raises the
+    exact same `InvalidInviteError` (404 `invalid_invite` / "Invite is
+    invalid or expired"): a caller can never learn from the response
+    which of those happened, same uniform-404 contract every other
+    invite door in this file already uses.
+
+    Rate-limited per client IP (`rate_limit.agent_join_limiter`), since
+    an unauthenticated door has no member_id to throttle by otherwise --
+    the one thing standing between a bogus code and a brute-force loop.
+    """
+    if not rate_limit.agent_join_limiter.allow(_client_key(request)):
+        raise RateLimitedError("Too many attempts -- wait a moment")
+
+    invite = _invite_by_code(db, body.code, "agent_code")
+    if invite is None or _delete_if_expired(db, invite):
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+
+    workspace = db.get(Workspace, invite.workspace_id)
+    if workspace is None:
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+    # Captured before the claim/commit below so the response never has to
+    # touch a possibly-expired ORM attribute post-commit.
+    workspace_id = workspace.workspace_id
+    workspace_out = WorkspaceOut.model_validate(workspace)
+
+    # Atomic single-use claim: a bulk DELETE keyed by invite_id (not the
+    # SELECT above). `Query.delete()` executes the DELETE and returns its
+    # matched-row count immediately -- no commit needed to read `claimed`.
+    # Two concurrent redemptions of the same code both pass the
+    # lookup/expiry/workspace checks above, but SQLite acquires the write
+    # lock at this first write statement (not at commit), so the two
+    # DELETEs still serialize: the loser's WHERE matches zero rows once
+    # the winner's DELETE has run, so exactly one caller ever observes
+    # `claimed == 1`.
+    #
+    # Deliberately left UNCOMMITTED here: it rides along with
+    # `_register_member`'s own commit below as ONE transaction, so a
+    # crash (or any exception) between the claim and the member insert
+    # rolls both back together via `get_db`'s session close -- there is
+    # no window where the code is burned but no agent was created.
+    claimed = (
+        db.query(WorkspaceInvite)
+        .filter(WorkspaceInvite.invite_id == invite.invite_id)
+        .delete(synchronize_session=False)
+    )
+    if claimed == 0:
+        raise InvalidInviteError(_INVALID_INVITE_MESSAGE)
+
+    member, raw_key = _register_member(db, body.name, "agent", workspace_id)
+    # Never the code or the key -- only the identifiers a server operator
+    # is entitled to see after the fact.
+    logger.info(
+        "agent invite redeemed workspace_id=%s member_id=%s",
+        workspace_id,
+        member.member_id,
+    )
+    return AgentJoinOut(
+        account_id=member.account_id,
+        member_id=member.member_id,
+        handle=member.handle,
+        api_key=raw_key,
+        workspace=workspace_out,
+    )

@@ -32,7 +32,7 @@ def test_non_admin_member_gets_403(client):
         headers=member_headers(client, "m2", "w1"),
     )
     assert r.status_code == 403
-    assert r.json()["error"]["code"] == "not_workspace_admin"
+    assert r.json()["error"]["code"] == "forbidden"
 
 
 def test_outsider_gets_uniform_404(client):
@@ -50,10 +50,9 @@ def test_promote_then_demote(client):
     ws = _ws(client)
     m2 = member_auth(client, "m2", "w1")
     url = f"/workspaces/{ws}/members/{m2['member_id']}"
-    r = client.patch(
-        url, json={"is_admin": True}, headers=founder_headers(client, "w1")
-    )
+    r = client.patch(url, json={"role": "admin"}, headers=founder_headers(client, "w1"))
     assert r.status_code == 200
+    assert r.json()["role"] == "admin"
     # The new admin can act as one:
     r = client.patch(
         f"/workspaces/{ws}",
@@ -62,9 +61,32 @@ def test_promote_then_demote(client):
     )
     assert r.status_code == 200
     r = client.patch(
-        url, json={"is_admin": False}, headers=founder_headers(client, "w1")
+        url, json={"role": "member"}, headers=founder_headers(client, "w1")
     )
     assert r.status_code == 200
+    assert r.json()["role"] == "member"
+
+
+def test_promote_to_agent_admin(client):
+    ws = _ws(client)
+    m2 = member_auth(client, "m2", "w1")
+    url = f"/workspaces/{ws}/members/{m2['member_id']}"
+    r = client.patch(
+        url, json={"role": "agent_admin"}, headers=founder_headers(client, "w1")
+    )
+    assert r.status_code == 200
+    assert r.json()["role"] == "agent_admin"
+
+
+def test_invalid_role_is_422(client):
+    ws = _ws(client)
+    m2 = member_auth(client, "m2", "w1")
+    r = client.patch(
+        f"/workspaces/{ws}/members/{m2['member_id']}",
+        json={"role": "superadmin"},
+        headers=founder_headers(client, "w1"),
+    )
+    assert r.status_code == 422
 
 
 def test_last_admin_cannot_demote_self(client):
@@ -72,7 +94,7 @@ def test_last_admin_cannot_demote_self(client):
     founder_id = founder_auth(client, "w1")["member_id"]
     r = client.patch(
         f"/workspaces/{ws}/members/{founder_id}",
-        json={"is_admin": False},
+        json={"role": "member"},
         headers=founder_headers(client, "w1"),
     )
     assert r.status_code == 409
@@ -88,7 +110,7 @@ def test_agent_cannot_be_promoted(client):
     ).json()
     r = client.patch(
         f"/workspaces/{ws}/members/{agent['member_id']}",
-        json={"is_admin": True},
+        json={"role": "admin"},
         headers=founder_headers(client, "w1"),
     )
     assert r.status_code == 403

@@ -11,6 +11,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
+from app.capabilities import VALID_ROLES
 from app.mentions import resolve_payload_refs
 from app.models import Channel, Member, Message, Workspace
 
@@ -51,6 +52,7 @@ class MemberOut(BaseModel):
     handle: str
     created_at: datetime
     account_id: str
+    role: str
     first_name: str | None = None
     last_name: str | None = None
     company: str | None = None
@@ -96,21 +98,23 @@ class MemberSelfOut(BaseModel):
     the caller their own. `account_id` links this profile back to the
     caller's global account (additive, spec §4).
 
-    `is_admin` and `workspace_visibility` (SMAC-72 task 6) exist for the
-    TUI's `/whoami` command (spec §0.2), which needs both and had no other
-    source for either: `is_admin` is a real `Member` column but was never
-    exposed on any response before; `workspace_visibility` isn't a member
-    attribute at all (no GET-your-own-workspace endpoint exists), so it's
-    carried here instead -- see `app.accounts.build_member_self_out`,
-    the one place that assembles this schema, for how it's looked up.
+    `role` and `capabilities` (SMAC-92, spec §2-3) are the roles-and-
+    privileges wire contract: `role` is the real `Member.role` column,
+    `capabilities` is `[c.value for c in caps_for(member)]` -- the derived
+    list every client (web, TUI) should render from instead of
+    re-implementing the capability table. Unlike the old `is_admin` flag,
+    `role`/`capabilities` are visible for ANY member lookup, not just the
+    caller's own (spec §3 transparency: roles are public, only *managing*
+    them is gated) -- see `app.accounts.build_member_self_out`, the one
+    place that assembles this schema.
 
-    Both are SELF-view-only: `GET /member` (looking up ANOTHER member in
-    your own workspace) nulls them out -- `/whoami` only ever asks about
-    the caller's own profile (`GET /members/me`), and there's no product
-    reason yet for one member to learn another's admin status or the
-    workspace's visibility through this route (a deliberate, minimal
-    scope -- an admin roster is a feature for another day, not a side
-    effect of this one).
+    `workspace_visibility` (SMAC-72 task 6) isn't a member attribute at
+    all (no GET-your-own-workspace endpoint exists), so it's carried here
+    instead. It stays SELF-view-only: `GET /member` (looking up ANOTHER
+    member in your own workspace) nulls it out -- there's no product
+    reason yet for one member to learn another workspace-level fact
+    through this route (deliberate, minimal scope, unrelated to the
+    role-visibility change above).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -126,7 +130,8 @@ class MemberSelfOut(BaseModel):
     company: str | None
     occupation: str | None
     job_role: str | None
-    is_admin: bool | None
+    role: str
+    capabilities: list[str]
     workspace_visibility: str | None
 
 
@@ -312,17 +317,21 @@ class LogoutIn(BaseModel):
 
 
 class InviteCreateIn(BaseModel):
-    """Create an invite: email-targeted, or a shareable code."""
+    """Create an invite: email-targeted, a shareable human code, or a
+    shareable agent code (`agent_code`, SMAC-92 -- redeemable only via
+    the unauthenticated `POST /agents/join`)."""
 
-    invite_type: Literal["email", "code"]
+    invite_type: Literal["email", "code", "agent_code"]
     email: EmailStr | None = None
 
     @model_validator(mode="after")
     def _email_iff_email_type(self) -> "InviteCreateIn":
         if self.invite_type == "email" and self.email is None:
             raise ValueError("email is required for invite_type 'email'")
-        if self.invite_type == "code" and self.email is not None:
-            raise ValueError("email is not allowed for invite_type 'code'")
+        if self.invite_type != "email" and self.email is not None:
+            raise ValueError(
+                f"email is not allowed for invite_type '{self.invite_type}'"
+            )
         return self
 
 
@@ -332,10 +341,18 @@ class WorkspaceVisibilityIn(BaseModel):
     visibility: Literal["public", "private"]
 
 
-class MemberAdminIn(BaseModel):
-    """Admin-only promotion/demotion of a workspace member."""
+class MemberRoleIn(BaseModel):
+    """`Cap.ASSIGN_ROLES`-gated role change for a workspace member
+    (SMAC-92, replaces the old boolean `MemberAdminIn`)."""
 
-    is_admin: bool
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def _valid_role(cls, value: str) -> str:
+        if value not in VALID_ROLES:
+            raise ValueError(f"role must be one of {VALID_ROLES}")
+        return value
 
 
 class InviteOut(BaseModel):
@@ -348,6 +365,27 @@ class InviteOut(BaseModel):
     created_by: str
     created_at: datetime
     expires_at: datetime | None
+
+
+class AgentJoinIn(BaseModel):
+    """Redeem a single-use agent invite code -- unauthenticated (`POST
+    /agents/join`, SMAC-92): the caller has no credential yet, only the
+    code and a display name for the new agent."""
+
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+
+
+class AgentJoinOut(BaseModel):
+    """The freshly minted agent's identity and per-workspace API key,
+    shown exactly once here -- there is no other way to retrieve it
+    later (`Member.api_key_hash` is one-way)."""
+
+    account_id: str
+    member_id: str
+    handle: str
+    api_key: str
+    workspace: WorkspaceOut
 
 
 class UnreadsRowOut(BaseModel):
@@ -370,11 +408,14 @@ class MarkReadIn(BaseModel):
     last_read_message_id: str | None = None
 
 
+_REMOVED_SENDER_NAME = "(removed member)"
+
+
 def build_message_payload(
     message: Message,
     workspace: Workspace,
     channel: Channel,
-    sender: Member,
+    sender: Member | None,
     db: Session,
 ) -> dict:
     """The single source of truth for the wire schema shared by REST and WebSocket.
@@ -387,13 +428,26 @@ def build_message_payload(
     self-mention is already visible via `Sender` and never produced a
     `Mention` row at post time (see `canonicalize`), so it's a no-op here
     too, on both the POST response and every later GET.
+
+    `sender` is `None` when `message.sender_member_id` is null (SMAC-92:
+    the sender was removed from the workspace -- `remove_member` nulls it
+    rather than deleting the message, so history survives). The `Sender`
+    field then renders a placeholder rather than crashing; there is no
+    snapshot of the departed member's handle to fall back to, only the
+    generic label below.
     """
     mentioned_members, referenced_channels = resolve_payload_refs(
         db, workspace.workspace_id, message.message_text
     )
-    mentioned_members = [
-        m for m in mentioned_members if m.member_id != sender.member_id
-    ]
+    if sender is not None:
+        mentioned_members = [
+            m for m in mentioned_members if m.member_id != sender.member_id
+        ]
+    sender_out: dict[str, str | None] = (
+        {"member_id": sender.member_id, "member_name": sender.member_name}
+        if sender is not None
+        else {"member_id": None, "member_name": _REMOVED_SENDER_NAME}
+    )
     return {
         "timestamp": message.created_at.isoformat(),
         "workspace": {
@@ -404,7 +458,7 @@ def build_message_payload(
             "channel_id": channel.channel_id,
             "channel_name": channel.channel_name,
         },
-        "Sender": {"member_id": sender.member_id, "member_name": sender.member_name},
+        "Sender": sender_out,
         "Message": {
             "message_id": message.message_id,
             "message_text": message.message_text,

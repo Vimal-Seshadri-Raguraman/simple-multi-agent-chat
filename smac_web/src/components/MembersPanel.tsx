@@ -1,5 +1,6 @@
 import type { MemberOut, MemberSelfOut } from "../lib/api";
 import { initialsFor } from "../lib/avatar";
+import { ROLE_LABELS } from "../lib/capabilities";
 
 /**
  * The Drawer's members panel (web spec §2 / constitution §6): every
@@ -8,13 +9,14 @@ import { initialsFor } from "../lib/avatar";
  * any member with that type, so the grouping is generic rather than a
  * hardcoded human/agent pair), handles, agent-color rings.
  *
- * **Known gap (admin marks):** the constitution calls for "admin marks"
- * per member, but `GET /workspaces/{id}/members` (`MemberOut`, `lib/
- * types.ts`) doesn't expose `is_admin` -- only `GET /members/me`
- * (`MemberSelfOut`) does, for the CALLER's own membership. Only the
- * viewer's own row can be marked admin here as a result; showing other
- * members' admin status needs a server-side field this task doesn't add
- * (noted in the task-3 report as a follow-up, not silently dropped).
+ * **Role badges (SMAC-92 Task 4, closes the task-3 report's follow-up):**
+ * `GET /workspaces/{id}/members` (`MemberOut`) now carries `role` for
+ * EVERY member, not just the caller's own -- roles are public
+ * transparency (spec §3), only *managing* them is gated. Every member
+ * whose `role` isn't the baseline `"member"` gets a badge with its UI
+ * display name (`lib/capabilities.ts`'s `ROLE_LABELS`); plain members get
+ * no badge at all, matching the old admin-only-mark convention this
+ * replaces.
  */
 
 const TYPE_ORDER = ["human", "agent"];
@@ -59,6 +61,7 @@ export default function MembersPanel({ members, self }: MembersPanelProps) {
             {(byType.get(type) ?? []).map((member) => {
               const isSelf = self !== null && member.member_id === self.member_id;
               const isAgent = member.member_type !== "human";
+              const roleLabel = ROLE_LABELS[member.role];
               return (
                 <li
                   key={member.member_id}
@@ -71,10 +74,11 @@ export default function MembersPanel({ members, self }: MembersPanelProps) {
                   <span className="members-panel__avatar-ring" aria-hidden="true">
                     {initialsFor(member.member_name, member.handle)}
                   </span>
-                  <span className="members-panel__handle">@{member.handle}</span>
-                  {isSelf && self?.is_admin && (
-                    <span className="members-panel__admin-mark">admin</span>
-                  )}
+                  <span className="members-panel__handle">
+                    @{member.handle}
+                    {isSelf && <span className="members-panel__you-mark"> (you)</span>}
+                  </span>
+                  {roleLabel && <span className="members-panel__role-badge">{roleLabel}</span>}
                 </li>
               );
             })}

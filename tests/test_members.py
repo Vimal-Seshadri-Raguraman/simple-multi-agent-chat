@@ -11,7 +11,22 @@ def test_whoami_reports_founder_admin_and_workspace_visibility(client):
     response = client.get("/members/me", headers=founder_headers(client, "w1"))
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is True
+    assert body["role"] == "admin"
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
+    assert set(body["capabilities"]) == {
+        "post",
+        "read",
+        "ack_mentions",
+        "create_channels",
+        "view_members",
+        "view_agents",
+        "mint_human_invites",
+        "mint_agent_invites",
+        "manage_agents",
+        "manage_workspace",
+        "assign_roles",
+        "remove_members",
+    }
     assert body["workspace_visibility"] == "private"
 
 
@@ -20,7 +35,16 @@ def test_whoami_reports_non_admin_member_and_public_workspace(client):
     response = client.get("/members/me", headers=member_headers(client, "m1"))
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is False
+    assert body["role"] == "member"
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
+    assert set(body["capabilities"]) == {
+        "post",
+        "read",
+        "ack_mentions",
+        "create_channels",
+        "view_members",
+        "view_agents",
+    }
     assert body["workspace_visibility"] == "public"
 
 
@@ -48,7 +72,7 @@ def test_register_bot_app_returns_api_key(client):
 
 
 def test_search_members_by_name(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Research-Bot"},
         headers=founder_headers(client, "w1"),
@@ -59,7 +83,11 @@ def test_search_members_by_name(client):
         headers=founder_headers(client, "w1"),
     )
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    # Cap.VIEW_MEMBERS-gated (final review F2): a human credential drives
+    # this search, same as every other role that holds the cap -- an
+    # agent key's inability to call this route at all is covered by
+    # test_privilege_matrix.py's test_agent_key_cannot_search_members.
+    headers = founder_headers(client, "w1")
     response = client.get(
         "/members", params={"search_name": "Research"}, headers=headers
     )
@@ -69,7 +97,7 @@ def test_search_members_by_name(client):
 
 
 def test_search_members_by_type(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
@@ -80,7 +108,7 @@ def test_search_members_by_type(client):
         headers=founder_headers(client, "w1"),
     )
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/members", params={"search_type": "agent"}, headers=headers)
     results = response.json()
     assert len(results) == 1
@@ -88,13 +116,13 @@ def test_search_members_by_type(client):
 
 
 def test_search_members_returns_empty_list_when_no_match(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/members", params={"search_name": "nobody"}, headers=headers)
     assert response.status_code == 200
     assert response.json() == []
@@ -107,7 +135,11 @@ def test_get_member_profile(client):
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": registered["api_key"]}
+    # Cap.VIEW_MEMBERS-gated (final review F2): looked up by a human
+    # holding the cap -- an agent key's inability to call this route at
+    # all is covered by test_privilege_matrix.py's
+    # test_agent_key_cannot_get_member.
+    headers = founder_headers(client, "w1")
     response = client.get(
         "/member", params={"id": registered["member_id"]}, headers=headers
     )
@@ -118,13 +150,13 @@ def test_get_member_profile(client):
 
 
 def test_get_member_profile_404(client):
-    agent1 = client.post(
+    client.post(
         "/members/agents",
         json={"member_name": "Agent-1"},
         headers=founder_headers(client, "w1"),
     ).json()
 
-    headers = {"X-API-Key": agent1["api_key"]}
+    headers = founder_headers(client, "w1")
     response = client.get("/member", params={"id": "does-not-exist"}, headers=headers)
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
@@ -162,7 +194,7 @@ def test_get_own_profile_never_includes_email(client):
     assert body["first_name"] == "Test"
 
 
-def test_get_other_profile_hides_admin_and_visibility(client):
+def test_get_other_profile_shows_role_but_hides_visibility(client):
     other = member_auth(client, "m2", "w1")
     response = client.get(
         "/member",
@@ -173,10 +205,13 @@ def test_get_other_profile_hides_admin_and_visibility(client):
     body = response.json()
     assert "email" not in body
     assert body["first_name"] == "Test"  # profile fields still visible
-    # is_admin/workspace_visibility (SMAC-72 task 6) are SELF-view-only --
-    # looking up ANOTHER member must not leak either, even though the
-    # caller here (the founder) IS an admin themselves.
-    assert body["is_admin"] is None
+    # SMAC-92 (spec §3): roles are public transparency, visible for ANY
+    # member lookup -- this supersedes the old self-only `is_admin`
+    # nulling. `workspace_visibility` (SMAC-72 task 6) is unrelated and
+    # stays self-view-only, even though the caller here (the founder) IS
+    # an admin themselves.
+    assert body["role"] == "member"
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert body["workspace_visibility"] is None
 
 
@@ -189,7 +224,8 @@ def test_get_own_profile_includes_admin_and_workspace_visibility(client):
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["is_admin"] is True
+    assert body["role"] == "admin"
+    assert "is_admin" not in body  # removed SMAC-92 Task 4 (web/TUI migrated)
     assert body["workspace_visibility"] == "private"
 
 

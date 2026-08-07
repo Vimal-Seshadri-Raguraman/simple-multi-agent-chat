@@ -105,6 +105,9 @@ async def post_message(
     # socket or a slow event push can never roll back a persisted message.
     await manager.broadcast(channel_id, payload)
     for mention_row in mention_rows:
+        assert (
+            mention_row.mentioned_member_id is not None
+        )  # set just above, always a real id
         await event_manager.send_to_member(
             mention_row.mentioned_member_id, build_mention_event(db, mention_row)
         )
@@ -135,12 +138,23 @@ def get_messages(
         query = query.filter(Message.seq > anchor.seq)
 
     messages = query.order_by(Message.seq.asc()).limit(limit).all()
-    sender_ids = {m.sender_member_id for m in messages}
+    # sender_member_id is nullable (SMAC-92: a removed member's messages
+    # survive with it nulled) -- .get() below renders a placeholder sender
+    # for those rather than KeyError-ing.
+    sender_ids = {
+        m.sender_member_id for m in messages if m.sender_member_id is not None
+    }
     senders = {
         s.member_id: s
         for s in db.query(Member).filter(Member.member_id.in_(sender_ids)).all()
     }
     return [
-        build_message_payload(m, workspace, channel, senders[m.sender_member_id], db)
+        build_message_payload(
+            m,
+            workspace,
+            channel,
+            senders.get(m.sender_member_id) if m.sender_member_id is not None else None,
+            db,
+        )
         for m in messages
     ]

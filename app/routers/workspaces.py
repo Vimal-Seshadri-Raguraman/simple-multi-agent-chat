@@ -3,13 +3,15 @@ from sqlalchemy.orm import Session
 
 from app.accounts import build_member_self_out, create_member_account
 from app.auth import get_current_account, get_current_member
-from app.authorization import require_same_workspace, require_workspace_admin
+from app.authorization import require_same_workspace
+from app.capabilities import Cap, require_cap
 from app.database import get_db
 from app.errors import (
     ConfirmationRequiredError,
     ForbiddenMemberTypeError,
     LastAdminError,
     NotFoundError,
+    SelfRemovalError,
     WorkspaceNameTakenError,
 )
 from app.models import (
@@ -30,8 +32,8 @@ from app.routers.auth import _issue_workspace_token_pair
 from app.schemas import (
     FoundWorkspaceIn,
     InviteOut,
-    MemberAdminIn,
     MemberOut,
+    MemberRoleIn,
     TokenPairOut,
     WorkspaceAuthOut,
     WorkspaceOut,
@@ -90,7 +92,7 @@ def found_workspace(
         account=account,
         first_name=body.display_first_name,
         last_name=body.display_last_name,
-        is_admin=True,
+        role="admin",
     )
     db.add(
         WorkspaceRecord(
@@ -158,8 +160,18 @@ def list_workspace_members(
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> list[Member]:
-    """Everyone in the caller's own workspace (the wall blocks all others)."""
+    """Everyone in the caller's own workspace (the wall blocks all others).
+
+    `Cap.VIEW_MEMBERS`-gated (SMAC-92) -- held by every human role, so
+    this only bites non-human callers, which every human role has held
+    since Task 1. Confirmed the MCP bridge (`smac_mcp/`) never calls this
+    route with an agent key (it only ever uses `/members/me`, `/workspaces/
+    {id}/{unreads,channels}`, channel messages/read -- all under `Cap.READ`
+    or self-profile, unaffected by this gate) -- see the task report for
+    the full trace.
+    """
     require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.VIEW_MEMBERS)
     return db.query(Member).filter(Member.workspace_id == workspace_id).all()
 
 
@@ -171,7 +183,8 @@ def update_workspace_visibility(
     db: Session = Depends(get_db),
 ) -> Workspace:
     """Flip a workspace's visibility. Admin-only, wall-gated."""
-    require_workspace_admin(member, workspace_id)
+    require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.MANAGE_WORKSPACE)
     workspace = db.query(Workspace).filter(Workspace.workspace_id == workspace_id).one()
     workspace.visibility = body.visibility
     db.commit()
@@ -182,32 +195,35 @@ def update_workspace_visibility(
 @router.patch(
     "/workspaces/{workspace_id}/members/{member_id}", response_model=MemberOut
 )
-def update_member_admin(
+def update_member_role(
     workspace_id: str,
     member_id: str,
-    body: MemberAdminIn,
+    body: MemberRoleIn,
     member: Member = Depends(get_current_member),
     db: Session = Depends(get_db),
 ) -> Member:
-    """Promote/demote a workspace member's admin flag. Admin-only, wall-gated.
+    """Assign a workspace member's role. `Cap.ASSIGN_ROLES`-gated, wall-gated.
 
-    Guards: the target must exist in the same workspace, must be human (not
-    an agent/bot_app), and demoting the last remaining admin is rejected so
-    a workspace can never end up with zero admins.
+    Guards, in order: the wall + capability check; the target must exist in
+    the same workspace; the target must be human (not an agent/bot_app --
+    agents are a member TYPE, not a role, spec §2); and moving the last
+    remaining admin off of `admin` is rejected so a workspace can never end
+    up with zero admins.
     """
-    require_workspace_admin(member, workspace_id)
+    require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.ASSIGN_ROLES)
     target = db.query(Member).filter(Member.member_id == member_id).first()
     if target is None or target.workspace_id != workspace_id:
         raise NotFoundError(f"Member '{member_id}' not found")
     if target.member_type != "human":
         raise ForbiddenMemberTypeError(
             f"Member '{target.member_id}' has type '{target.member_type}'; "
-            "only 'human' members may be granted admin"
+            "only 'human' members may hold roles"
         )
-    if not body.is_admin and target.is_admin:
+    if body.role != "admin" and target.role == "admin":
         admin_count = (
             db.query(Member)
-            .filter(Member.workspace_id == workspace_id, Member.is_admin.is_(True))
+            .filter(Member.workspace_id == workspace_id, Member.role == "admin")
             .count()
         )
         if admin_count == 1:
@@ -215,10 +231,75 @@ def update_member_admin(
                 f"Cannot demote member '{target.member_id}': the workspace "
                 "must retain at least one admin"
             )
-    target.is_admin = body.is_admin
+    target.role = body.role
     db.commit()
     db.refresh(target)
     return target
+
+
+@router.delete("/workspaces/{workspace_id}/members/{member_id}")
+def remove_member(
+    workspace_id: str,
+    member_id: str,
+    member: Member = Depends(get_current_member),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    """Remove a member from the workspace. `Cap.REMOVE_MEMBERS`-gated, wall-gated.
+
+    Guards, in order: the wall + capability check; the target must exist in
+    the same workspace (uniform 404); no self-removal (400 `self_removal`
+    -- use workspace deletion, or a future 'leave', for that); removing the
+    workspace's only admin is rejected (409 `last_admin`, same invariant
+    `update_member_role` enforces).
+
+    Removal deletes the membership row: the target's workspace-tier tokens
+    die on their very next request (`get_current_member` resolves
+    membership live off the `members` table, no caching -- a stale token
+    404s "unknown member" -> 401 `invalid_token`); any open socket dies at
+    its next reconnect (the same accepted window as logout). Cascades:
+    channel memberships + their read cursors (`channel_members`, which
+    holds `last_read_seq`) are deleted -- the member's presence disappears
+    from every channel; their refresh tokens and any invites they created
+    are deleted too (ephemeral/administrative, not history).
+
+    Messages and mentions REMAIN (chat history is workspace property):
+    `Message.sender_member_id` / `Mention.mentioned_member_id` are
+    nullable as of migration `7a3b580f5d0c` specifically so a departing
+    member's past messages/mentions can survive their row going away --
+    hard-deleting the row outright is blocked by SQLite's FK enforcement
+    (`PRAGMA foreign_keys=ON`) the instant the member has ever posted, so
+    those two columns are nulled here *before* the row is deleted, and
+    `build_message_payload` (app/schemas.py) renders a "(removed member)"
+    placeholder wherever the sender is now null.
+    """
+    require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.REMOVE_MEMBERS)
+    target = db.query(Member).filter(Member.member_id == member_id).first()
+    if target is None or target.workspace_id != workspace_id:
+        raise NotFoundError(f"Member '{member_id}' not found")
+    if target.member_id == member.member_id:
+        raise SelfRemovalError("Use workspace deletion or transfer admin first")
+    if target.role == "admin":
+        admin_count = (
+            db.query(Member)
+            .filter(Member.workspace_id == workspace_id, Member.role == "admin")
+            .count()
+        )
+        if admin_count == 1:
+            raise LastAdminError("Cannot remove the workspace's only admin")
+
+    db.query(Message).filter(Message.sender_member_id == member_id).update(
+        {"sender_member_id": None}
+    )
+    db.query(Mention).filter(Mention.mentioned_member_id == member_id).update(
+        {"mentioned_member_id": None}
+    )
+    db.query(WorkspaceInvite).filter(WorkspaceInvite.created_by == member_id).delete()
+    db.query(RefreshToken).filter(RefreshToken.member_id == member_id).delete()
+    db.query(ChannelMember).filter(ChannelMember.member_id == member_id).delete()
+    db.delete(target)
+    db.commit()
+    return {"status": "removed"}
 
 
 @router.get("/workspaces/{workspace_id}/export")
@@ -232,7 +313,8 @@ def export_workspace(
     Member profiles are MemberOut-shaped (no emails). Messages use the same
     wire-schema payload as REST/WebSocket, grouped by channel_id.
     """
-    require_workspace_admin(member, workspace_id)
+    require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.MANAGE_WORKSPACE)
     workspace = db.query(Workspace).filter(Workspace.workspace_id == workspace_id).one()
     channels = db.query(Channel).filter(Channel.workspace_id == workspace_id).all()
     members = db.query(Member).filter(Member.workspace_id == workspace_id).all()
@@ -253,7 +335,15 @@ def export_workspace(
         )
         messages_by_channel[channel.channel_id] = [
             build_message_payload(
-                msg, workspace, channel, members_by_id[msg.sender_member_id], db
+                msg,
+                workspace,
+                channel,
+                (
+                    members_by_id.get(msg.sender_member_id)
+                    if msg.sender_member_id is not None
+                    else None
+                ),
+                db,
             )
             for msg in channel_messages
         ]
@@ -301,7 +391,8 @@ def delete_workspace(
     workspace row itself; finally the permanent WorkspaceRecord is updated
     to a tombstone ("deleted", who, when) in the same commit.
     """
-    require_workspace_admin(member, workspace_id)
+    require_same_workspace(member, workspace_id)
+    require_cap(member, Cap.MANAGE_WORKSPACE)
     if confirm != _DELETE_CONFIRMATION:
         raise ConfirmationRequiredError(
             f"Deleting a workspace requires ?confirm={_DELETE_CONFIRMATION}"

@@ -43,7 +43,7 @@ def test_creates_account_in_workspace_and_default_channel(db_session):
     assert member.workspace_id == ws.workspace_id
     assert member.account_id == account.account_id
     assert member.member_name == "Alice L"
-    assert member.is_admin is False
+    assert member.role == "member"
     in_channel = (
         db_session.query(ChannelMember)
         .filter_by(channel_id=ws.default_channel_id, member_id=member.member_id)
@@ -91,11 +91,11 @@ def test_admin_flag_and_null_default_channel(db_session):
         account=account,
         first_name="F",
         last_name="Ounder",
-        is_admin=True,
+        role="admin",
         display_name="The Founder",
     )
     db_session.commit()
-    assert member.is_admin is True
+    assert member.role == "admin"
     assert member.member_name == "The Founder"
     assert db_session.query(ChannelMember).count() == 0
 

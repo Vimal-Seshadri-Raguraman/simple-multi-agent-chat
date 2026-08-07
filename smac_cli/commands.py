@@ -160,12 +160,14 @@ def cmd_join(app: "SmacApp", args: str) -> None:
 @_register("invite", "mint a shareable join code")
 def cmd_invite(app: "SmacApp", args: str) -> None:
     """`/invite`: mint a shareable multi-use code (`POST /workspaces/
-    {id}/invites`, gated server-side to human members of the workspace --
-    `app/authorization.py:authorize_management_action`, unchanged by this
-    task) and print both the code AND the exact line to hand a
-    prospective member -- they need to `/register` an account first
-    (codes are redeemed by `/join`, which is account-authed), then
-    `/join` with it.
+    {id}/invites`, gated server-side on `Cap.MINT_HUMAN_INVITES` --
+    `app/capabilities.py:require_cap`, admin-only as of SMAC-92 Task 2)
+    and print both the code AND the exact line to hand a prospective
+    member -- they need to `/register` an account first (codes are
+    redeemed by `/join`, which is account-authed), then `/join` with it.
+    A non-admin (e.g. `agent_admin`, who holds `Cap.MINT_AGENT_INVITES`
+    instead) gets a real 403 here, surfaced via `SmacApp._run_command`'s
+    `except SmacError` -- no TUI code change needed for that.
     """
     invite = app.api.mint_invite_code()
     code = invite["code"]
@@ -293,10 +295,13 @@ def cmd_channel(app: "SmacApp", args: str) -> None:
 def cmd_whoami(app: "SmacApp", args: str) -> None:
     """`/whoami`: your identity + this workspace, as system lines (spec §0.2).
 
-    `GET /members/me` carries `is_admin` and `workspace_visibility`
-    (SMAC-72 task 6 addition -- see `app.schemas.MemberSelfOut`'s
-    docstring) precisely so this command has somewhere to get both from;
-    neither was on any response before this task.
+    `GET /members/me` carries `role` and `workspace_visibility` (SMAC-72
+    task 6 added the latter; SMAC-92 replaced the old boolean `is_admin`
+    with `role`/`capabilities` -- see `app.schemas.MemberSelfOut`'s
+    docstring) precisely so this command has somewhere to get both from.
+    The role suffix is omitted for the baseline `member` role (the old
+    `is_admin=False` case showed no suffix either) and rendered verbatim
+    for anything else (`admin`, `agent_admin`, ...).
     """
     profile = app.api.whoami()
     first_name = profile.get("first_name") or ""
@@ -305,8 +310,9 @@ def cmd_whoami(app: "SmacApp", args: str) -> None:
         profile.get("member_name", "")
     )
     handle = profile.get("handle", "")
-    admin_suffix = " · admin" if profile.get("is_admin") else ""
-    app.system_line(f"you: {full_name} (@{handle}){admin_suffix}")
+    role = profile.get("role") or "member"
+    role_suffix = f" · {role}" if role != "member" else ""
+    app.system_line(f"you: {full_name} (@{handle}){role_suffix}")
     workspace_name = app.workspace_name or ""
     visibility = profile.get("workspace_visibility", "")
     app.system_line(f"workspace: {workspace_name} ({visibility})")

@@ -4,7 +4,6 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -131,7 +130,7 @@ class Member(Base):
     account_id: Mapped[str] = mapped_column(
         String, ForeignKey("accounts.account_id"), nullable=False, index=True
     )
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    role: Mapped[str] = mapped_column(String, default="member", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False
     )
@@ -226,8 +225,13 @@ class Message(Base):
     channel_id: Mapped[str] = mapped_column(
         String, ForeignKey("channels.channel_id"), nullable=False
     )
-    sender_member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False
+    # Nullable as of SMAC-92 (migration `7a3b580f5d0c`): member removal nulls
+    # this out rather than deleting the message, so chat history survives a
+    # departed member (see app/routers/workspaces.py's remove_member and
+    # app/schemas.py's build_message_payload, which renders a placeholder
+    # sender when this is None).
+    sender_member_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=True
     )
     message_text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -275,13 +279,23 @@ class RefreshToken(Base):
 class WorkspaceInvite(Base):
     """A pending invitation into a workspace.
 
-    Two kinds, discriminated by invite_type:
+    Three kinds, discriminated by invite_type -- every query against
+    `code` MUST filter by `invite_type` too (see `app.routers.invites.
+    _invite_by_code`, the one place `code` is ever looked up; final
+    review F1 was exactly this discriminator being omitted at one call
+    site, letting an agent_code redeem as a full human membership):
     - "email": targets one address (lowercased); no expiry; deleted on
-      accept/decline/revoke.
-    - "code": shareable multi-use code stored in PLAINTEXT — a deliberate
-      deviation from the hash-everything pattern, because codes must be
-      re-viewable and listable by workspace members. Bounded exposure:
-      workspace membership only, revocable, 7-day expiry.
+      accept/decline/revoke. Redeemed at `POST /workspaces/join` (as a
+      seat consumed opportunistically) or `POST /workspaces/{id}/register`.
+    - "code": human-facing, shareable, multi-use code stored in PLAINTEXT
+      — a deliberate deviation from the hash-everything pattern, because
+      codes must be re-viewable and listable by workspace members.
+      Bounded exposure: workspace membership only, revocable, 7-day
+      expiry. Redeemed at `POST /workspaces/join`.
+    - "agent_code": agent-facing, single-use (burnt on redemption), same
+      plaintext/7-day-expiry shape as "code" but minted under a different
+      capability (`Cap.MINT_AGENT_INVITES`) and redeemed at the separate,
+      unauthenticated `POST /agents/join` door.
     """
 
     __tablename__ = "workspace_invites"
@@ -290,7 +304,9 @@ class WorkspaceInvite(Base):
     workspace_id: Mapped[str] = mapped_column(
         String, ForeignKey("workspaces.workspace_id"), nullable=False, index=True
     )
-    invite_type: Mapped[str] = mapped_column(String, nullable=False)  # email | code
+    invite_type: Mapped[str] = mapped_column(
+        String, nullable=False
+    )  # email | code | agent_code
     email: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     code: Mapped[str | None] = mapped_column(
         String, nullable=True, unique=True, index=True
@@ -311,7 +327,7 @@ class WorkspaceRecord(Base):
     "deleted" + who/when). Never deleted — the workspaces row itself is
     hard-deleted so live queries need no status filtering; this tombstone
     carries the audit trail and is the single source of truth for nothing
-    at runtime except deletion history (admin checks use Member.is_admin).
+    at runtime except deletion history (admin checks use Member.role).
     """
 
     __tablename__ = "workspace_records"
@@ -342,8 +358,10 @@ class Mention(Base):
     message_id: Mapped[str] = mapped_column(
         String, ForeignKey("messages.message_id"), nullable=False, index=True
     )
-    mentioned_member_id: Mapped[str] = mapped_column(
-        String, ForeignKey("members.member_id"), nullable=False, index=True
+    # Nullable as of SMAC-92: same reasoning as Message.sender_member_id --
+    # a removed member's past mentions survive their row going away.
+    mentioned_member_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("members.member_id"), nullable=True, index=True
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, nullable=False

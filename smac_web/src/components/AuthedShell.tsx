@@ -91,13 +91,20 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
       () => {
         void workspace.refreshUnreads();
         void workspace.refreshHistory();
+        // Task-4 brief (SMAC-92): whoami refreshes on the SAME seams
+        // unreads already does -- a role change made by someone else
+        // (promotion/demotion/removal-of-a-cap) takes effect the next
+        // time this client catches up from a reconnect gap, not just on
+        // a full page reload.
+        void workspace.refreshWhoami();
       }
     );
     return () => connection.close();
     // Deliberately NOT reacting to `workspace.appendMessage`/`refreshUnreads`/
-    // `refreshHistory` identity changes -- this effect's only job is
-    // "one live socket per current room", exactly like `workspace.tsx`'s
-    // own history-reload effect a few lines below it in that file.
+    // `refreshHistory`/`refreshWhoami` identity changes -- this effect's
+    // only job is "one live socket per current room", exactly like
+    // `workspace.tsx`'s own history-reload effect a few lines below it in
+    // that file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspace.currentChannelId]);
 
@@ -148,12 +155,16 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
   useEffect(() => {
     function onFocus() {
       void workspace.refreshUnreads();
+      // Task-4 brief (SMAC-92): same seam, same rationale as the onGap
+      // handler above -- a role change while this tab was backgrounded
+      // shouldn't need a full reload to take effect.
+      void workspace.refreshWhoami();
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-    // `workspace.refreshUnreads` is a stable (`useCallback([])`) reference
-    // -- see the room-socket effect above for the same non-reactive-deps
-    // rationale.
+    // `workspace.refreshUnreads`/`refreshWhoami` are stable (`useCallback([])`)
+    // references -- see the room-socket effect above for the same
+    // non-reactive-deps rationale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -226,6 +237,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
       refreshUnreads: workspace.refreshUnreads,
       showWhoami: () => setYouMenuOpen(true),
       goToSettings: (section) => setSettingsSection(section ?? "agents"),
+      hasCap: workspace.hasCap,
     }),
     [auth.navigate, auth.logout, workspace]
   );
@@ -347,6 +359,7 @@ function ShellBody({ theme, onToggleTheme }: AuthedShellProps) {
         initialQuery={paletteQuery}
         onClose={() => setPaletteOpen(false)}
         buildContext={buildCommandContext}
+        hasCap={workspace.hasCap}
       />
       <Toast toasts={toastQueue.toasts} onDismiss={toastQueue.dismiss} />
     </div>

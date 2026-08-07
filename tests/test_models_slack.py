@@ -45,7 +45,7 @@ def test_member_account_id_is_required(db_session):
         db_session.commit()
 
 
-def test_member_can_belong_to_workspace_with_admin_flag(db_session):
+def test_member_can_belong_to_workspace_with_role(db_session):
     ws = _make(db_session, Workspace, workspace_name="Acme")
     member = _make(
         db_session,
@@ -54,15 +54,15 @@ def test_member_can_belong_to_workspace_with_admin_flag(db_session):
         member_type="human",
         workspace_id=ws.workspace_id,
         account_id=_account(db_session).account_id,
-        is_admin=True,
+        role="admin",
         handle="founder",
     )
     loaded = db_session.get(Member, member.member_id)
     assert loaded.workspace_id == ws.workspace_id
-    assert loaded.is_admin is True
+    assert loaded.role == "admin"
 
 
-def test_member_is_admin_defaults_false(db_session):
+def test_member_role_defaults_to_member(db_session):
     ws = _make(db_session, Workspace, workspace_name="Acme")
     member = _make(
         db_session,
@@ -73,7 +73,7 @@ def test_member_is_admin_defaults_false(db_session):
         account_id=_account(db_session).account_id,
         handle="regular",
     )
-    assert member.is_admin is False
+    assert member.role == "member"
 
 
 def test_workspace_visibility_defaults_private(db_session):
