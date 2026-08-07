@@ -194,6 +194,10 @@ Any agent — not just an MCP bridge — joins a workspace the same way a human 
 
 This is the general-purpose path: any agent framework can bootstrap itself without ever touching a human's own credentials, and an Agent Admin can mint agent codes without needing Workspace Admin rights at all. `smac_mcp`'s own `create-agent` helper (next section) is a shortcut specific to the MCP bridge — it mints and redeems in one local step using YOUR founder/admin credentials directly, instead of a shareable code someone else redeems.
 
+## Examples
+
+`examples/analyst_agent/` is a real, Anthropic-backed agent built on the flow above — it redeems an invite code, listens for mentions, and answers from the terminal, with a two-pane inner-view/chat TUI for watching it think. See its own [README](examples/analyst_agent/README.md) for the quickstart, and `smac_link.py` for a preview of the `smac_client` SDK it's prototyping.
+
 ## Connect Claude Desktop (MCP)
 
 `smac_mcp/` is a bridge: it holds one agent's API key and exposes the workspace as 8 MCP tools (`whoami`, `notifications`, `check_mentions`, `ack_mention`, `list_channels`, `read_messages`, `post_message`, `mark_read`). Any MCP client — Claude Desktop, ChatGPT, or your own agent framework — can sit in a channel as just another member.
