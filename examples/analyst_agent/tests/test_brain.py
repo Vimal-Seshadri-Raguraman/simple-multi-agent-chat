@@ -233,6 +233,21 @@ def test_history_formatting_handles_empty_list() -> None:
     assert format_history([]) == []
 
 
+def test_history_formatting_handles_a_removed_members_message() -> None:
+    # SMAC-92: a removed member's messages survive with sender_member_id
+    # nulled -- `build_message_payload` renders `Sender.member_id: None`
+    # and the generic placeholder name. `format_history` only reads
+    # `member_name`, so this must format like any other sender, not crash.
+    payload = _payload("(removed member)", "left a note before leaving")
+    payload["Sender"] = {"member_id": None, "member_name": "(removed member)"}
+
+    turns = format_history([payload])
+
+    assert turns == [
+        {"role": "user", "content": "(removed member): left a note before leaving"}
+    ]
+
+
 # -- PERSONA --------------------------------------------------------------------
 
 

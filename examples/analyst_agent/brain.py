@@ -173,7 +173,7 @@ class Brain:
         which is every test in this package) never requires the
         `anthropic` package to be installed."""
         if self._client is None:
-            import anthropic  # type: ignore[import-not-found]
+            import anthropic
 
             self._client = anthropic.AsyncAnthropic(api_key=self._api_key)
         return self._client
