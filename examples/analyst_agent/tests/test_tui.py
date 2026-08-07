@@ -30,6 +30,15 @@ from textual.widgets import RichLog, Static
 from analyst_agent.bus import Bus
 from analyst_agent.tui import AgentApp
 
+#: Real escape payloads (design doc / security review finding (a)):
+#: - OSC title-bar spoof: sets the terminal window/tab title.
+#: - CSI clear-screen + cursor-home: wipes and repositions the viewport.
+#: - OSC52 clipboard write (shape only -- base64 payload is irrelevant to
+#:   the assertion, only the leading ESC matters).
+_OSC_TITLE_SPOOF = "\x1b]0;PWNED\x1b\\"
+_CSI_CLEAR_SCREEN = "\x1b[2J\x1b[H"
+_OSC52_CLIPBOARD = "\x1b]52;c;UFdORUQ=\x07"
+
 
 class FakeCredentials:
     workspace_name = "Acme Rockets"
@@ -64,6 +73,21 @@ class FakeAgent:
         # Mirrors the real mention loop's shape: runs forever until the
         # app cancels it on quit.
         await asyncio.Event().wait()
+
+
+class FailingChatAgent(FakeAgent):
+    """Like `FakeAgent`, but `chat()` raises instead of replying --
+    mirrors a `BrainError` propagating out of `Agent.chat()`, which (per
+    finding (b)) has no `_safe_handle` of its own to catch it. Still
+    publishes `chat_in` first, exactly like the real `Agent.chat()`
+    (see its docstring: `chat_in` is published before `brain.think()`
+    is ever called), so this exercises the "the request went out, then
+    failed" ordering, not "nothing happened at all"."""
+
+    async def chat(self, text: str) -> str:
+        self.chat_calls.append(text)
+        self.bus.publish("chat_in", text=text)
+        raise RuntimeError("brain exploded: model overloaded")
 
 
 @pytest.fixture()
@@ -134,6 +158,69 @@ async def test_sender_name_markup_also_renders_inert(
         assert "[bold]Mallory[/]" in inner_text(pilot)
 
 
+# -- ANSI escape injection (finding (a)) ------------------------------------
+#
+# `Text.append()` + `markup=False` only neutralize Rich/Textual MARKUP.
+# They do nothing about raw ESC bytes: `rich.control.STRIP_CONTROL_CODES`
+# is [7, 8, 11, 12, 13] -- ESC (0x1b) is not in that list -- and Textual's
+# `Strip.render_style()` embeds segment text raw into the ANSI SGR bytes
+# it writes to the terminal fd. These tests assert the actual defense
+# (`sanitize()`) does its job: the ESC byte itself must never survive
+# into what a `RichLog`/`Static` renders, in both a message body and a
+# sender name.
+
+
+@pytest.mark.anyio
+async def test_escape_payloads_never_survive_in_a_message_body(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    async with AgentApp(agent, bus).run_test() as pilot:
+        bus.publish(
+            "mention",
+            sender="Alice",
+            channel="general",
+            text=_OSC_TITLE_SPOOF + _CSI_CLEAR_SCREEN + _OSC52_CLIPBOARD,
+        )
+        await pilot.pause()
+
+        text = inner_text(pilot)
+        assert "\x1b" not in text  # the byte that actually reaches the terminal
+        # Sanitized-but-visible, not silently vanished:
+        assert "\\x1b" in text
+
+
+@pytest.mark.anyio
+async def test_escape_payloads_never_survive_in_a_sender_name(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    async with AgentApp(agent, bus).run_test() as pilot:
+        bus.publish(
+            "mention",
+            sender=_OSC_TITLE_SPOOF + "Mallory" + _CSI_CLEAR_SCREEN,
+            channel="general",
+        )
+        await pilot.pause()
+
+        text = inner_text(pilot)
+        assert "\x1b" not in text
+        assert "Mallory" in text  # the harmless part of the name still shows
+
+
+@pytest.mark.anyio
+async def test_escape_payload_never_survives_in_the_header_handle_or_workspace(
+    bus: Bus,
+) -> None:
+    agent = FakeAgent(bus)
+    agent.handle = "analyst" + _CSI_CLEAR_SCREEN
+    agent.link.credentials.workspace_name = _OSC_TITLE_SPOOF + "Acme"
+
+    async with AgentApp(agent, bus).run_test() as pilot:
+        text = header_text(pilot)
+        assert "\x1b" not in text
+        assert "analyst" in text
+        assert "Acme" in text
+
+
 @pytest.mark.anyio
 async def test_llm_calls_collapse_to_a_summary_no_per_token_lines(
     agent: FakeAgent, bus: Bus
@@ -190,6 +277,28 @@ async def test_chat_exchange_renders_in_the_chat_pane_not_inner(
         chat = chat_text(pilot)
         assert "hello" in chat and "you said: hello" in chat
         assert "hello" not in inner_text(pilot)
+
+
+@pytest.mark.anyio
+async def test_a_failed_chat_surfaces_as_an_error_instead_of_vanishing(
+    bus: Bus,
+) -> None:
+    """Finding (b): `Agent.chat()` has no `_safe_handle` of its own (see
+    `agent.py`), so a bare `asyncio.create_task(self.agent.chat(text))`
+    would turn a `BrainError` into an unretrieved-task warning nobody
+    sees. `_run_chat` must catch it and publish an `error` bus event,
+    the same way the mention loop's `_safe_handle` already does -- and
+    that event must actually render, in `#inner`."""
+    agent = FailingChatAgent(bus)
+
+    async with AgentApp(agent, bus).run_test() as pilot:
+        await pilot.press(*"hello", "enter")
+        await pilot.pause()
+
+        assert agent.chat_calls == ["hello"]
+        text = inner_text(pilot)
+        assert "error" in text
+        assert "brain exploded" in text
 
 
 # -- f4: pause -------------------------------------------------------------
@@ -273,16 +382,27 @@ async def test_header_reflects_disconnected_and_reconnected(
 
 
 @pytest.mark.anyio
-async def test_no_credential_ever_appears_on_screen(bus: Bus) -> None:
-    agent = FakeAgent(bus)
-    agent.link.credentials.api_key = "smac-key-super-secret-value"  # type: ignore[attr-defined]
-
+async def test_key_shaped_token_in_a_bus_event_is_redacted_not_rendered(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    """Finding (c): the original version of this test set
+    `credentials.api_key`, an attribute `tui.py` never reads anywhere --
+    it would pass against any implementation, including one with no
+    redaction at all. The realistic leak vector is a secret-looking
+    value inside a bus event's `fields` (e.g. an SDK exception message
+    an `error` event carries via `agent.py`'s `_safe_handle`/`brain.py`'s
+    `BrainError`). Before `sanitize()` gained `_SECRET_TOKEN` redaction,
+    `_format_event`'s `error` branch rendered `fields['message']`
+    unmodified -- this WOULD have rendered the key verbatim, confirming
+    the finding was real, not hypothetical."""
     async with AgentApp(agent, bus).run_test() as pilot:
-        bus.publish("mention", sender="Alice", channel="general")
+        bus.publish("error", message="auth failed for key sk-ant-SECRET-value-123")
         await pilot.pause()
 
         rendered = inner_text(pilot) + chat_text(pilot) + header_text(pilot)
-        assert "smac-key-super-secret-value" not in rendered
+        assert "sk-ant-SECRET-value-123" not in rendered
+        assert "[REDACTED]" in rendered
+        assert "error" in rendered  # the event itself still shows, just redacted
 
 
 @pytest.mark.anyio

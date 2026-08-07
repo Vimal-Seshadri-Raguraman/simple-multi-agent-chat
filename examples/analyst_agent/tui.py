@@ -25,14 +25,39 @@ Both are cancelled on quit so the app never leaves a dangling task behind
 unsubscribes cleanly via its `finally`).
 
 SECURITY (constitution §7.5, design doc §5): every string that
-originates from SMAC (message text, sender names) is untrusted input --
-rendered with `Text.append()`, which never parses Rich/Textual markup no
-matter what characters the string contains, plus `markup=False` on both
-`RichLog`s as defense in depth. A message containing `[bold red]PWNED[/]`
-must appear on screen as that literal text, not styled. No credential
-(SMAC API key, Anthropic key) is ever displayed by this module -- the
+originates from SMAC (message text, sender names, the join response's
+handle/workspace) is untrusted input, and it goes through TWO
+independent defenses before it reaches a widget:
+
+1. `Text.append()` never parses Rich/Textual MARKUP regardless of what
+   the string contains, plus `markup=False` on both `RichLog`s as
+   defense in depth -- a message containing `[bold red]PWNED[/]` must
+   appear on screen as that literal text, not styled. This says nothing
+   about raw terminal bytes, though: `rich.control.STRIP_CONTROL_CODES`
+   only strips BEL/BS/VT/FF/CR (7, 8, 11, 12, 13) -- ESC (0x1b) is NOT
+   one of them -- and Textual's `Strip.render_style()` embeds segment
+   text raw into `f"\x1b[{ansi}m{text}\x1b[0m"`, which the compositor
+   writes straight to the terminal fd. Left alone, a `member_name` or
+   message containing `\x1b]0;spoofed-title\x1b\\` (title-bar spoof),
+   `\x1b[2J\x1b[H` (clear/reposition), or an OSC52 payload (clipboard
+   write -- Textual itself uses OSC52, so any target terminal that can
+   run this TUI already supports it) reaches the operator's real
+   terminal.
+2. `sanitize()` below is the actual control-byte defense: it strips or
+   visibly escapes C0/C1 control bytes (ESC and DEL included) and
+   redacts obvious key-shaped tokens before a SMAC-sourced string is
+   handed to `Text.append()` at all. It is applied at the two places
+   SMAC-sourced strings become widget content: `_format_event` (every
+   bus event field) and `_render_header` (handle/workspace, which come
+   from the server's join response -- untrusted if `SMAC_URL` points
+   somewhere hostile).
+
+No credential (SMAC API key, Anthropic key) is ever deliberately placed
+in a bus event's `fields` (see `bus.py`'s module docstring) -- the
 header shows only the agent's public handle, workspace name, and
-connection state.
+connection state -- but `sanitize()`'s key-shaped-token redaction is
+defense in depth against a secret ending up in free-form text anyway
+(e.g. an SDK exception message that happens to echo part of a key).
 
 Colors come from `design/tokens.json` (the design-system constitution),
 read once at runtime by `_dark_palette()` below -- never hardcoded hex --
@@ -47,6 +72,7 @@ import asyncio
 import contextlib
 import functools
 import json
+import re
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -70,6 +96,74 @@ _TOKENS_PATH = Path(__file__).resolve().parents[2] / "design" / "tokens.json"
 #: magnitude of `bus.py`'s own backlog cap without assuming the two stay
 #: numerically equal.
 _HISTORY_SEED = 200
+
+# -- sanitize(): the control-byte / secret-token choke point ---------------
+#
+# See the module docstring's SECURITY section for *why* this exists --
+# `Text.append()` + `markup=False` neutralize Rich/Textual markup but do
+# nothing about raw ESC bytes reaching the terminal. This is the actual
+# fix for that.
+
+#: Every C0 control byte except tab/newline/CR (those get the
+#: whitespace-collapse policy below, not an escape), DEL, and every C1
+#: control byte -- `\x00-\x08`, `\x0b-\x1f` (skips \t=09, \n=0a),
+#: `\x7f-\x9f`. This deliberately includes ESC (0x1b), which is the
+#: byte `rich.control.STRIP_CONTROL_CODES` (7, 8, 11, 12, 13) does NOT
+#: cover -- see the module docstring.
+_CONTROL_BYTE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+#: Obvious key-shaped tokens: known secret prefixes (Anthropic, generic
+#: `sk-`, this project's own SMAC keys, and the handful of other vendor
+#: prefixes worth catching for free) followed by 4+ token characters.
+#: Not a substitute for "never put a secret in a bus event" (`bus.py`'s
+#: own invariant) -- this is defense in depth for the case where one
+#: leaks into free-form text anyway (e.g. an SDK exception message).
+_SECRET_TOKEN = re.compile(
+    r"\b(?:sk-ant-|sk-|smac-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|"
+    r"xox[baprs]-|AKIA|AIza)[A-Za-z0-9_-]{4,}\b"
+)
+
+_REDACTED = "[REDACTED]"
+
+
+def sanitize(text: str) -> str:
+    """Neutralize `text` before it reaches a widget. Every SMAC-sourced
+    string (message bodies, sender/handle/workspace names -- anything
+    that ultimately came from `SMAC_URL`, which is untrusted) MUST pass
+    through this before `Text.append()`/`Static.update()` ever sees it.
+
+    Policy, applied in order:
+
+    1. Tab and newline (`\\t`, `\\n`, `\\r\\n`, `\\r`) collapse to a
+       single space. Both panes are line-oriented -- one
+       `RichLog.write()` per event -- so a raw newline in a SMAC
+       message would otherwise split one event across multiple visual
+       lines and desync the trace from what actually happened; a
+       collapsed space keeps the line-per-event invariant intact
+       without losing the text.
+    2. Every other C0 control byte (0x00-0x08, 0x0b-0x1f), DEL (0x7f),
+       and every C1 control byte (0x80-0x9f) -- ESC (0x1b) included --
+       is replaced with its visible `\\xHH` escape, not silently
+       dropped. Visible-but-inert beats invisible-but-gone: an
+       attempted injection (a title-bar spoof, a screen clear, an
+       OSC52 clipboard write -- see the module docstring) shows up on
+       screen as harmless literal text instead of vanishing without a
+       trace.
+    3. An obvious key-shaped token (`sk-ant-...`, `sk-...`, `smac-...`,
+       etc. -- see `_SECRET_TOKEN`) is replaced with `[REDACTED]`.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\n", " ").replace("\t", " ")
+    text = _CONTROL_BYTE.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
+    return _SECRET_TOKEN.sub(_REDACTED, text)
+
+
+def _field(fields: dict[str, Any], key: str, default: str = "?") -> str:
+    """`sanitize(str(fields.get(key, default)))` -- the one-liner every
+    `_format_event` branch below uses to pull a value out of an event's
+    (untrusted) `fields` dict, so there is no path from `fields` to a
+    widget that skips `sanitize()`."""
+    return sanitize(str(fields.get(key, default)))
 
 
 def _load_tokens() -> dict[str, Any]:
@@ -139,10 +233,12 @@ def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
     `model_call`/`model_done` summary lines, per the design doc's "LLM
     calls collapsed to a summary line").
 
-    Every span built from event data uses `Text.append(str)`, which
-    NEVER parses Rich/Textual markup regardless of what the string
-    contains -- the security property this whole module exists to
-    uphold for SMAC-sourced text (sender names, message text).
+    Every value pulled from `event.fields` goes through `_field()`
+    (-> `sanitize()`) before it reaches `Text.append()` -- this is the
+    single choke point named in the module docstring's SECURITY
+    section. `Text.append(str)` on its own only guarantees inertness
+    against Rich/Textual MARKUP; `sanitize()` is what neutralizes raw
+    control bytes (ESC included) and redacts key-shaped tokens.
     """
     if event.kind == "token":
         return None
@@ -162,57 +258,57 @@ def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
     kind = event.kind
     if kind == "mention":
         line.append("● mention ", style=f"bold {accent}")
-        line.append(f"@{fields.get('sender', '?')} #{fields.get('channel', '?')}")
+        line.append(f"@{_field(fields, 'sender')} #{_field(fields, 'channel')}")
         text = fields.get("text")
         if text:
-            line.append(f"  {text}")
+            line.append(f"  {sanitize(str(text))}")
     elif kind == "context":
         line.append("    context ", style=dim)
-        line.append(f"{fields.get('count', '?')} messages")
+        line.append(f"{_field(fields, 'count')} messages")
     elif kind == "model_call":
         line.append("▸ model   ", style=f"bold {agent_c}")
-        line.append(f"{fields.get('model', '?')}")
+        line.append(_field(fields, "model"))
     elif kind == "model_done":
         seconds = fields.get("seconds")
         secs_text = f"{seconds:.1f}s" if isinstance(seconds, (int, float)) else "?s"
         line.append("✓ done    ", style=f"bold {agent_c}")
         line.append(
-            f"{fields.get('input_tokens', '?')}/{fields.get('output_tokens', '?')} "
+            f"{_field(fields, 'input_tokens')}/{_field(fields, 'output_tokens')} "
             f"tok · {secs_text}"
         )
     elif kind == "posted":
         line.append("→ posted  ", style=f"bold {success}")
-        line.append(f"#{fields.get('channel', '?')}: {fields.get('text', '')}")
+        line.append(f"#{_field(fields, 'channel')}: {_field(fields, 'text', '')}")
     elif kind == "acked":
         line.append("  acked   ", style=dim)
-        line.append(f"{fields.get('mention_id', '')}")
+        line.append(_field(fields, "mention_id", ""))
     elif kind == "skipped":
         line.append("⊘ skipped ", style=dim)
-        line.append(f"{fields.get('reason', '')}")
+        line.append(_field(fields, "reason", ""))
     elif kind == "paused_skip":
         line.append("⏸ paused  ", style=dim)
-        line.append(f"mention {fields.get('mention_id', '')} skipped")
+        line.append(f"mention {_field(fields, 'mention_id', '')} skipped")
     elif kind == "disconnected":
         line.append("✕ disconnected ", style=f"bold {danger}")
-        line.append(f"{fields.get('reason', '')}")
+        line.append(_field(fields, "reason", ""))
     elif kind == "reconnected":
         line.append("✓ reconnected", style=f"bold {success}")
     elif kind == "error":
         line.append("! error    ", style=f"bold {danger}")
-        line.append(f"{fields.get('message', '')}")
+        line.append(_field(fields, "message", ""))
     elif kind == "chat_in":
         line.append("you › ", style=f"bold {accent}")
-        line.append(f"{fields.get('text', '')}")
+        line.append(_field(fields, "text", ""))
     elif kind == "chat_out":
         line.append("agent › ", style=f"bold {agent_c}")
-        line.append(f"{fields.get('text', '')}")
+        line.append(_field(fields, "text", ""))
     else:
         # Forward-compatible: an event kind this module doesn't know
         # about yet is still shown (kind + whatever fields it carries),
         # never silently dropped.
         line.append(kind, style=f"bold {bell}")
         for key, value in fields.items():
-            line.append(f"  {key}={value}")
+            line.append(f"  {key}={sanitize(str(value))}")
 
     return line
 
@@ -247,6 +343,7 @@ class AgentApp(App[None]):
         self._connection_state = "connected"
         self._follow_task: asyncio.Task[None] | None = None
         self._mention_task: asyncio.Task[None] | None = None
+        self._chat_tasks: set[asyncio.Task[None]] = set()
 
     # -- theming: tokens.json -> Textual CSS variables ---------------------
 
@@ -305,6 +402,7 @@ class AgentApp(App[None]):
         gets to run a full extra cycle while the other is still being
         torn down."""
         tasks = [t for t in (self._follow_task, self._mention_task) if t is not None]
+        tasks.extend(self._chat_tasks)
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -314,6 +412,23 @@ class AgentApp(App[None]):
     async def _follow_bus(self) -> None:
         async for event in self.bus.subscribe():
             self._apply_event(event)
+
+    async def _run_chat(self, text: str) -> None:
+        """Runs one footer submission's `agent.chat(text)`. Unlike the
+        mention path (`agent.py`'s `_safe_handle`), `Agent.chat()` has
+        no exception handling of its own -- a `BrainError` (or anything
+        else `brain.think()` can raise) would otherwise propagate out of
+        the bare `asyncio.create_task(self.agent.chat(text))` this
+        replaces, becoming nothing but an "exception was never
+        retrieved" warning nobody sees. Wrapping it here and publishing
+        an `error` bus event mirrors `_safe_handle`'s behavior exactly:
+        `_follow_bus` renders that event into `#inner` the same way a
+        mention-loop failure already does, so a failed chat is visible
+        instead of silent."""
+        try:
+            await self.agent.chat(text)
+        except Exception as exc:  # noqa: BLE001 - mirrors agent.py's `_safe_handle`
+            self.bus.publish("error", message=str(exc))
 
     # -- rendering -------------------------------------------------------
 
@@ -337,17 +452,22 @@ class AgentApp(App[None]):
         self.query_one(f"#{target_id}", RichLog).write(line)
 
     def _render_header(self) -> None:
+        """`handle`/`workspace` come from the server's join response
+        (`SmacLink`'s credentials) -- untrusted if `SMAC_URL` points
+        somewhere hostile, so both go through `sanitize()` before
+        `Static.update()`, same as every SMAC-sourced field in
+        `_format_event`."""
         header = self.query_one("#header-bar", Static)
-        handle = getattr(self.agent, "handle", "agent")
-        workspace = _workspace_name(self.agent)
+        handle = sanitize(str(getattr(self.agent, "handle", "agent")))
+        workspace = sanitize(_workspace_name(self.agent))
         state = self._connection_state
 
         line = Text()
         line.append("analyst_agent", style="bold")
         line.append("  ·  @")
-        line.append(str(handle))
+        line.append(handle)
         line.append("  ·  ")
-        line.append(str(workspace))
+        line.append(workspace)
         line.append("      SMAC ")
         dot_style = (
             self._palette["success"]
@@ -374,8 +494,16 @@ class AgentApp(App[None]):
         # exchange into `#chat` from those events, so this handler never
         # writes to the chat pane directly. Spawned as a task (not
         # awaited here) so a slow model call never blocks the input
-        # widget from accepting the next keystroke.
-        asyncio.create_task(self.agent.chat(text))
+        # widget from accepting the next keystroke; wrapped in
+        # `_run_chat` so a failure surfaces as an `error` bus event
+        # instead of an unretrieved-task warning (see `_run_chat`'s
+        # docstring). Kept in `self._chat_tasks` (not just handed to
+        # `create_task` and dropped) so nothing garbage-collects it
+        # mid-flight, and `on_unmount` cancels-and-awaits it like every
+        # other background task this app owns.
+        task = asyncio.create_task(self._run_chat(text), name="tui-chat")
+        self._chat_tasks.add(task)
+        task.add_done_callback(self._chat_tasks.discard)
 
     # -- bindings ----------------------------------------------------------
 
