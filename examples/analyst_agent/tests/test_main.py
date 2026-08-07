@@ -58,11 +58,23 @@ def test_join_failed_exits_2_with_the_servers_own_message(
     assert "Traceback" not in err
 
 
-def test_run_tui_is_a_lazy_seam_not_a_stub_that_pretends_to_work() -> None:
-    # Task 5 hasn't built tui.py yet -- calling the seam must fail loudly
-    # (ModuleNotFoundError naming the missing module), not silently no-op.
-    with pytest.raises(ModuleNotFoundError):
-        main_module.run_tui(agent=None, bus=None)  # type: ignore[arg-type]
+def test_run_tui_is_a_lazy_seam_that_delegates_to_the_tui_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `run_tui` imports `analyst_agent.tui` lazily (so every non-TUI mode
+    # never needs `tui.py`'s imports exercised) and then delegates
+    # straight through -- verified here without actually launching a
+    # terminal app, by monkeypatching the real target.
+    import analyst_agent.tui as tui_module
+
+    calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        tui_module, "run_tui", lambda agent, bus: calls.append((agent, bus))
+    )
+
+    main_module.run_tui(agent="AGENT", bus="BUS")  # type: ignore[arg-type]
+
+    assert calls == [("AGENT", "BUS")]
 
 
 def test_parses_headless_chat_only_and_once_flags() -> None:

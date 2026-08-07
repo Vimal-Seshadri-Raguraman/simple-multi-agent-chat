@@ -119,15 +119,17 @@ async def _run_chat_repl(agent: Agent) -> None:
 
 
 def run_tui(agent: Agent, bus: Bus) -> None:
-    """The default (no flags) experience: the two-pane Textual app --
-    **Task 5, not yet built.** Imported lazily, here, so importing
+    """The default (no flags) experience: the two-pane Textual app
+    (`tui.py`'s `AgentApp`) -- header, `#inner` activity stream, `#chat`
+    direct-chat pane, footer input. Imported lazily, here, so importing
     `main.py` (and every `--headless`/`--chat-only`/`--once` run) never
-    requires `tui.py` to exist or `textual` to do anything beyond being
-    installed. Calling this before Task 5 lands raises
-    `ModuleNotFoundError` naming exactly what's missing -- a real seam,
-    not a stub that silently pretends the TUI works.
+    requires `tui.py`'s imports (`textual`, `rich`) to be exercised
+    beyond being installed. `AgentApp` itself starts `agent.run()` (the
+    mention loop) alongside the TUI's own event loop -- see `tui.py`'s
+    module docstring -- so this one call is the entire non-headless
+    entry point; nothing else here needs to drive the loop.
     """
-    from analyst_agent.tui import run_tui as _run_tui  # type: ignore[import-not-found]  # Task 5
+    from analyst_agent.tui import run_tui as _run_tui
 
     _run_tui(agent, bus)
 
