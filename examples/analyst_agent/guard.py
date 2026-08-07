@@ -20,11 +20,18 @@ Sender *type* (human vs. agent) is never on SMAC's wire: `Sender` only
 carries `member_id`/`member_name` (agent API keys are capped to
 post/read/ack, so `GET /members` 403s for an agent -- see
 `smac_link.py`'s module docstring). So rule 3 can't infer "is this an
-agent" from the payload alone; the caller (the mention loop in `agent.py`,
-Task 4) passes `known_agent_ids`, a running set of member ids it has seen
-answer as agents (e.g. every sender it has itself replied to in an
-agent-chain). Anyone not in `known_agent_ids ∪ {me}` is treated as human
-for the purposes of this count.
+agent" from the payload alone; the caller supplies `known_agent_ids`, a
+set of member ids it independently knows are agents. Anyone not in
+`known_agent_ids ∪ {me}` is treated as human for the purposes of this
+count. `agent.py`'s `Agent` -- the one caller in this example -- keeps
+this set permanently EMPTY: growing it from "senders I've answered"
+(an earlier version's approach) is unsound with no sender-type signal
+on the wire, since a human's second question looks identical to an
+agent's reply in a chain. See `agent.py`'s module docstring for the
+concrete failure that caused and why the rate cap, not hop depth, is
+this example's real enforced backstop. The parameter stays as the seam
+a caller WITH a real sender-type signal (a future SDK improvement)
+could use correctly.
 
 Every blocked `Decision.reason` is a short, plain string
 ("own message", "loop depth 3", "rate cap 6/min") -- Task 5/6's inner

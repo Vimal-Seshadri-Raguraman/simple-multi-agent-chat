@@ -43,14 +43,16 @@ independent defenses before it reaches a widget:
    write -- Textual itself uses OSC52, so any target terminal that can
    run this TUI already supports it) reaches the operator's real
    terminal.
-2. `sanitize()` below is the actual control-byte defense: it strips or
-   visibly escapes C0/C1 control bytes (ESC and DEL included) and
-   redacts secrets before a SMAC-sourced string is handed to
-   `Text.append()` at all. It is applied at the two places SMAC-sourced
-   strings become widget content: `_format_event` (every bus event
-   field) and `_render_header` (handle/workspace, which come from the
-   server's join response -- untrusted if `SMAC_URL` points somewhere
-   hostile).
+2. `sanitize()` (moved out to `sanitize.py` -- see that module's
+   docstring for the full choke-point invariant, which now also covers
+   `main.py`'s stderr prints and the `--chat-only` REPL) is the actual
+   control-byte defense: it strips or visibly escapes C0/C1 control
+   bytes (ESC and DEL included) and redacts secrets before a
+   SMAC-sourced string is handed to `Text.append()` at all. It is
+   applied at the two places SMAC-sourced strings become widget content
+   in this module: `_format_event` (every bus event field) and
+   `_render_header` (handle/workspace, which come from the server's
+   join response -- untrusted if `SMAC_URL` points somewhere hostile).
 
 No credential (SMAC API key, Anthropic key) is ever deliberately placed
 in a bus event's `fields` (see `bus.py`'s module docstring) -- the
@@ -86,7 +88,6 @@ import asyncio
 import contextlib
 import functools
 import json
-import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Protocol
@@ -98,6 +99,7 @@ from textual.containers import Horizontal
 from textual.widgets import Footer, Input, RichLog, Static
 
 from analyst_agent.bus import Bus, Event
+from analyst_agent.sanitize import sanitize
 
 #: `examples/analyst_agent/tui.py` -> repo root is two `parent`s up
 #: (`analyst_agent/`, `examples/`). Resolved fresh on every call (not
@@ -111,94 +113,6 @@ _TOKENS_PATH = Path(__file__).resolve().parents[2] / "design" / "tokens.json"
 #: magnitude of `bus.py`'s own backlog cap without assuming the two stay
 #: numerically equal.
 _HISTORY_SEED = 200
-
-# -- sanitize(): the control-byte / secret-token choke point ---------------
-#
-# See the module docstring's SECURITY section for *why* this exists --
-# `Text.append()` + `markup=False` neutralize Rich/Textual markup but do
-# nothing about raw ESC bytes reaching the terminal. This is the actual
-# fix for that.
-
-#: Every C0 control byte except tab/newline/CR (those get the
-#: whitespace-collapse policy below, not an escape), DEL, and every C1
-#: control byte -- `\x00-\x08`, `\x0b-\x1f` (skips \t=09, \n=0a),
-#: `\x7f-\x9f`. This deliberately includes ESC (0x1b), which is the
-#: byte `rich.control.STRIP_CONTROL_CODES` (7, 8, 11, 12, 13) does NOT
-#: cover -- see the module docstring.
-_CONTROL_BYTE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
-
-#: A residual heuristic, NOT the primary defense -- see `sanitize()`'s
-#: docstring. `sk-ant-` is the one prefix worth matching by shape alone:
-#: it's Anthropic's real key format, and it can show up in text this
-#: process didn't generate itself (e.g. a key the model echoes back in
-#: a reply, or an operator pasting one into chat). There used to be a
-#: `smac-` branch here too, on the theory that it caught "this
-#: project's own SMAC keys" -- it did not. `app/auth.py`'s
-#: `generate_api_key()` returns `secrets.token_urlsafe(32)`: a bare
-#: random string, no prefix, nothing this regex could ever match. A
-#: prefix rule for a format that has no prefix isn't a weaker defense,
-#: it's a false one -- worse than no rule, because it reads as coverage
-#: that isn't there. The actual defense for the SMAC key (and for the
-#: Anthropic key, redundantly with the rule below) is exact-value
-#: redaction: see `sanitize()`'s `known_secrets` parameter.
-_SECRET_TOKEN = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{4,}\b")
-
-_REDACTED = "[REDACTED]"
-
-
-def sanitize(text: str, known_secrets: Iterable[str] = ()) -> str:
-    """Neutralize `text` before it reaches a widget. Every SMAC-sourced
-    string (message bodies, sender/handle/workspace names -- anything
-    that ultimately came from `SMAC_URL`, which is untrusted) MUST pass
-    through this before `Text.append()`/`Static.update()` ever sees it.
-
-    `known_secrets` is the set of secret VALUES this process actually
-    holds at runtime -- `AgentApp` passes its own `self._secrets`
-    (populated by `run_tui()` below from `agent.link.credentials.api_key`
-    and `agent.config.anthropic_api_key`) into every call site. This is
-    the ONLY redaction here with a real guarantee attached to it: if a
-    known secret's exact value appears anywhere in `text`, it is
-    replaced. Everything else in this function -- the `sk-ant-` prefix
-    rule included -- is a heuristic that happens to catch some shapes
-    and definitely misses others. There is no general "any secret,
-    known or not, gets redacted" guarantee; an arbitrary unknown token
-    in an unrecognized shape renders as-is.
-
-    Policy, applied in order:
-
-    0. Every non-empty, non-whitespace-only value in `known_secrets` is
-       replaced, by exact substring match, with `[REDACTED]`. An empty
-       or whitespace-only entry is skipped entirely rather than matched
-       -- `text.replace("", "[REDACTED]")` would insert the replacement
-       between every character, corrupting the whole pane, and an
-       empty "secret" is never a real one (e.g. a credential that
-       hasn't been obtained yet).
-    1. Tab and newline (`\\t`, `\\n`, `\\r\\n`, `\\r`) collapse to a
-       single space. Both panes are line-oriented -- one
-       `RichLog.write()` per event -- so a raw newline in a SMAC
-       message would otherwise split one event across multiple visual
-       lines and desync the trace from what actually happened; a
-       collapsed space keeps the line-per-event invariant intact
-       without losing the text.
-    2. Every other C0 control byte (0x00-0x08, 0x0b-0x1f), DEL (0x7f),
-       and every C1 control byte (0x80-0x9f) -- ESC (0x1b) included --
-       is replaced with its visible `\\xHH` escape, not silently
-       dropped. Visible-but-inert beats invisible-but-gone: an
-       attempted injection (a title-bar spoof, a screen clear, an
-       OSC52 clipboard write -- see the module docstring) shows up on
-       screen as harmless literal text instead of vanishing without a
-       trace.
-    3. An Anthropic-shaped token (`sk-ant-...` -- see `_SECRET_TOKEN`)
-       is replaced with `[REDACTED]`, belt-and-braces on top of step 0
-       for a key this process doesn't happen to hold by value.
-    """
-    for secret in known_secrets:
-        if secret and secret.strip():
-            text = text.replace(secret, _REDACTED)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("\n", " ").replace("\t", " ")
-    text = _CONTROL_BYTE.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
-    return _SECRET_TOKEN.sub(_REDACTED, text)
 
 
 def _field(

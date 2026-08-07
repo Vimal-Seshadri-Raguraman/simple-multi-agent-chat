@@ -50,13 +50,12 @@ Back in a SMAC client (`smac`, the web UI, or another agent), post `@analyst hel
 ```
 ┌─ analyst_agent · @analyst · Acme Rockets ──────────── SMAC ● connected ─┐
 │ INNER VIEW                          │ DIRECT CHAT                      │
-│ 10:04:12 listening on #general,#ops │ you › what did alice ask you?    │
-│ 10:06:41 ● mention  @aalice #ops    │ agent › she asked for a summary  │
-│ 10:06:41   context   20 messages    │   of the ignition test in #ops.  │
-│ 10:06:41   ▸ model   claude-sonnet-5│   I replied 8 seconds ago.       │
-│ 10:06:49   ✓ done    1,204/312 8.1s │                                  │
-│ 10:06:49   → posted to #ops · acked │ you › ▌                          │
-│ 10:07:02 ⊘ skipped  loop depth 3    │                                  │
+│ 10:06:41 ● mention  @aalice #ops    │ you › what did alice ask you?    │
+│ 10:06:41   context   20 messages    │ agent › she asked for a summary  │
+│ 10:06:41   ▸ model   claude-sonnet-5│   of the ignition test in #ops.  │
+│ 10:06:49   ✓ done    1,204/312 8.1s │   I replied 8 seconds ago.       │
+│ 10:06:49   → posted to #ops · acked │                                  │
+│ 10:07:02 ⊘ skipped  rate cap 6/min  │ you › ▌                          │
 ├─────────────────────────────────────┴──────────────────────────────────┤
 │ > talk to the agent…            F2 inner  F3 chat  F4 pause  F10 quit  │
 └────────────────────────────────────────────────────────────────────────┘
@@ -66,14 +65,14 @@ Left pane: the inner activity stream — one timestamped line per bus event (men
 
 | Key | Does |
 |---|---|
-| `F2` | Inner view, full width — the last model call expanded: trigger, context size, system prompt head, model + temp, streamed text, usage (in/out tokens, seconds, estimated cost), result. |
+| `F2` | Inner view, full width. |
 | `F3` | Direct chat, full width. |
 | `F4` | Pause — stops answering SMAC mentions (still listens and logs every mention it would have handled, so you can demo the loop guard without unplugging the agent). |
 | `F10` / `Ctrl-C` | Quit. |
 
 ### Direct chat vs. the mention loop
 
-Typed input in the chat pane calls the agent's brain directly, on its own running thread — it can read SMAC channel history if you ask it to ("what did Alice ask you?"), but it **never posts to SMAC and never mixes into channel context**. One brain, two conversations, one view over both.
+Typed input in the chat pane calls the agent's brain directly, on its own running thread — it can answer questions about SMAC activity it has personally seen ("what did Alice ask you?") from its own recollection of mentions it has answered, but it **never posts to SMAC, never issues a fresh SMAC read, and never mixes into channel context**. One brain, two conversations, one view over both.
 
 ### `--headless` / `--chat-only` / `--once`
 
@@ -103,8 +102,9 @@ Read this before you build on top of `analyst_agent` — every item below is a r
 - **It only hears mentions while its socket is open.** The mention loop listens on a live WebSocket; if the process is down, any mentions that happened in the meantime sit in the agent's inbox (`GET /mentions`) until it reconnects, at which point it drains and answers them all. This is the same webhook gap recorded in the project's 2026-08-07 production-readiness review (SMAC-99, W4) — there is no push notification to a stopped process. Don't rely on this example for time-sensitive triggers without keeping the process supervised (e.g. `--headless` under systemd/a container restart policy).
 - **It does not automatically join any channel.** `POST /agents/join` mints a *workspace* membership only — unlike a human founding or registering into a workspace, an agent/bot is a member of zero channels the moment it joins. A human has to explicitly add it (the `POST /workspaces/{id}/channels/{id}/members` call the quickstart above shows, or the equivalent in the web UI) before it can read history or post anywhere, `#general` included. Skip this step and every mention still creates a live event, but the agent's own history/post calls fail with "not a member of channel."
 - **It cannot list workspace members.** An agent's API key is capped to post/read/ack — `GET /members` 403s for it, by design (agents can't enumerate who's in a workspace). Because of that, this example never has a handle to attach to a sender; the inner view and the model's context both show `Sender.member_name` (a display name), never `@handle`.
+- **Agent-to-agent loop capping relies on the rate cap, not on counting hops.** `guard.py`'s citizenship rules include a "cap consecutive agent-to-agent turns" rule, but it needs to know which senders are agents versus humans, and that signal doesn't exist on the wire — a message's `Sender` is `member_id`/`member_name` only (see the bullet above). This example never feeds `guard.py`'s `known_agent_ids` set (an earlier version tried inferring it from "senders I've replied to," which wrongly counted a human's second and third mentions as agent-to-agent hops and eventually refused to answer them at all). A human can mention this agent as many times as they like and always get answered. The backstop against an actual runaway agent-to-agent loop is `MAX_REPLIES_PER_MIN` (default 6/min), not hop depth — tune that if you're demoing agent-to-agent chains.
 - **Message content can attempt to steer it.** Everything this agent reads — channel history, the message that mentioned it, a chat pane message you type — is untrusted input as far as the model is concerned. `brain.py`'s system prompt includes a one-line prompt-injection hedge, but SMAC deliberately does not own agent brains or defend against this at the routing layer; treating what a model does with untrusted content as safe is the operator's responsibility, not something this example (or SMAC) can guarantee for you.
-- **The terminal's control-byte sanitizer is a targeted defense, not a blanket one.** Every SMAC-sourced string is passed through `tui.py`'s `sanitize()` before it reaches the screen: it strips/escapes raw control bytes (ESC included, so a message can't clear your screen or spoof your title bar), and it redacts secrets by **exact value** for the two keys this process actually holds (the SMAC API key, the Anthropic key), plus a `sk-ant-…` shaped heuristic on top. That is the whole guarantee. There is no general "any secret gets redacted" promise — an arbitrary token in an unrecognized shape renders as-is.
+- **The terminal's control-byte sanitizer is a targeted defense, not a blanket one.** Every SMAC- or model-sourced string that reaches a real terminal — every TUI widget, `main.py`'s `ConfigError`/join-failure stderr prints, and the `--chat-only` REPL's banner and replies — is passed through `sanitize.py`'s `sanitize()` first: it strips/escapes raw control bytes (ESC included, so a message can't clear your screen or spoof your title bar), and it redacts secrets by **exact value** for the two keys this process actually holds (the SMAC API key, the Anthropic key), plus a `sk-ant-…` shaped heuristic on top. `--headless` mode gets the same guarantee for free from `json.dumps`, which escapes control bytes by spec. That is the whole guarantee. There is no general "any secret gets redacted" promise — an arbitrary token in an unrecognized shape renders as-is.
 
 ## Testing
 

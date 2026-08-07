@@ -15,17 +15,33 @@ One `Agent` per running identity. Two entry points:
 Every mention `handle_mention()` starts processing is acked EXACTLY once
 before it returns -- guard-blocked, paused, successfully replied, or a
 `brain.think()`/`link.post()` failure -- via a `try/finally`, so a mention
-this agent has already looked at never sits in the inbox forever. A
-`mention_id` already seen (redelivered by a drain-then-live race, or any
-other retry) is a silent no-op the second time: it was acked the first
-time. "Seen" is tracked in a BOUNDED map (oldest evicted first) so a
+this agent has already looked at never sits in the inbox forever, UNLESS
+the ack call itself fails (e.g. the socket drops right after a
+successful post) or the task is cancelled before a reply was ever
+posted -- see `handle_mention`'s own docstring for exactly how those two
+cases are handled without ever double-posting. A `mention_id` already
+acked is a silent no-op on redelivery (drain-then-live race, or any
+other retry): it was acked the first time. "Seen" is tracked in a
+BOUNDED map of `{mention_id: acked}` (oldest evicted first) so a
 long-running process's memory never grows without bound.
 
-`known_agent_ids` (passed to `Guard.check`, see `guard.py`'s module
-docstring for why the caller has to supply this) grows from every sender
-this agent has actually replied to -- the only signal available, since an
-agent's API key can't list workspace members to ask "is this a human or
-another agent."
+`known_agent_ids` (passed to `Guard.check` -- see `guard.py`'s module
+docstring for the mechanism) is a seam this agent deliberately never
+populates. An earlier version fed every sender this agent replied to
+into it, on the theory that "a sender I've answered before is probably
+an agent." That was wrong: SMAC's wire carries no sender-TYPE signal
+(`Sender` is `member_id`/`member_name` only), so "senders I've answered"
+is exactly as likely to be a human asking a second question as an agent
+replying in a chain -- and it counted a human's every repeat mention as
+one more step toward `MAX_HOPS`, eventually refusing to answer a human
+who simply asked more than a couple of things (the quickstart demo
+itself trips this: see the fix-wave notes on `_known_agent_ids`,
+formerly grown here, now dead weight kept only as the extension point
+`guard.py` was designed around). There is no sound way to grow this set
+from the payload alone, so this agent leaves it permanently empty and
+relies on the rate cap (`MAX_REPLIES_PER_MIN`) as the real, enforced
+backstop against a runaway loop instead -- see README's Limitations
+section for the operator-facing version of this tradeoff.
 
 Bus events published here (rendered verbatim by the inner view and
 `--headless` JSON-lines mode -- never a secret, see `bus.py`'s module
@@ -56,6 +72,19 @@ _BACKOFF_MAX_SECONDS = 30.0
 #: docstring. Generous enough that no real workspace's mention volume
 #: between reconnects would plausibly evict a still-relevant id.
 _DEFAULT_SEEN_MAX = 2000
+
+#: How many past bus events `chat()`'s `_self_memory()` scans for its
+#: recap -- see that method's docstring. Bounded so a very long-running
+#: agent's chat context doesn't grow without limit; generous enough to
+#: cover a normal demo session's worth of mentions/replies.
+_SELF_MEMORY_LOOKBACK = 100
+
+#: Defensive bound on how many pages `run()`'s catch-up drain will fetch
+#: in one connect cycle (F7) -- `pending_mentions()` should always
+#: eventually return empty once every returned mention gets acked, but a
+#: non-conformant server response looping forever must not hang this
+#: agent's reconnect loop.
+_MAX_DRAIN_PAGES = 1000
 
 
 def _default_backoff_seconds(attempt: int) -> float:
@@ -170,10 +199,15 @@ class Agent:
         self._known_agent_ids: set[str] = set()
         self._chat_thread: list[dict[str, str]] = []
 
-        # Bounded idempotency memory (insertion-ordered dict-as-set --
-        # see the module docstring). `seen_max` is a constructor kwarg
-        # purely so a test can shrink it to exercise eviction cheaply.
-        self._seen_mention_ids: dict[str, None] = {}
+        # Bounded idempotency memory (insertion-ordered dict). The value
+        # is whether THIS mention has actually been acked yet -- see the
+        # module docstring and `handle_mention`'s own docstring for why
+        # that's not simply implied by "is in this dict" (an ack that
+        # itself fails after a successful post leaves an entry seen but
+        # not-yet-acked, retried on redelivery). `seen_max` is a
+        # constructor kwarg purely so a test can shrink it to exercise
+        # eviction cheaply.
+        self._seen_mention_ids: dict[str, bool] = {}
         self._seen_max = seen_max
 
         self._sleep = sleep
@@ -184,8 +218,8 @@ class Agent:
     def _already_seen(self, mention_id: str) -> bool:
         return mention_id in self._seen_mention_ids
 
-    def _remember(self, mention_id: str) -> None:
-        self._seen_mention_ids[mention_id] = None
+    def _remember(self, mention_id: str, *, acked: bool) -> None:
+        self._seen_mention_ids[mention_id] = acked
         if len(self._seen_mention_ids) > self._seen_max:
             oldest = next(iter(self._seen_mention_ids))
             del self._seen_mention_ids[oldest]
@@ -196,31 +230,67 @@ class Agent:
         """Handle one mention frame -- from `pending_mentions()`'s drain
         or a live WebSocket frame, same wire shape either way (see
         `app/mentions.py`'s `build_mention_event`): guard check -> fetch
-        `?limit=20` channel history for context -> `brain.think()` ->
+        recent channel history for context -> `brain.think()` ->
         `link.post()` -> `link.ack()`.
 
         See the module docstring for the acked-exactly-once and
         idempotent-redelivery guarantees this method is responsible for.
+        Three cases beyond the straightforward one:
+
+        - **Redelivery of an already-ACKED id** (drain-then-live race, or
+          any other retry): a silent no-op, first branch below.
+        - **Redelivery of a SEEN-BUT-NOT-YET-ACKED id**: this means a
+          previous call got all the way through a successful `post()`
+          but then `link.ack()` itself raised (e.g. the socket dropped
+          right after the post landed) -- the mention was answered, just
+          never acked, so the server will keep redelivering it. Retry
+          ONLY the ack, never re-post: at-most-once posting is preserved
+          even though at-least-once *attempting* isn't.
+        - **`CancelledError` before a successful post** (e.g. the process
+          quits while `await self.brain.think(...)` is in flight): do
+          NOT ack. The mention was never answered, so acking it would
+          strand it -- acked mentions are never redelivered. Leaving it
+          unacked means the *next* run's catch-up drain sees it again
+          (from the server's point of view nothing happened) and
+          actually answers it. `brain.think()` is this method's only
+          `await`, so a successful `link.post()` (a plain sync call) can
+          never itself be interrupted by cancellation.
+
+        Field extraction (`event["message"]`, `.../Sender`, etc.) runs
+        INSIDE the guarded region below, not before it: a malformed frame
+        (only possible from a non-conformant/hostile `SMAC_URL` -- a
+        real SMAC server's shape is FK-guaranteed, see `app/mentions.py`)
+        now goes through the same ack-retry discipline as every other
+        failure, instead of leaving the mention seen-but-never-ack-
+        attempted forever.
         """
         mention_id = event["mention_id"]
         if self._already_seen(mention_id):
+            if not self._seen_mention_ids[mention_id]:
+                # Seen but not yet acked -- retry the ack only. See the
+                # docstring's second bullet above.
+                self.link.ack(mention_id)
+                self._seen_mention_ids[mention_id] = True
+                self.bus.publish("acked", mention_id=mention_id)
             return
-        self._remember(mention_id)
-
-        message = event["message"]
-        channel_id = message["Channel"]["channel_id"]
-        sender_payload = message["Sender"]
-        text = message["Message"]["message_text"]
-
-        self.bus.publish(
-            "mention",
-            mention_id=mention_id,
-            channel=channel_id,
-            sender=sender_payload.get("member_name"),
-        )
+        self._remember(mention_id, acked=False)
 
         posted = False
+        cancelled_before_post = False
         try:
+            message = event["message"]
+            channel_id = message["Channel"]["channel_id"]
+            sender_payload = message["Sender"]
+            text = message["Message"]["message_text"]
+
+            self.bus.publish(
+                "mention",
+                mention_id=mention_id,
+                channel=channel_id,
+                sender=sender_payload.get("member_name"),
+                text=text,
+            )
+
             if self.paused:
                 self.bus.publish(
                     "paused_skip", mention_id=mention_id, channel=channel_id
@@ -256,18 +326,65 @@ class Agent:
 
             self.link.post(channel_id, reply.text)
             self.guard.record_reply()
-            sender_id = sender_payload.get("member_id")
-            if sender_id:
-                self._known_agent_ids.add(sender_id)
             self.bus.publish("posted", channel=channel_id, text=reply.text)
             posted = True
+        except asyncio.CancelledError:
+            # See the docstring's third bullet -- `posted` is guaranteed
+            # False here (the only `await` above is `brain.think()`, and
+            # nothing after a successful `post()` can suspend), so this
+            # is unconditionally "never answered": skip the ack in
+            # `finally` below and let cancellation keep propagating.
+            cancelled_before_post = True
+            raise
         finally:
-            # Runs on every path above -- including a `brain.think()` or
-            # `link.post()` exception propagating out of the `try` -- so
-            # a mention this agent has started on is never left unacked.
-            self.link.ack(mention_id)
-            if posted:
-                self.bus.publish("acked", mention_id=mention_id)
+            # Runs on every path above except a cancellation caught just
+            # above -- including a `brain.think()`/`link.post()`
+            # exception, or a malformed-frame `KeyError`, propagating out
+            # of the `try` -- so a mention this agent has actually
+            # started answering is never left unacked. If `link.ack()`
+            # itself raises here, `_seen_mention_ids[mention_id]` stays
+            # `False` (never reached the line below) and the next
+            # redelivery retries the ack via the branch at the top of
+            # this method.
+            if not cancelled_before_post:
+                self.link.ack(mention_id)
+                self._seen_mention_ids[mention_id] = True
+                if posted:
+                    self.bus.publish("acked", mention_id=mention_id)
+
+    def _self_memory(self) -> list[dict[str, str]]:
+        """A compact recap of this agent's OWN record of SMAC activity --
+        mentions it has seen and replies it has posted -- built from its
+        own `bus` history, never from a fresh SMAC read. This is what
+        lets `chat()` answer "what did Alice ask you?" while still
+        genuinely never touching SMAC (see `chat()`'s own docstring):
+        the bus already holds everything `handle_mention` has published,
+        so recalling it costs nothing beyond reading `self.bus.history()`.
+        Returns `[]` when nothing has happened yet -- an empty recap adds
+        no context turn at all, rather than an empty/awkward one.
+        """
+        lines: list[str] = []
+        for event in self.bus.history(_SELF_MEMORY_LOOKBACK):
+            if event.kind == "mention":
+                sender = event.fields.get("sender") or "someone"
+                channel = event.fields.get("channel") or "?"
+                text = event.fields.get("text")
+                if text:
+                    lines.append(f"{sender} mentioned you in #{channel}: {text}")
+                else:
+                    lines.append(f"{sender} mentioned you in #{channel}.")
+            elif event.kind == "posted":
+                channel = event.fields.get("channel") or "?"
+                text = event.fields.get("text") or ""
+                lines.append(f"You replied in #{channel}: {text}")
+        if not lines:
+            return []
+        recap = (
+            "Recap of SMAC activity you've personally seen and replied to "
+            "so far, oldest first (your own memory, not a live channel "
+            "read -- some of it may now be out of date):\n" + "\n".join(lines)
+        )
+        return [{"role": "user", "content": recap}]
 
     async def chat(self, text: str) -> str:
         """Direct chat: the same brain, this agent's own running thread,
@@ -275,11 +392,17 @@ class Agent:
         `link.ack` call anywhere in this method, so a chat message can
         never leak into a workspace channel (design doc: "the chat
         thread does not post to SMAC and does not mix into channel
-        context")."""
+        context"). It CAN answer questions about SMAC activity it has
+        personally seen, though -- via `_self_memory()`'s bus-derived
+        recap, passed as `history` -- because that's this agent's own
+        record, not a fresh SMAC call."""
         self.bus.publish("chat_in", text=text)
         system = PERSONA(self.handle, self._workspace_name)
         reply = await self.brain.think(
-            system=system, history=[], trigger=text, thread=self._chat_thread
+            system=system,
+            history=self._self_memory(),
+            trigger=text,
+            thread=self._chat_thread,
         )
         self._chat_thread.append({"role": "user", "content": text})
         self._chat_thread.append({"role": "assistant", "content": reply.text})
@@ -314,17 +437,40 @@ class Agent:
         processed exactly one mention -- from the drain or a live frame,
         whichever comes first -- instead of running forever, so an
         integration test can drive it deterministically.
+
+        The drain (F7 fix) loops calling `pending_mentions()` until it
+        returns an EMPTY page, not just once: the server paginates (its
+        own default page size, less than a workspace could plausibly
+        accumulate while this agent was down), so a single call only
+        ever drains the oldest page. Acking each mention as it's handled
+        shrinks the server-side pending set, so the next call in the
+        loop naturally surfaces the next page -- repeating until nothing
+        is left, bounded defensively by `_MAX_DRAIN_PAGES` in case a
+        non-conformant server never actually empties.
         """
         limit = 1 if once else None
         handled = 0
         attempt = 0
         while True:
             try:
-                for pending_event in self.link.pending_mentions():
-                    await self._safe_handle(pending_event)
-                    handled += 1
-                    if limit is not None and handled >= limit:
-                        return
+                for _ in range(_MAX_DRAIN_PAGES):
+                    batch = self.link.pending_mentions()
+                    if not batch:
+                        break
+                    for pending_event in batch:
+                        await self._safe_handle(pending_event)
+                        handled += 1
+                        if limit is not None and handled >= limit:
+                            return
+                else:
+                    self.bus.publish(
+                        "error",
+                        message=(
+                            f"pending_mentions() drain exceeded "
+                            f"{_MAX_DRAIN_PAGES} pages without emptying -- "
+                            "giving up on this drain and going live"
+                        ),
+                    )
                 if attempt:
                     self.bus.publish("reconnected")
                 attempt = 0

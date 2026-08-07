@@ -11,11 +11,18 @@ Server contracts consumed here (verified at main `e36a08c`):
 
     Everything below authenticates with the header:  X-API-Key: <api_key>
     GET  {smac_url}/workspaces/{ws}/channels
-    GET  {smac_url}/workspaces/{ws}/channels/{ch}/messages?limit=20
+    GET  {smac_url}/workspaces/{ws}/channels/{ch}/messages?limit=..&after=..
     POST {smac_url}/workspaces/{ws}/channels/{ch}/messages   {"message_text": str}
     GET  {smac_url}/mentions
     POST {smac_url}/mentions/{mention_id}/ack
     WS   {smac_url as ws}/ws/workspaces/{ws}/members/me/events   header X-API-Key (NOT ?token=)
+
+`GET .../messages` is a FORWARD-ONLY pager, not a "give me the latest N"
+query (`app/routers/messages.py`): with no `after` cursor it returns the
+OLDEST messages in the channel (`Message.seq.asc()`), and `limit` is
+clamped server-side to `MAX_LIMIT = 15` regardless of what's requested.
+`history()` below compensates for both surprises -- see its own
+docstring for how it reaches the actual tail.
 
 Credentials (member_id/handle/api_key/workspace_id/workspace_name) are the
 agent's one-time join result -- `Member.api_key_hash` is one-way server-
@@ -30,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -48,6 +56,12 @@ CONFIG_HOME = Path.home() / ".config" / "analyst_agent"
 _RECOVERY_HINT = "mint a fresh one in Settings → Invites"
 _DEFAULT_HISTORY_LIMIT = 20
 _REQUEST_TIMEOUT_SECONDS = 10.0
+
+#: The server's own page-size ceiling for `GET .../messages`
+#: (`app/routers/messages.py`'s `MAX_LIMIT`) -- `history()`'s pager never
+#: asks for more than this per HTTP request, since the server would
+#: silently clamp it anyway.
+_MAX_HISTORY_PAGE = 15
 
 
 class SmacLinkError(Exception):
@@ -72,6 +86,20 @@ class Credentials:
     api_key: str
     workspace_id: str
     workspace_name: str
+
+
+@dataclass
+class _ChannelTail:
+    """Per-channel state for `history()`'s forward-cursor tail pager
+    (F2 fix). `buffer` is a rolling window of the most recent messages
+    seen so far (bounded to the caller's requested `limit` -- oldest
+    evicted automatically as new ones are appended); `cursor` is the
+    `message_id` of the newest message this pager has fetched, `None`
+    until the first page is fetched. Not frozen: both fields mutate in
+    place as `history()` pages forward."""
+
+    buffer: "deque[dict[str, Any]]"
+    cursor: str | None = None
 
 
 def _slug(agent_name: str) -> str:
@@ -118,6 +146,10 @@ class SmacLink:
             transport=transport,
             timeout=_REQUEST_TIMEOUT_SECONDS,
         )
+        #: `history()`'s forward-cursor tail state, one per channel this
+        #: agent has ever asked about -- see `history()`'s own docstring
+        #: and `_ChannelTail`.
+        self._tails: dict[str, _ChannelTail] = {}
 
     # -- credentials: load/save/join -------------------------------------
 
@@ -222,15 +254,53 @@ class SmacLink:
     def history(
         self, channel_id: str, limit: int = _DEFAULT_HISTORY_LIMIT
     ) -> list[dict[str, Any]]:
-        """`GET /workspaces/{ws}/channels/{ch}/messages?limit=...`."""
+        """The `limit` most recent messages in `channel_id` -- the TAIL,
+        oldest of the returned batch first. `GET .../messages` itself
+        has no "give me the latest N" query (see the module docstring):
+        with no cursor it returns the OLDEST messages, clamped to 15 per
+        page server-side. To reach the actual tail, this keeps a
+        per-channel forward cursor (`after=<last-seen message_id>`) and
+        a rolling buffer of the last `limit` messages (`_ChannelTail`):
+        the first call on a channel pages forward from the very start,
+        one `_MAX_HISTORY_PAGE`-sized request at a time, until a page
+        comes back short of a full page (the real end of the channel,
+        for now); every later call on the same channel resumes from
+        exactly where the previous one left off, so it only fetches
+        what's new since the last mention -- bounded, incremental work
+        per call, not a re-page of the whole channel every time.
+
+        Changing `limit` between calls on the same channel resizes the
+        rolling buffer (trimmed/kept as-is) without discarding the
+        cursor, so switching how much context a caller wants never
+        forces a re-fetch of history already paged through.
+        """
+        tail = self._tails.get(channel_id)
+        if tail is None:
+            tail = _ChannelTail(buffer=deque(maxlen=limit))
+            self._tails[channel_id] = tail
+        elif tail.buffer.maxlen != limit:
+            tail.buffer = deque(tail.buffer, maxlen=limit)
+
         workspace_id = self._require_credentials().workspace_id
-        return list(
-            self._request(
-                "GET",
-                f"/workspaces/{workspace_id}/channels/{channel_id}/messages",
-                params={"limit": limit},
+        page_size = min(limit, _MAX_HISTORY_PAGE)
+        while True:
+            params: dict[str, Any] = {"limit": page_size}
+            if tail.cursor is not None:
+                params["after"] = tail.cursor
+            page = list(
+                self._request(
+                    "GET",
+                    f"/workspaces/{workspace_id}/channels/{channel_id}/messages",
+                    params=params,
+                )
             )
-        )
+            if not page:
+                break
+            tail.buffer.extend(page)
+            tail.cursor = page[-1]["Message"]["message_id"]
+            if len(page) < page_size:
+                break
+        return list(tail.buffer)
 
     def post(self, channel_id: str, text: str) -> dict[str, Any]:
         """`POST /workspaces/{ws}/channels/{ch}/messages`."""
