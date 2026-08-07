@@ -63,6 +63,12 @@ _REQUEST_TIMEOUT_SECONDS = 10.0
 #: silently clamp it anyway.
 _MAX_HISTORY_PAGE = 15
 
+#: Hard ceiling on how many pages `history()`'s pager will walk in one
+#: call. Unreachable against a conformant server (which ends the walk with
+#: a short or empty page); it exists so a buggy or hostile one cannot page
+#: forever and hang the agent -- the same defense the mention drain has.
+_MAX_HISTORY_PAGES = 1000
+
 
 class SmacLinkError(Exception):
     """Base class for every error `SmacLink` raises."""
@@ -283,7 +289,13 @@ class SmacLink:
 
         workspace_id = self._require_credentials().workspace_id
         page_size = min(limit, _MAX_HISTORY_PAGE)
-        while True:
+        # Bounded for the same reason the mention drain is: a server that
+        # never returns a short or empty page (buggy, or hostile) would
+        # otherwise page here forever. The tail only needs `limit`
+        # messages, so this ceiling is unreachable against a conformant
+        # server -- it exists purely so a non-conformant one can't hang
+        # the agent.
+        for _ in range(_MAX_HISTORY_PAGES):
             params: dict[str, Any] = {"limit": page_size}
             if tail.cursor is not None:
                 params["after"] = tail.cursor

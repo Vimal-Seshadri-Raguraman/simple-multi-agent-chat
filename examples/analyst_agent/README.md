@@ -87,7 +87,7 @@ python -m analyst_agent.main --once      # handle exactly one mention, then exit
 
 ## Configuration
 
-Everything lives in `examples/analyst_agent/.env` (copy of `.env.example`, gitignored — never committed): `ANTHROPIC_API_KEY` (required), `SMAC_URL`, `SMAC_AGENT_CODE` (only needed the first run), `AGENT_NAME` (default `Analyst`), `MODEL` (default `claude-sonnet-5`), `MAX_REPLIES_PER_MIN` / `MAX_HOPS` (citizenship-guard tuning, defaults 6 and 3). A missing or malformed value fails fast at startup with the exact fix, never a traceback.
+Everything lives in `examples/analyst_agent/.env` (copy of `.env.example`, gitignored — never committed): `ANTHROPIC_API_KEY` (required), `SMAC_URL`, `SMAC_AGENT_CODE` (only needed the first run), `AGENT_NAME` (default `Analyst`), `MODEL` (default `claude-sonnet-5`), `MAX_REPLIES_PER_MIN` / `MAX_HOPS` (citizenship-guard tuning, defaults 6 and 3 — note `MAX_HOPS` is currently inert and `MAX_REPLIES_PER_MIN` is the real loop protection, see [Limitations](#limitations)). A missing or malformed value fails fast at startup with the exact fix, never a traceback.
 
 `SMAC_URL` defaults to `http://127.0.0.1:8000`, which is where `smac-server --start` listens when you don't pass `--port`. If you started the server on another port, `smac-server --status` prints the one it's actually using — put that in `.env`.
 
