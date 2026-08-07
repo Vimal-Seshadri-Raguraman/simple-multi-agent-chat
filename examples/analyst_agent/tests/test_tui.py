@@ -22,6 +22,7 @@ not internal state this module happens to keep.
 from __future__ import annotations
 
 import asyncio
+import secrets as secrets_module
 from typing import Any
 
 import pytest
@@ -118,6 +119,44 @@ def chat_text(pilot: Any) -> str:
 def header_text(pilot: Any) -> str:
     header = pilot.app.query_one("#header-bar", Static)
     return str(header.content)
+
+
+# -- _known_secrets_for(): wiring the two runtime secrets into the TUI ------
+#
+# `run_tui()` is the seam that pulls `agent.link.credentials.api_key` /
+# `agent.config.anthropic_api_key` off a real `Agent` and hands them to
+# `AgentApp(secrets=...)`. These are plain-function tests (no Textual
+# pilot needed) against doubles that only carry the attributes being
+# read, so they exercise the `getattr`-chain fallbacks directly.
+
+
+def test_known_secrets_for_pulls_both_keys_off_a_fully_wired_agent() -> None:
+    from analyst_agent.tui import _known_secrets_for
+
+    class _Credentials:
+        api_key = "smac-runtime-key-value"
+
+    class _Link:
+        credentials = _Credentials()
+
+    class _Config:
+        anthropic_api_key = "sk-ant-runtime-key-value"
+
+    class _WiredAgent:
+        link = _Link()
+        config = _Config()
+
+    result = _known_secrets_for(_WiredAgent())  # type: ignore[arg-type]
+    assert result == {"smac-runtime-key-value", "sk-ant-runtime-key-value"}
+
+
+def test_known_secrets_for_tolerates_an_agent_missing_both_attributes() -> None:
+    from analyst_agent.tui import _known_secrets_for
+
+    class _BareAgent:
+        pass
+
+    assert _known_secrets_for(_BareAgent()) == frozenset()  # type: ignore[arg-type]
 
 
 # -- inner pane: event stream + security -----------------------------------
@@ -403,6 +442,86 @@ async def test_key_shaped_token_in_a_bus_event_is_redacted_not_rendered(
         assert "sk-ant-SECRET-value-123" not in rendered
         assert "[REDACTED]" in rendered
         assert "error" in rendered  # the event itself still shows, just redacted
+
+
+# -- known-value secret redaction (fix-round finding) -----------------------
+#
+# The `smac-` prefix branch in `_SECRET_TOKEN` matched nothing real: SMAC
+# API keys (`app/auth.py`'s `generate_api_key()`) are a bare
+# `secrets.token_urlsafe(32)` string with NO prefix. A leaked SMAC key
+# rendered completely unredacted despite the module docstring's claim
+# that "this project's own SMAC keys" were covered. The fix redacts by
+# VALUE instead: `AgentApp(..., secrets={...})` registers the exact
+# secret values this process holds, and `sanitize()` replaces any exact
+# occurrence of one of them. These tests exercise that new mechanism and
+# its documented boundaries directly -- they fail against the pre-fix
+# code because `AgentApp.__init__` didn't accept a `secrets=` kwarg at
+# all.
+
+
+@pytest.mark.anyio
+async def test_a_known_smac_key_value_is_redacted_in_an_error_event(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    """A real-shaped SMAC key -- `secrets.token_urlsafe(32)`, exactly
+    what `app/auth.py`'s `generate_api_key()` returns -- registered as a
+    known secret via `AgentApp(secrets={...})`, must render redacted
+    when it shows up in an `error` event's message. The old `smac-`
+    prefix heuristic could never have caught this (no prefix exists);
+    only exact-value redaction can."""
+    key = secrets_module.token_urlsafe(32)
+
+    async with AgentApp(agent, bus, secrets={key}).run_test() as pilot:
+        bus.publish("error", message=f"auth failed for key {key}")
+        await pilot.pause()
+
+        rendered = inner_text(pilot) + chat_text(pilot) + header_text(pilot)
+        assert key not in rendered
+        assert "[REDACTED]" in rendered
+        assert "error" in rendered  # the event itself still shows, just redacted
+
+
+@pytest.mark.anyio
+async def test_an_unknown_random_token_renders_as_is_documented_limitation(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    """`sanitize()` makes NO general "any secret gets redacted" promise
+    (see its docstring): only known-value redaction (this process's own
+    two runtime secrets) and the `sk-ant-` shape heuristic. A random
+    token this process never held, in a shape the heuristic doesn't
+    match, is NOT redacted -- asserted explicitly here so that boundary
+    is documented, verified behavior rather than an unnoticed gap."""
+    unknown = secrets_module.token_urlsafe(32)
+
+    async with AgentApp(agent, bus).run_test() as pilot:  # no secrets registered
+        bus.publish("error", message=f"unexpected token seen: {unknown}")
+        await pilot.pause()
+
+        rendered = inner_text(pilot) + chat_text(pilot) + header_text(pilot)
+        assert unknown in rendered
+        assert "[REDACTED]" not in rendered
+
+
+@pytest.mark.anyio
+async def test_empty_string_secret_in_the_registry_does_not_corrupt_output(
+    agent: FakeAgent, bus: Bus
+) -> None:
+    """Degenerate-case guard: `str.replace(text, "", "[REDACTED]")`
+    would insert the replacement between every character, blanking out
+    the entire pane, if an empty (or whitespace-only) "secret" ever
+    reached the replace loop unfiltered. `AgentApp` must filter these
+    out before `sanitize()` ever sees them -- a plain, unrelated message
+    must still render intact even with `""`/whitespace-only entries
+    sitting in the registry alongside a real one."""
+    async with AgentApp(
+        agent, bus, secrets={"", "   ", "some-other-real-secret-xyz"}
+    ).run_test() as pilot:
+        bus.publish("mention", sender="Alice", channel="general", text="hello world")
+        await pilot.pause()
+
+        text = inner_text(pilot)
+        assert "hello world" in text  # intact, not shredded per-character
+        assert "[REDACTED]" not in text  # the real secret never appeared here
 
 
 @pytest.mark.anyio

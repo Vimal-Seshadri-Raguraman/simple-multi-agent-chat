@@ -45,19 +45,33 @@ independent defenses before it reaches a widget:
    terminal.
 2. `sanitize()` below is the actual control-byte defense: it strips or
    visibly escapes C0/C1 control bytes (ESC and DEL included) and
-   redacts obvious key-shaped tokens before a SMAC-sourced string is
-   handed to `Text.append()` at all. It is applied at the two places
-   SMAC-sourced strings become widget content: `_format_event` (every
-   bus event field) and `_render_header` (handle/workspace, which come
-   from the server's join response -- untrusted if `SMAC_URL` points
-   somewhere hostile).
+   redacts secrets before a SMAC-sourced string is handed to
+   `Text.append()` at all. It is applied at the two places SMAC-sourced
+   strings become widget content: `_format_event` (every bus event
+   field) and `_render_header` (handle/workspace, which come from the
+   server's join response -- untrusted if `SMAC_URL` points somewhere
+   hostile).
 
 No credential (SMAC API key, Anthropic key) is ever deliberately placed
 in a bus event's `fields` (see `bus.py`'s module docstring) -- the
 header shows only the agent's public handle, workspace name, and
-connection state -- but `sanitize()`'s key-shaped-token redaction is
-defense in depth against a secret ending up in free-form text anyway
-(e.g. an SDK exception message that happens to echo part of a key).
+connection state -- but `sanitize()`'s secret redaction is defense in
+depth against a secret ending up in free-form text anyway (e.g. an SDK
+exception message that happens to echo part of a key). That redaction
+is honest about what it can and can't catch -- see `sanitize()`'s own
+docstring for the precise, non-overlapping coverage: exact-value
+redaction for the two secrets this process actually holds (the SMAC
+API key, the Anthropic API key -- both plugged into `run_tui()` at the
+bottom of this file), plus a `sk-ant-` prefix heuristic for
+Anthropic-shaped tokens the process doesn't recognize by value (e.g.
+one the model echoes back). There is NO general guarantee for an
+arbitrary unknown secret in arbitrary free-form text -- a leaked
+credential this process never held, in a shape the heuristic doesn't
+match, renders unredacted. (An earlier version of this file claimed a
+`smac-` prefix rule covered "this project's own SMAC keys" -- it did
+not: `app/auth.py`'s `generate_api_key()` returns a bare
+`secrets.token_urlsafe(32)` string with no prefix at all, so that rule
+matched nothing real. Exact-value redaction replaces it.)
 
 Colors come from `design/tokens.json` (the design-system constitution),
 read once at runtime by `_dark_palette()` below -- never hardcoded hex --
@@ -73,6 +87,7 @@ import contextlib
 import functools
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -112,28 +127,52 @@ _HISTORY_SEED = 200
 #: cover -- see the module docstring.
 _CONTROL_BYTE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
-#: Obvious key-shaped tokens: known secret prefixes (Anthropic, generic
-#: `sk-`, this project's own SMAC keys, and the handful of other vendor
-#: prefixes worth catching for free) followed by 4+ token characters.
-#: Not a substitute for "never put a secret in a bus event" (`bus.py`'s
-#: own invariant) -- this is defense in depth for the case where one
-#: leaks into free-form text anyway (e.g. an SDK exception message).
-_SECRET_TOKEN = re.compile(
-    r"\b(?:sk-ant-|sk-|smac-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|"
-    r"xox[baprs]-|AKIA|AIza)[A-Za-z0-9_-]{4,}\b"
-)
+#: A residual heuristic, NOT the primary defense -- see `sanitize()`'s
+#: docstring. `sk-ant-` is the one prefix worth matching by shape alone:
+#: it's Anthropic's real key format, and it can show up in text this
+#: process didn't generate itself (e.g. a key the model echoes back in
+#: a reply, or an operator pasting one into chat). There used to be a
+#: `smac-` branch here too, on the theory that it caught "this
+#: project's own SMAC keys" -- it did not. `app/auth.py`'s
+#: `generate_api_key()` returns `secrets.token_urlsafe(32)`: a bare
+#: random string, no prefix, nothing this regex could ever match. A
+#: prefix rule for a format that has no prefix isn't a weaker defense,
+#: it's a false one -- worse than no rule, because it reads as coverage
+#: that isn't there. The actual defense for the SMAC key (and for the
+#: Anthropic key, redundantly with the rule below) is exact-value
+#: redaction: see `sanitize()`'s `known_secrets` parameter.
+_SECRET_TOKEN = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{4,}\b")
 
 _REDACTED = "[REDACTED]"
 
 
-def sanitize(text: str) -> str:
+def sanitize(text: str, known_secrets: Iterable[str] = ()) -> str:
     """Neutralize `text` before it reaches a widget. Every SMAC-sourced
     string (message bodies, sender/handle/workspace names -- anything
     that ultimately came from `SMAC_URL`, which is untrusted) MUST pass
     through this before `Text.append()`/`Static.update()` ever sees it.
 
+    `known_secrets` is the set of secret VALUES this process actually
+    holds at runtime -- `AgentApp` passes its own `self._secrets`
+    (populated by `run_tui()` below from `agent.link.credentials.api_key`
+    and `agent.config.anthropic_api_key`) into every call site. This is
+    the ONLY redaction here with a real guarantee attached to it: if a
+    known secret's exact value appears anywhere in `text`, it is
+    replaced. Everything else in this function -- the `sk-ant-` prefix
+    rule included -- is a heuristic that happens to catch some shapes
+    and definitely misses others. There is no general "any secret,
+    known or not, gets redacted" guarantee; an arbitrary unknown token
+    in an unrecognized shape renders as-is.
+
     Policy, applied in order:
 
+    0. Every non-empty, non-whitespace-only value in `known_secrets` is
+       replaced, by exact substring match, with `[REDACTED]`. An empty
+       or whitespace-only entry is skipped entirely rather than matched
+       -- `text.replace("", "[REDACTED]")` would insert the replacement
+       between every character, corrupting the whole pane, and an
+       empty "secret" is never a real one (e.g. a credential that
+       hasn't been obtained yet).
     1. Tab and newline (`\\t`, `\\n`, `\\r\\n`, `\\r`) collapse to a
        single space. Both panes are line-oriented -- one
        `RichLog.write()` per event -- so a raw newline in a SMAC
@@ -149,21 +188,30 @@ def sanitize(text: str) -> str:
        OSC52 clipboard write -- see the module docstring) shows up on
        screen as harmless literal text instead of vanishing without a
        trace.
-    3. An obvious key-shaped token (`sk-ant-...`, `sk-...`, `smac-...`,
-       etc. -- see `_SECRET_TOKEN`) is replaced with `[REDACTED]`.
+    3. An Anthropic-shaped token (`sk-ant-...` -- see `_SECRET_TOKEN`)
+       is replaced with `[REDACTED]`, belt-and-braces on top of step 0
+       for a key this process doesn't happen to hold by value.
     """
+    for secret in known_secrets:
+        if secret and secret.strip():
+            text = text.replace(secret, _REDACTED)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\n", " ").replace("\t", " ")
     text = _CONTROL_BYTE.sub(lambda m: f"\\x{ord(m.group()):02x}", text)
     return _SECRET_TOKEN.sub(_REDACTED, text)
 
 
-def _field(fields: dict[str, Any], key: str, default: str = "?") -> str:
-    """`sanitize(str(fields.get(key, default)))` -- the one-liner every
-    `_format_event` branch below uses to pull a value out of an event's
-    (untrusted) `fields` dict, so there is no path from `fields` to a
-    widget that skips `sanitize()`."""
-    return sanitize(str(fields.get(key, default)))
+def _field(
+    fields: dict[str, Any],
+    key: str,
+    default: str = "?",
+    known_secrets: Iterable[str] = (),
+) -> str:
+    """`sanitize(str(fields.get(key, default)), known_secrets)` -- the
+    one-liner every `_format_event` branch below uses to pull a value
+    out of an event's (untrusted) `fields` dict, so there is no path
+    from `fields` to a widget that skips `sanitize()`."""
+    return sanitize(str(fields.get(key, default)), known_secrets)
 
 
 def _load_tokens() -> dict[str, Any]:
@@ -227,7 +275,9 @@ def _ts(event: Event) -> str:
     return event.at.strftime("%H:%M:%S")
 
 
-def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
+def _format_event(
+    event: Event, palette: dict[str, str], known_secrets: Iterable[str] = ()
+) -> Text | None:
     """One inner/chat-pane line for `event`, or `None` to render nothing
     (`token` events -- streamed deltas are collapsed into the
     `model_call`/`model_done` summary lines, per the design doc's "LLM
@@ -238,7 +288,9 @@ def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
     single choke point named in the module docstring's SECURITY
     section. `Text.append(str)` on its own only guarantees inertness
     against Rich/Textual MARKUP; `sanitize()` is what neutralizes raw
-    control bytes (ESC included) and redacts key-shaped tokens.
+    control bytes (ESC included) and redacts secrets. `known_secrets`
+    (the caller's -- `AgentApp`'s -- own runtime secret values) is
+    forwarded to every `_field()`/`sanitize()` call in this function.
     """
     if event.kind == "token":
         return None
@@ -251,6 +303,14 @@ def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
     bell = palette["bell"]
 
     fields = event.fields
+
+    def field(key: str, default: str = "?") -> str:
+        """`_field(fields, key, default, known_secrets)` -- bound to
+        this call's `fields`/`known_secrets` so every branch below can
+        just say `field("sender")` and still route through `sanitize()`
+        with the right secret set."""
+        return _field(fields, key, default, known_secrets)
+
     line = Text()
     line.append(_ts(event), style=dim)
     line.append("  ")
@@ -258,57 +318,56 @@ def _format_event(event: Event, palette: dict[str, str]) -> Text | None:
     kind = event.kind
     if kind == "mention":
         line.append("● mention ", style=f"bold {accent}")
-        line.append(f"@{_field(fields, 'sender')} #{_field(fields, 'channel')}")
+        line.append(f"@{field('sender')} #{field('channel')}")
         text = fields.get("text")
         if text:
-            line.append(f"  {sanitize(str(text))}")
+            line.append(f"  {sanitize(str(text), known_secrets)}")
     elif kind == "context":
         line.append("    context ", style=dim)
-        line.append(f"{_field(fields, 'count')} messages")
+        line.append(f"{field('count')} messages")
     elif kind == "model_call":
         line.append("▸ model   ", style=f"bold {agent_c}")
-        line.append(_field(fields, "model"))
+        line.append(field("model"))
     elif kind == "model_done":
         seconds = fields.get("seconds")
         secs_text = f"{seconds:.1f}s" if isinstance(seconds, (int, float)) else "?s"
         line.append("✓ done    ", style=f"bold {agent_c}")
         line.append(
-            f"{_field(fields, 'input_tokens')}/{_field(fields, 'output_tokens')} "
-            f"tok · {secs_text}"
+            f"{field('input_tokens')}/{field('output_tokens')} tok · {secs_text}"
         )
     elif kind == "posted":
         line.append("→ posted  ", style=f"bold {success}")
-        line.append(f"#{_field(fields, 'channel')}: {_field(fields, 'text', '')}")
+        line.append(f"#{field('channel')}: {field('text', '')}")
     elif kind == "acked":
         line.append("  acked   ", style=dim)
-        line.append(_field(fields, "mention_id", ""))
+        line.append(field("mention_id", ""))
     elif kind == "skipped":
         line.append("⊘ skipped ", style=dim)
-        line.append(_field(fields, "reason", ""))
+        line.append(field("reason", ""))
     elif kind == "paused_skip":
         line.append("⏸ paused  ", style=dim)
-        line.append(f"mention {_field(fields, 'mention_id', '')} skipped")
+        line.append(f"mention {field('mention_id', '')} skipped")
     elif kind == "disconnected":
         line.append("✕ disconnected ", style=f"bold {danger}")
-        line.append(_field(fields, "reason", ""))
+        line.append(field("reason", ""))
     elif kind == "reconnected":
         line.append("✓ reconnected", style=f"bold {success}")
     elif kind == "error":
         line.append("! error    ", style=f"bold {danger}")
-        line.append(_field(fields, "message", ""))
+        line.append(field("message", ""))
     elif kind == "chat_in":
         line.append("you › ", style=f"bold {accent}")
-        line.append(_field(fields, "text", ""))
+        line.append(field("text", ""))
     elif kind == "chat_out":
         line.append("agent › ", style=f"bold {agent_c}")
-        line.append(_field(fields, "text", ""))
+        line.append(field("text", ""))
     else:
         # Forward-compatible: an event kind this module doesn't know
         # about yet is still shown (kind + whatever fields it carries),
         # never silently dropped.
         line.append(kind, style=f"bold {bell}")
         for key, value in fields.items():
-            line.append(f"  {key}={sanitize(str(value))}")
+            line.append(f"  {key}={sanitize(str(value), known_secrets)}")
 
     return line
 
@@ -331,7 +390,9 @@ class AgentApp(App[None]):
         Binding("ctrl+c", "quit", "Quit", show=False),
     ]
 
-    def __init__(self, agent: AgentLike, bus: Bus) -> None:
+    def __init__(
+        self, agent: AgentLike, bus: Bus, *, secrets: Iterable[str] | None = None
+    ) -> None:
         # Set before `super().__init__()`: `App.__init__` itself calls
         # `self.get_css_variables()` to build the initial stylesheet, so
         # `_palette` must already exist by then.
@@ -339,6 +400,18 @@ class AgentApp(App[None]):
         super().__init__()
         self.agent = agent
         self.bus = bus
+        # `secrets` -- the VALUES of this process's own runtime secrets
+        # (SMAC API key, Anthropic API key; see `run_tui()` below for
+        # where they come from) -- is what `sanitize()` redacts by exact
+        # match (see its docstring). Filtered here (not just inside
+        # `sanitize()`) so an empty/whitespace-only entry -- e.g. a
+        # credential that hasn't been obtained yet -- never reaches the
+        # replace loop at all; keyword-only and optional so every
+        # existing `AgentApp(agent, bus)` call site (tests included)
+        # keeps working with no known secrets registered.
+        self._secrets = frozenset(
+            s for s in (secrets or ()) if isinstance(s, str) and s.strip()
+        )
         self._view_mode = "both"  # "both" | "inner" | "chat"
         self._connection_state = "connected"
         self._follow_task: asyncio.Task[None] | None = None
@@ -445,7 +518,7 @@ class AgentApp(App[None]):
             self._connection_state = "connected"
             self._render_header()
 
-        line = _format_event(event, self._palette)
+        line = _format_event(event, self._palette, self._secrets)
         if line is None:
             return
         target_id = "chat" if event.kind in ("chat_in", "chat_out") else "inner"
@@ -458,8 +531,8 @@ class AgentApp(App[None]):
         `Static.update()`, same as every SMAC-sourced field in
         `_format_event`."""
         header = self.query_one("#header-bar", Static)
-        handle = sanitize(str(getattr(self.agent, "handle", "agent")))
-        workspace = sanitize(_workspace_name(self.agent))
+        handle = sanitize(str(getattr(self.agent, "handle", "agent")), self._secrets)
+        workspace = sanitize(_workspace_name(self.agent), self._secrets)
         state = self._connection_state
 
         line = Text()
@@ -526,10 +599,37 @@ class AgentApp(App[None]):
         chat.display = self._view_mode != "inner"
 
 
+def _known_secrets_for(agent: AgentLike) -> frozenset[str]:
+    """Best-effort pull of the two secrets this process's own `agent`
+    holds at runtime: the SMAC API key (`agent.link.credentials.api_key`)
+    -- see `smac_link.py`'s `Credentials` -- and the Anthropic API key
+    (`agent.config.anthropic_api_key` -- see `config.py`'s `Config`).
+    Read through `getattr` chains, never required: `AgentLike` (and the
+    fakes tests build against it) declares neither `.config` nor
+    `.link.credentials`, so a value that isn't there yields `None`
+    (filtered out below) instead of an `AttributeError`. This is the
+    injection point named in `sanitize()`'s docstring -- whatever this
+    returns becomes `AgentApp._secrets`, redacted by exact value on
+    every SMAC-sourced string before it reaches a widget."""
+    credentials = getattr(getattr(agent, "link", None), "credentials", None)
+    api_key = getattr(credentials, "api_key", None)
+    anthropic_key = getattr(getattr(agent, "config", None), "anthropic_api_key", None)
+    return frozenset(
+        value
+        for value in (api_key, anthropic_key)
+        if isinstance(value, str) and value.strip()
+    )
+
+
 def run_tui(agent: AgentLike, bus: Bus) -> None:
     """`main.py`'s seam target -- build and run the app, blocking until
     quit. `App.run()` manages its own asyncio event loop; `AgentApp`
     starts `agent.run()` (the mention loop) and the bus-follow task
     inside it (see `on_mount`), so this one call is the entire
-    non-headless entry point."""
-    AgentApp(agent, bus).run()
+    non-headless entry point. `_known_secrets_for(agent)` supplies the
+    exact-value redaction set (see `sanitize()`'s docstring) so this
+    stays the one place a real `Agent`'s two runtime secrets get wired
+    into the TUI -- nothing else in this module reaches for
+    `agent.link.credentials.api_key`/`agent.config.anthropic_api_key`
+    directly."""
+    AgentApp(agent, bus, secrets=_known_secrets_for(agent)).run()
