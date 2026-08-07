@@ -90,7 +90,7 @@ python -m analyst_agent.main --once      # handle exactly one mention, then exit
 
 Everything lives in `examples/analyst_agent/.env` (copy of `.env.example`, gitignored — never committed): `ANTHROPIC_API_KEY` (required), `SMAC_URL`, `SMAC_AGENT_CODE` (only needed the first run), `AGENT_NAME` (default `Analyst`), `MODEL` (default `claude-sonnet-5`), `MAX_REPLIES_PER_MIN` / `MAX_HOPS` (citizenship-guard tuning, defaults 6 and 3). A missing or malformed value fails fast at startup with the exact fix, never a traceback.
 
-`SMAC_URL` is worth setting explicitly rather than trusting the shipped default: `.env.example` ships `http://127.0.0.1:8001`, but `smac-server --start` (no `--port` flag) actually listens on `http://127.0.0.1:8000` — check what your own `smac-server --start` printed and put that in `.env`.
+`SMAC_URL` defaults to `http://127.0.0.1:8000`, which is where `smac-server --start` listens when you don't pass `--port`. If you started the server on another port, `smac-server --status` prints the one it's actually using — put that in `.env`.
 
 The agent's SMAC credentials, once obtained, are saved to `~/.config/analyst_agent/<agent-name>.json`, mode `0600` from the moment the file is created.
 

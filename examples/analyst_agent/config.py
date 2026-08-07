@@ -13,8 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping
 
-#: Local dev default: `smac-server --start`'s default port.
-DEFAULT_SMAC_URL = "http://127.0.0.1:8001"
+#: Local dev default: `smac-server --start`'s own default port
+#: (`smac_cli/server.py::_DEFAULT_PORT`). These two must agree, or the
+#: quickstart fails on a connection refused nobody can explain.
+DEFAULT_SMAC_URL = "http://127.0.0.1:8000"
 DEFAULT_AGENT_NAME = "Analyst"
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_REPLIES_PER_MIN = 6

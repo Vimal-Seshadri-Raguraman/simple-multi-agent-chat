@@ -7,7 +7,7 @@ BASE = {"ANTHROPIC_API_KEY": "sk-ant-test", "SMAC_AGENT_CODE": "abc123"}
 
 def test_defaults_applied():
     cfg = load_config(BASE)
-    assert cfg.smac_url == "http://127.0.0.1:8001"
+    assert cfg.smac_url == "http://127.0.0.1:8000"
     assert cfg.agent_name == "Analyst"
     assert cfg.model == "claude-sonnet-5"
     assert cfg.max_replies_per_min == 6 and cfg.max_hops == 3
