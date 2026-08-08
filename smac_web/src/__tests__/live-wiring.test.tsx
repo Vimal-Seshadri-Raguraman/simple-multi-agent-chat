@@ -64,6 +64,21 @@ function sampleMentionEvent(channelId: string, channelName: string): MentionEven
 let capturedOnPayload: ((payload: MessagePayload) => void) | null;
 let capturedOnGap: (() => void) | null;
 let capturedOnEvent: ((event: MentionEvent) => void) | null;
+// Captured the same way as the live.ts callbacks above -- via the mock's own
+// `mockImplementation`, not by indexing into `.mock.calls` after the fact.
+// Under vitest 3, `@testing-library/react`'s auto-registered `afterEach`
+// cleanup (which unmounts AuthProvider and so fires its effect cleanup,
+// `api.setSessionInvalidatedHandler(null)`) now runs AFTER this file's own
+// `afterEach(() => vi.clearAllMocks())` -- afterEach hooks run in reverse
+// registration order, and RTL's cleanup hook is registered first (at
+// import time, before this file's own afterEach below). That leaves a
+// stray `null` call sitting in `setSessionInvalidatedHandler`'s `.mock.calls`
+// *before* the next test's own registration, so reading `.mock.calls[0]`
+// (as this test used to) picks up the previous test's leftover `null`
+// instead of this test's real handler. Capturing via a closure reset in
+// `beforeEach`, like every other callback in this file, always reflects
+// the latest registration and is immune to that cross-test ordering.
+let capturedInvalidatedHandler: ((message: string) => void) | null;
 let closeRoom: ReturnType<typeof vi.fn>;
 let closeBell: ReturnType<typeof vi.fn>;
 
@@ -71,6 +86,7 @@ beforeEach(() => {
   capturedOnPayload = null;
   capturedOnGap = null;
   capturedOnEvent = null;
+  capturedInvalidatedHandler = null;
   closeRoom = vi.fn();
   closeBell = vi.fn();
 
@@ -82,6 +98,9 @@ beforeEach(() => {
   vi.mocked(live.connectBell).mockImplementation((onEvent): Closeable => {
     capturedOnEvent = onEvent;
     return { close: closeBell };
+  });
+  vi.mocked(api.setSessionInvalidatedHandler).mockImplementation((handler) => {
+    capturedInvalidatedHandler = handler;
   });
 
   vi.mocked(api.getSession).mockReturnValue(WORKSPACE_SESSION);
@@ -291,11 +310,10 @@ describe("Session-expiry recovery (final review Finding 2, IMPORTANT)", () => {
     expect(closeRoom).not.toHaveBeenCalled();
     expect(closeBell).not.toHaveBeenCalled();
 
-    const registeredHandler = vi.mocked(api.setSessionInvalidatedHandler).mock.calls[0]?.[0];
-    expect(registeredHandler).toBeTypeOf("function");
+    expect(capturedInvalidatedHandler).toBeTypeOf("function");
 
     act(() => {
-      registeredHandler?.("Session expired — please log in again.");
+      capturedInvalidatedHandler?.("Session expired — please log in again.");
     });
 
     // Leaving "authed" unmounts `AuthedShell` (and the `WorkspaceProvider`/
