@@ -228,6 +228,14 @@ docs/
 rough.*
 rough*
 
+# SMAC example agents (SMAC-100): each example's own .env carries real
+# secrets (ANTHROPIC_API_KEY, SMAC agent key) and must never be committed,
+# even though the top-level `.env` rule above already covers the repo
+# root -- an example's .env lives one directory deeper. Its egg-info is
+# local build output, same as the root's already-ignored `*.egg-info/`.
+examples/*/.env
+examples/*/*.egg-info
+
 # SMAC web UI (SMAC-85): node_modules is a dev-only dependency (Node is
 # never required by `pip install`); smac_web/dist is the intermediate Vite
 # build output. The bundle itself is COMMITTED at app/static/webui/ (design

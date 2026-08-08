@@ -1,0 +1,56 @@
+/* AgentApp's stylesheet. Every color is a `$smac-*` variable injected by
+ * `AgentApp.get_css_variables()` from `design/tokens.json` at runtime --
+ * see `tui.py`'s module docstring. No literal hex color belongs in this
+ * file; if a new surface needs a color, add the token to
+ * `design/tokens.json` and reference it here as `$smac-<token-name>`.
+ */
+
+Screen {
+    background: $smac-bg;
+    color: $smac-text;
+}
+
+#header-bar {
+    height: 1;
+    background: $smac-surface-raised;
+    color: $smac-text;
+    padding: 0 1;
+}
+
+#panes {
+    height: 1fr;
+}
+
+#inner {
+    width: 1fr;
+    height: 1fr;
+    background: $smac-surface;
+    color: $smac-text;
+    border: round $smac-border;
+    padding: 0 1;
+}
+
+#chat {
+    width: 1fr;
+    height: 1fr;
+    background: $smac-surface;
+    color: $smac-text;
+    border: round $smac-border;
+    padding: 0 1;
+}
+
+#chat-input {
+    background: $smac-surface-raised;
+    color: $smac-text;
+    border: none;
+    padding: 0 1;
+}
+
+#chat-input:focus {
+    background: $smac-surface-raised;
+}
+
+Footer {
+    background: $smac-surface-raised;
+    color: $smac-text-dim;
+}
