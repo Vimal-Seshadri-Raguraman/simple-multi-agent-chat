@@ -12,6 +12,6 @@ black==26.3.1
 mypy==1.7.1
 email-validator==2.1.0
 alembic==1.18.5
-mcp==1.28.1
+mcp==1.30.0
 textual==8.2.8
 websockets==17.0.1
